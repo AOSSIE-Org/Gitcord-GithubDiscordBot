@@ -1,1 +1,1 @@
-"""Discord–GitHub automation engine."""
+"""Discord-GitHub automation engine."""
