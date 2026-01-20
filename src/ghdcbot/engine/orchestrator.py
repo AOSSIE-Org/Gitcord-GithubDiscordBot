@@ -106,7 +106,7 @@ class Orchestrator:
                     "Audit reports written to %s",
                     str(json_path.parent),
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy)
