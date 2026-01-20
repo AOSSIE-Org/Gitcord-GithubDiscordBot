@@ -89,7 +89,7 @@
 
 ## 🏗️ Architecture Diagram
 
-```
+```text
 Read -> Plan -> Report -> Apply
 ```
 
@@ -102,7 +102,7 @@ Core boundaries:
 
 ## 🔄 User Flow
 
-```
+```text
 Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 ```
 
@@ -164,7 +164,7 @@ cp config/example.yaml /tmp/ghdcbot-config.yaml
 ```
 
 Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
-```
+```text
 <data_dir>/reports/audit.json
 <data_dir>/reports/audit.md
 ```

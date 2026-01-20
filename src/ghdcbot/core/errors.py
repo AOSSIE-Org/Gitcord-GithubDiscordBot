@@ -2,7 +2,7 @@ class ConfigError(RuntimeError):
     """Configuration validation or loading error."""
 
 
-class PermissionError(RuntimeError):
+class GitcordPermissionError(RuntimeError):
     """Raised when required permissions are not available."""
 
 

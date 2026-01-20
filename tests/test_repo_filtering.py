@@ -18,7 +18,7 @@ def test_repo_filter_allow_mode(caplog) -> None:
     assert [repo["name"] for repo in filtered] == ["repo-a", "repo-c"]
 
 
-def test_repo_filter_deny_mode(caplog) -> None:
+def test_repo_filter_deny_mode() -> None:
     repos = [
         {"name": "repo-a"},
         {"name": "repo-b"},

@@ -92,7 +92,7 @@ class BotConfig(BaseModel):
     github: GitHubConfig
     discord: DiscordConfig
     scoring: ScoringConfig
-    role_mappings: list[RoleMappingConfig] = Field(default_factory=list)
+    role_mappings: list[RoleMappingConfig]
     assignments: AssignmentConfig = Field(default_factory=AssignmentConfig)
     identity_mappings: list[IdentityMapping] = Field(default_factory=list)
 

@@ -4,10 +4,10 @@ from ghdcbot.core.modes import MutationPolicy, RunMode
 
 
 class _FailingClient:
-    def request(self, *args, **kwargs):
+    def request(self, *_args, **_kwargs):
         raise AssertionError("HTTP call should not occur with empty plans")
 
-    def post(self, *args, **kwargs):
+    def post(self, *_args, **_kwargs):
         raise AssertionError("HTTP call should not occur with empty plans")
 
 

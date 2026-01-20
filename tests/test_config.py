@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from ghdcbot.config.models import BotConfig
 
 
@@ -18,9 +21,6 @@ def test_role_mappings_required() -> None:
         "assignments": {"review_roles": [], "issue_assignees": []},
         "identity_mappings": [],
     }
-    try:
+    with pytest.raises(ValidationError) as excinfo:
         BotConfig.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001
-        assert "role_mappings" in str(exc)
-    else:
-        raise AssertionError("Expected role_mappings validation error")
+    assert "role_mappings" in str(excinfo.value)

@@ -19,7 +19,7 @@ class WeightedScoreStrategy(ScoreStrategy):
         period_start = period_end - self._period
         totals: dict[str, int] = defaultdict(int)
         for event in contributions:
-            if event.created_at < period_start:
+            if event.created_at < period_start or event.created_at > period_end:
                 continue
             totals[event.github_user] += self._weights.get(event.event_type, 0)
 

@@ -26,7 +26,7 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
         return sorted(set(eligible))
 
     def plan_issue_assignments(
-        self, issues: Iterable[dict], scores: Sequence[Score]
+        self, issues: Iterable[dict], _scores: Sequence[Score]
     ) -> Sequence[AssignmentPlan]:
         eligible = self._eligible_users(self._issue_roles)
         if not eligible:
@@ -46,7 +46,7 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
         return plans
 
     def plan_review_requests(
-        self, pull_requests: Iterable[dict], scores: Sequence[Score]
+        self, pull_requests: Iterable[dict], _scores: Sequence[Score]
     ) -> Sequence[ReviewPlan]:
         eligible = self._eligible_users(self._review_roles)
         if not eligible:

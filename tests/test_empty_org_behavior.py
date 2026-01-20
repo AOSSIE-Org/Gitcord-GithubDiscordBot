@@ -40,7 +40,7 @@ def test_empty_org_logs_and_plans_empty(monkeypatch, caplog) -> None:
 
     adapter = GitHubRestAdapter(token="t", org="shubham-orld", api_base="https://api.github.com")
 
-    def fake_list_repos_from_path(path: str):
+    def fake_list_repos_from_path(_path: str):
         return [], 200
 
     monkeypatch.setattr(adapter, "_list_repos_from_path", fake_list_repos_from_path)

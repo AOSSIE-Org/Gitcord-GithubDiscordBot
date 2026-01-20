@@ -95,7 +95,7 @@ class Orchestrator:
                     self.config.scoring.weights,
                 )
                 repo_count = getattr(self.github_reader, "_last_repo_count", None)
-                json_path, md_path = write_reports(
+                json_path, _md_path = write_reports(
                     discord_plans,
                     github_plans,
                     self.config,
@@ -107,7 +107,7 @@ class Orchestrator:
                     str(json_path.parent),
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.error("Failed to write audit reports", extra={"error": str(exc)})
+                logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy)
         apply_discord_roles(

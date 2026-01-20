@@ -10,7 +10,7 @@ T = TypeVar("T")
 
 def load_adapter(dotted_path: str) -> type[T]:
     try:
-        module_path, class_name = dotted_path.split(":")
+        module_path, class_name = dotted_path.split(":", 1)
         module = importlib.import_module(module_path)
         adapter_cls = getattr(module, class_name)
     except (ValueError, ImportError, AttributeError) as exc:

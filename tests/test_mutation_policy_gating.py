@@ -9,10 +9,10 @@ from ghdcbot.core.modes import MutationPolicy, RunMode
 
 
 class _FailingClient:
-    def request(self, *args, **kwargs):  # noqa: D401
+    def request(self, *_args, **_kwargs):
         raise AssertionError("HTTP call should not occur in gated modes")
 
-    def post(self, *args, **kwargs):  # noqa: D401
+    def post(self, *_args, **_kwargs):
         raise AssertionError("HTTP call should not occur in gated modes")
 
 
@@ -56,4 +56,5 @@ def test_writers_skip_actions_when_gated(mode, allow_discord, allow_github, expe
     discord_writer.apply_plans([discord_plan], policy)
     github_writer.apply_plans([github_plan], policy)
 
-    assert any(record.__dict__.get("result") == expected for record in caplog.records)
+    results = [getattr(record, "result", None) for record in caplog.records]
+    assert expected in results, f"Expected '{expected}' in log results, got {results}"
