@@ -6,7 +6,7 @@ from typing import Iterable
 import httpx
 
 from ghdcbot.core.models import GitHubAssignmentPlan
-from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.core.modes import MutationPolicy, mutation_skip_reason
 
 
 class GitHubPlanWriter:
@@ -30,7 +30,7 @@ class GitHubPlanWriter:
     def apply_plans(self, plans: Iterable[GitHubAssignmentPlan], policy: MutationPolicy) -> None:
         seen: set[tuple] = set()
         for plan in plans:
-            skip_reason = _skip_reason(policy, policy.allow_github_mutations)
+            skip_reason = mutation_skip_reason(policy, policy.allow_github_mutations)
             if skip_reason:
                 self._log_plan(plan, result=skip_reason)
                 continue
@@ -93,11 +93,3 @@ class GitHubPlanWriter:
         )
 
 
-def _skip_reason(policy: MutationPolicy, allow_mutations: bool) -> str | None:
-    if policy.mode == RunMode.DRY_RUN:
-        return "skipped (dry-run)"
-    if policy.mode == RunMode.OBSERVER:
-        return "skipped (observer mode)"
-    if not allow_mutations:
-        return "skipped (write disabled)"
-    return None

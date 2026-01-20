@@ -6,7 +6,7 @@ from typing import Iterable
 import httpx
 
 from ghdcbot.core.models import DiscordRolePlan
-from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.core.modes import MutationPolicy, mutation_skip_reason
 
 
 class DiscordPlanWriter:
@@ -24,6 +24,7 @@ class DiscordPlanWriter:
             headers={"Authorization": f"Bot {token}"},
             timeout=30.0,
         )
+        self._role_cache: dict[str, str] | None = None
 
     def close(self) -> None:
         self._client.close()
@@ -35,11 +36,17 @@ class DiscordPlanWriter:
         self.close()
 
     def apply_plans(self, plans: Iterable[DiscordRolePlan], policy: MutationPolicy) -> None:
+        seen: set[tuple[str, str, str]] = set()
         for plan in plans:
-            skip_reason = _skip_reason(policy, policy.allow_discord_mutations)
+            skip_reason = mutation_skip_reason(policy, policy.allow_discord_mutations)
             if skip_reason:
                 self._log_plan(plan, result=skip_reason)
                 continue
+            dedupe_key = (plan.discord_user_id, plan.role, plan.action)
+            if dedupe_key in seen:
+                self._log_plan(plan, result="skipped (duplicate)")
+                continue
+            seen.add(dedupe_key)
             self._apply_plan(plan)
 
     def _apply_plan(self, plan: DiscordRolePlan) -> None:
@@ -71,12 +78,12 @@ class DiscordPlanWriter:
 
         self._log_plan(plan, result="applied")
 
-    def _resolve_role_id(self, role_name: str) -> str | None:
-        """Resolve a role name to a role ID. Returns None if not found."""
+    def _fetch_roles(self) -> dict[str, str] | None:
+        """Fetch and cache role name -> ID mapping."""
+        if self._role_cache is not None:
+            return self._role_cache
         try:
-            response = self._client.request(
-                "GET", f"/guilds/{self._guild_id}/roles"
-            )
+            response = self._client.request("GET", f"/guilds/{self._guild_id}/roles")
         except httpx.HTTPError as exc:
             self._logger.warning(
                 "Role lookup failed",
@@ -89,12 +96,16 @@ class DiscordPlanWriter:
                 extra={"guild_id": self._guild_id, "status": response.status_code},
             )
             return None
-
         roles = response.json()
-        for role in roles:
-            if role.get("name") == role_name:
-                return role.get("id")
-        return None
+        self._role_cache = {role["name"]: role["id"] for role in roles}
+        return self._role_cache
+
+    def _resolve_role_id(self, role_name: str) -> str | None:
+        """Resolve a role name to a role ID. Returns None if not found."""
+        roles = self._fetch_roles()
+        if roles is None:
+            return None
+        return roles.get(role_name)
 
     def _log_plan(
         self,
@@ -117,11 +128,3 @@ class DiscordPlanWriter:
         )
 
 
-def _skip_reason(policy: MutationPolicy, allow_mutations: bool) -> str | None:
-    if policy.mode == RunMode.DRY_RUN:
-        return "skipped (dry-run)"
-    if policy.mode == RunMode.OBSERVER:
-        return "skipped (observer mode)"
-    if not allow_mutations:
-        return "skipped (write disabled)"
-    return None

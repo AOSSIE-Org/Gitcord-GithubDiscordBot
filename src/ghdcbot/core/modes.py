@@ -27,3 +27,13 @@ class MutationPolicy:
         if self.mode != RunMode.ACTIVE:
             return False
         return self.discord_write_allowed
+
+
+def mutation_skip_reason(policy: MutationPolicy, allow_mutations: bool) -> str | None:
+    if policy.mode == RunMode.DRY_RUN:
+        return "skipped (dry-run)"
+    if policy.mode == RunMode.OBSERVER:
+        return "skipped (observer mode)"
+    if not allow_mutations:
+        return "skipped (write disabled)"
+    return None
