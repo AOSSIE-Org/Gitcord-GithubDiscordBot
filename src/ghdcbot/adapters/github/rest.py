@@ -32,6 +32,15 @@ class GitHubRestAdapter:
             timeout=30.0,
         )
 
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "GitHubRestAdapter":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def list_contributions(self, since: datetime) -> Iterable[ContributionEvent]:
         self._logger.info(
             "Starting GitHub ingestion",

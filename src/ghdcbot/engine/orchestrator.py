@@ -119,6 +119,12 @@ class Orchestrator:
             policy,
         )
 
+    def close(self) -> None:
+        for adapter in {self.github_reader, self.github_writer, self.discord_reader, self.discord_writer}:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
+
 
 def build_role_to_github_map(
     identity_mappings: Iterable[IdentityMapping],

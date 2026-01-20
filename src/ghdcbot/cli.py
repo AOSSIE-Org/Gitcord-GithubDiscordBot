@@ -49,6 +49,7 @@ def main() -> None:
     sub.add_parser("run-once", help="Run a single orchestration cycle")
 
     args = parser.parse_args()
+    orchestrator = None
     try:
         orchestrator = build_orchestrator(args.config)
         if args.command == "run-once":
@@ -59,6 +60,9 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("CLI").exception("Unhandled error")
         raise SystemExit(1) from exc
+    finally:
+        if orchestrator is not None:
+            orchestrator.close()
 
 
 if __name__ == "__main__":
