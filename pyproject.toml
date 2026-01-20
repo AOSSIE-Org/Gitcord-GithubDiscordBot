@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghdcbot"
+version = "0.1.0"
+description = "Offline-first Discord–GitHub automation engine"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.5",
+  "PyYAML>=6.0",
+  "httpx>=0.26",
+  "tenacity>=8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

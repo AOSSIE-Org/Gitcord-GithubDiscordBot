@@ -1,0 +1,1 @@
+"""Discord–GitHub automation engine."""

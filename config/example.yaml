@@ -1,0 +1,54 @@
+runtime:
+  mode: "dry-run"
+  log_level: "INFO"
+  data_dir: "/tmp/ghdcbot-state"
+  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
+  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
+  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+
+github:
+  org: "example-org"
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+  permissions:
+    read: true
+    write: false
+  user_fallback: false
+
+  # Optional repo filtering
+  # repos:
+  #   mode: "allow"
+  #   names:
+  #     - "repo-a"
+  #     - "repo-b"
+
+discord:
+  guild_id: "YOUR_GUILD_ID_HERE"
+  token: "${DISCORD_TOKEN}"
+  permissions:
+    read: true
+    write: false
+
+scoring:
+  period_days: 30
+  weights:
+    issue_opened: 3
+    pr_opened: 5
+    pr_reviewed: 2
+    comment: 1
+
+role_mappings:
+  - discord_role: "Contributor"
+    min_score: 10
+  - discord_role: "Maintainer"
+    min_score: 40
+
+assignments:
+  review_roles:
+    - "Maintainer"
+  issue_assignees:
+    - "Contributor"
+
+identity_mappings:
+  - github_user: "YOUR_GITHUB_USERNAME"
+    discord_user_id: "YOUR_DISCORD_USER_ID"
