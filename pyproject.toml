@@ -13,6 +13,7 @@ dependencies = [
   "PyYAML>=6.0",
   "httpx>=0.26",
   "tenacity>=8.2",
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from ghdcbot.config.models import BotConfig
@@ -16,6 +17,7 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
 def load_config(path: str) -> BotConfig:
+    load_dotenv()
     config_path = Path(path)
     if not config_path.exists() or not config_path.is_file():
         raise ConfigError(f"Config file does not exist: {path}")
