@@ -23,6 +23,15 @@ class DiscordApiAdapter:
             timeout=30.0,
         )
 
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "DiscordApiAdapter":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def list_member_roles(self) -> dict[str, list[str]]:
         """Return mapping of Discord user ID to role names.
 
