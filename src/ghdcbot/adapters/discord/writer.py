@@ -40,7 +40,13 @@ class DiscordPlanWriter:
             return
 
         path = f"/guilds/{self._guild_id}/members/{plan.discord_user_id}/roles/{role_id}"
-        method = "PUT" if plan.action == "add" else "DELETE"
+        if plan.action == "add":
+            method = "PUT"
+        elif plan.action == "remove":
+            method = "DELETE"
+        else:
+            self._log_plan(plan, result="failed (unknown action)")
+            return
         try:
             response = self._client.request(method, path)
         except httpx.HTTPError as exc:
