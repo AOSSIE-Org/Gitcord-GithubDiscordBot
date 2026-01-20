@@ -17,10 +17,13 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 def load_config(path: str) -> BotConfig:
     config_path = Path(path)
-    if not config_path.exists():
+    if not config_path.exists() or not config_path.is_file():
         raise ConfigError(f"Config file does not exist: {path}")
     try:
-        raw: Any = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        raw_text = config_path.read_text(encoding="utf-8")
+        raw: Any = yaml.safe_load(raw_text)
+    except OSError as exc:
+        raise ConfigError(f"Failed to read config file: {path}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to parse YAML: {exc}") from exc
 
