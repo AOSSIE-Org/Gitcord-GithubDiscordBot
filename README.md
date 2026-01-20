@@ -143,7 +143,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -e .
 ```
 
-#### 3. Configure Environment Variables(.env.example)
+#### 3. Configure Environment Variables
 
 Create a `.env` file in the root directory:
 
@@ -152,14 +152,19 @@ GITHUB_TOKEN=your_github_token
 DISCORD_TOKEN=your_discord_token
 ```
 
+Notes:
+- There is no `.env.example` file in this repo yet.
+- Tokens must have read permissions for the org/repo and Discord server.
+
 #### 4. Configure and Run (Safe Dry‑Run)
 
 ```bash
 cp config/example.yaml /tmp/ghdcbot-config.yaml
-python -m ghdcbot.cli --config /tmp/ghdcbot-config.yaml run-once
+# Use the venv python explicitly to avoid alias/PATH issues
+./.venv/bin/python -m ghdcbot.cli --config /tmp/ghdcbot-config.yaml run-once
 ```
 
-Expected output files:
+Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
 ```
 <data_dir>/reports/audit.json
 <data_dir>/reports/audit.md
