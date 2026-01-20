@@ -89,9 +89,18 @@ class Orchestrator:
                     self.config.role_mappings,
                 )
                 github_plans = _to_github_assignment_plans(issue_plans, review_plans)
+                contribution_summaries = self.storage.list_contribution_summaries(
+                    period_start,
+                    period_end,
+                    self.config.scoring.weights,
+                )
                 repo_count = getattr(self.github_reader, "_last_repo_count", None)
                 json_path, md_path = write_reports(
-                    discord_plans, github_plans, self.config, repo_count=repo_count
+                    discord_plans,
+                    github_plans,
+                    self.config,
+                    repo_count=repo_count,
+                    contribution_summaries=contribution_summaries,
                 )
                 logger.info(
                     "Audit reports written to %s",

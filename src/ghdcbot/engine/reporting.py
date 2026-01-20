@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ghdcbot.config.models import BotConfig
-from ghdcbot.core.models import DiscordRolePlan, GitHubAssignmentPlan
+from ghdcbot.core.models import ContributionSummary, DiscordRolePlan, GitHubAssignmentPlan
 
 logger = logging.getLogger("Reporting")
 
@@ -18,6 +18,7 @@ def write_reports(
     github_plans: Sequence[GitHubAssignmentPlan],
     config: BotConfig,
     repo_count: int | None = None,
+    contribution_summaries: Sequence[ContributionSummary] | None = None,
 ) -> tuple[Path, Path]:
     """Generate audit JSON and Markdown reports in data_dir/reports."""
     report_dir = Path(config.runtime.data_dir) / "reports"
@@ -32,7 +33,13 @@ def write_reports(
         encoding="utf-8",
     )
 
-    markdown = render_markdown_report(discord_plans, github_plans, config, repo_count)
+    markdown = render_markdown_report(
+        discord_plans,
+        github_plans,
+        config,
+        repo_count,
+        contribution_summaries=contribution_summaries,
+    )
     md_path.write_text(markdown, encoding="utf-8")
 
     logger.info(
@@ -82,6 +89,7 @@ def render_markdown_report(
     github_plans: Sequence[GitHubAssignmentPlan],
     config: BotConfig,
     repo_count: int | None = None,
+    contribution_summaries: Sequence[ContributionSummary] | None = None,
 ) -> str:
     """Render a human-readable Markdown report for review workflows."""
     discord_sorted = sorted(discord_plans, key=_discord_key)
@@ -106,11 +114,37 @@ def render_markdown_report(
 
     sections = [
         "\n".join(summary_lines),
+        _render_contribution_summary_section(
+            contribution_summaries or [], config.scoring.period_days
+        ),
         _render_discord_section(discord_sorted),
         _render_issue_section(github_sorted),
         _render_pr_section(github_sorted),
     ]
     return "\n\n".join(sections) + "\n"
+
+
+def _render_contribution_summary_section(
+    summaries: Sequence[ContributionSummary], period_days: int
+) -> str:
+    lines = [f"## Contribution Summary (Last {period_days} days)"]
+    if not summaries:
+        lines.append("No activity in period.")
+        return "\n".join(lines)
+    lines.append("| User | Issues | PRs | Reviews | Comments | Score |")
+    lines.append("|------|--------|-----|---------|----------|-------|")
+    for summary in sorted(summaries, key=lambda entry: entry.github_user):
+        lines.append(
+            "| {user} | {issues} | {prs} | {reviews} | {comments} | {score} |".format(
+                user=summary.github_user,
+                issues=summary.issues_opened,
+                prs=summary.prs_opened,
+                reviews=summary.prs_reviewed,
+                comments=summary.comments,
+                score=summary.total_score,
+            )
+        )
+    return "\n".join(lines)
 
 
 def _render_discord_section(plans: Sequence[DiscordRolePlan]) -> str:

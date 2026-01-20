@@ -15,6 +15,18 @@ class ContributionEvent:
 
 
 @dataclass(frozen=True)
+class ContributionSummary:
+    github_user: str
+    issues_opened: int
+    prs_opened: int
+    prs_reviewed: int
+    comments: int
+    total_score: int
+    period_start: datetime
+    period_end: datetime
+
+
+@dataclass(frozen=True)
 class Score:
     github_user: str
     period_start: datetime

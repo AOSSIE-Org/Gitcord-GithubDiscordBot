@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Iterable, Protocol, Sequence
 
-from ghdcbot.core.models import AssignmentPlan, ContributionEvent, ReviewPlan, Score
+from ghdcbot.core.models import (
+    AssignmentPlan,
+    ContributionEvent,
+    ContributionSummary,
+    ReviewPlan,
+    Score,
+)
 
 
 class GitHubReader(Protocol):
@@ -47,6 +53,14 @@ class Storage(Protocol):
 
     def list_contributions(self, since: datetime) -> Sequence[ContributionEvent]:
         """List contributions from storage since time."""
+
+    def list_contribution_summaries(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+        weights: dict[str, int],
+    ) -> Sequence[ContributionSummary]:
+        """Aggregate contribution counts and scores for the period."""
 
     def upsert_scores(self, scores: Sequence[Score]) -> None:
         """Persist scores for users."""

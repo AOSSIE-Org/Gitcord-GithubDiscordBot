@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from ghdcbot.core.models import ContributionEvent, Score
+from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 
 class SqliteStorage:
@@ -88,6 +88,63 @@ class SqliteStorage:
                 payload=json.loads(row["payload_json"]),
             )
             for row in rows
+        ]
+
+    def list_contribution_summaries(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+        weights: dict[str, int],
+    ) -> Sequence[ContributionSummary]:
+        start_utc = _ensure_utc(period_start)
+        end_utc = _ensure_utc(period_end)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT github_user, event_type
+                FROM contributions
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY github_user ASC, created_at ASC
+                """,
+                (start_utc.isoformat(), end_utc.isoformat()),
+            ).fetchall()
+
+        summaries: dict[str, dict[str, int]] = {}
+        for row in rows:
+            user = row["github_user"]
+            event_type = row["event_type"]
+            bucket = summaries.setdefault(
+                user,
+                {
+                    "issues_opened": 0,
+                    "prs_opened": 0,
+                    "prs_reviewed": 0,
+                    "comments": 0,
+                    "total_score": 0,
+                },
+            )
+            if event_type == "issue_opened":
+                bucket["issues_opened"] += 1
+            elif event_type in {"pr_opened", "pr_merged"}:
+                bucket["prs_opened"] += 1
+            elif event_type == "pr_reviewed":
+                bucket["prs_reviewed"] += 1
+            elif event_type == "comment":
+                bucket["comments"] += 1
+            bucket["total_score"] += weights.get(event_type, 0)
+
+        return [
+            ContributionSummary(
+                github_user=user,
+                issues_opened=counts["issues_opened"],
+                prs_opened=counts["prs_opened"],
+                prs_reviewed=counts["prs_reviewed"],
+                comments=counts["comments"],
+                total_score=counts["total_score"],
+                period_start=start_utc,
+                period_end=end_utc,
+            )
+            for user, counts in sorted(summaries.items(), key=lambda item: item[0])
         ]
 
     def upsert_scores(self, scores: Sequence[Score]) -> None:
