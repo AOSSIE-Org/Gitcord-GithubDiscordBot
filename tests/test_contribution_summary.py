@@ -21,6 +21,13 @@ def test_list_contribution_summaries_counts_and_scores(tmp_path) -> None:
         ),
         ContributionEvent(
             github_user="alice",
+            event_type="issue_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=1),
+            payload={},
+        ),
+        ContributionEvent(
+            github_user="alice",
             event_type="pr_reviewed",
             repo="repo",
             created_at=period_end - timedelta(days=2),

@@ -72,7 +72,7 @@ class SqliteStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT github_user, event_type, repo, created_at, payload_json
+                SELECT DISTINCT github_user, event_type, repo, created_at, payload_json
                 FROM contributions
                 WHERE created_at >= ?
                 ORDER BY created_at ASC
@@ -101,7 +101,7 @@ class SqliteStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT github_user, event_type
+                SELECT DISTINCT github_user, event_type, repo, created_at, payload_json
                 FROM contributions
                 WHERE created_at >= ? AND created_at <= ?
                 ORDER BY github_user ASC, created_at ASC
