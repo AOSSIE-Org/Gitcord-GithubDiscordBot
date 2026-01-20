@@ -137,9 +137,10 @@ cd Gitcord-GithubDiscordBot
 #### 2. Install Dependencies
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .
+# Use the venv's pip to avoid shell aliases or PATH issues
+./.venv/bin/python -m pip install -e .
 ```
 
 #### 3. Configure Environment Variables(.env.example)
