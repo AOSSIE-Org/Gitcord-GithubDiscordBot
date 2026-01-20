@@ -50,6 +50,7 @@ class SqliteStorage:
         stored = 0
         with self._connect() as conn:
             for event in events:
+                created_at = _ensure_utc(event.created_at)
                 conn.execute(
                     """
                     INSERT INTO contributions (github_user, event_type, repo, created_at, payload_json)
@@ -59,7 +60,7 @@ class SqliteStorage:
                         event.github_user,
                         event.event_type,
                         event.repo,
-                        event.created_at.isoformat(),
+                        created_at.isoformat(),
                         json.dumps(event.payload, separators=(",", ":")),
                     ),
                 )
@@ -67,6 +68,7 @@ class SqliteStorage:
         return stored
 
     def list_contributions(self, since: datetime) -> Sequence[ContributionEvent]:
+        since_utc = _ensure_utc(since)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -75,14 +77,14 @@ class SqliteStorage:
                 WHERE created_at >= ?
                 ORDER BY created_at ASC
                 """,
-                (since.isoformat(),),
+                (since_utc.isoformat(),),
             ).fetchall()
         return [
             ContributionEvent(
                 github_user=row["github_user"],
                 event_type=row["event_type"],
                 repo=row["repo"],
-                created_at=datetime.fromisoformat(row["created_at"]),
+                created_at=_parse_utc(row["created_at"]),
                 payload=json.loads(row["payload_json"]),
             )
             for row in rows
@@ -101,8 +103,8 @@ class SqliteStorage:
                 [
                     (
                         score.github_user,
-                        score.period_start.isoformat(),
-                        score.period_end.isoformat(),
+                        _ensure_utc(score.period_start).isoformat(),
+                        _ensure_utc(score.period_end).isoformat(),
                         score.points,
                         now,
                     )
@@ -122,8 +124,8 @@ class SqliteStorage:
         return [
             Score(
                 github_user=row["github_user"],
-                period_start=datetime.fromisoformat(row["period_start"]),
-                period_end=datetime.fromisoformat(row["period_end"]),
+                period_start=_parse_utc(row["period_start"]),
+                period_end=_parse_utc(row["period_end"]),
                 points=row["points"],
             )
             for row in rows
@@ -136,9 +138,10 @@ class SqliteStorage:
             ).fetchone()
         if not row:
             return None
-        return datetime.fromisoformat(row["cursor"])
+        return _parse_utc(row["cursor"])
 
     def set_cursor(self, source: str, cursor: datetime) -> None:
+        cursor_utc = _ensure_utc(cursor)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -146,5 +149,19 @@ class SqliteStorage:
                 VALUES (?, ?)
                 ON CONFLICT(source) DO UPDATE SET cursor = excluded.cursor
                 """,
-                (source, cursor.isoformat()),
+                (source, cursor_utc.isoformat()),
             )
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    """Normalize timestamps to UTC with tzinfo for safe SQLite ordering."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
