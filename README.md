@@ -145,7 +145,7 @@ python3 -m venv .venv
 
 #### 3. Configure Environment Variables
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the root directory (you can copy `.env.example`):
 
 ```env
 GITHUB_TOKEN=your_github_token
@@ -153,7 +153,6 @@ DISCORD_TOKEN=your_discord_token
 ```
 
 Notes:
-- There is no `.env.example` file in this repo yet.
 - Tokens must have read permissions for the org/repo and Discord server.
 
 #### 4. Configure and Run (Safe Dry‑Run)
