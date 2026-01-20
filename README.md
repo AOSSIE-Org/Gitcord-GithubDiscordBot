@@ -51,7 +51,7 @@
 <h1>Gitcord (Discord–GitHub Automation Engine)</h1>
 </div>
 
-[Gitcord](https://TODO.stability.nexus/) is a local, offline‑first automation engine that reads GitHub activity and Discord state, then plans role changes and GitHub assignments in a deterministic, reviewable way. It is designed for safety: dry‑run and observer modes produce audit reports without mutating anything.
+Gitcord is a local, offline‑first automation engine that reads GitHub activity and Discord state, then plans role changes and GitHub assignments in a deterministic, reviewable way. It is designed for safety: dry‑run and observer modes produce audit reports without mutating anything.
 
 ---
 
