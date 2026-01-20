@@ -433,8 +433,11 @@ class GitHubRestAdapter:
             )
             return None
 
-        if response.status_code in {403, 404}:
+        if response.status_code == 403:
             self._log_permission_issue(path, response)
+            return None
+        if response.status_code == 404:
+            self._log_not_found(path, response)
             return None
 
         return response
@@ -460,13 +463,25 @@ class GitHubRestAdapter:
             )
             return None
 
-        if response.status_code in {401, 403, 404}:
+        if response.status_code in {401, 403}:
             self._log_permission_issue(path, response)
+        if response.status_code == 404:
+            self._log_not_found(path, response)
         return response
 
     def _log_permission_issue(self, path: str, response: httpx.Response) -> None:
         self._logger.warning(
             "GitHub permission or visibility issue",
+            extra={
+                "path": path,
+                "status_code": response.status_code,
+                "response_message": response.text[:200],
+            },
+        )
+
+    def _log_not_found(self, path: str, response: httpx.Response) -> None:
+        self._logger.warning(
+            "GitHub resource not found",
             extra={
                 "path": path,
                 "status_code": response.status_code,
