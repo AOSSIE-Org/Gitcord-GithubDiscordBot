@@ -76,7 +76,7 @@ class Orchestrator:
 
         if not issues and not prs and not contributions:
             logging.getLogger("Planning").info(
-                "No repositories \u2192 no contributions \u2192 no plans"
+                "No issues, PRs, or contributions \u2192 no plans"
             )
 
         if policy.mode in {RunMode.DRY_RUN, RunMode.OBSERVER}:
