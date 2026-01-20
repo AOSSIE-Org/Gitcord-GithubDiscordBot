@@ -319,8 +319,9 @@ class GitHubRestAdapter:
             )
         closed_at = _parse_iso8601(issue.get("closed_at"))
         if closed_at and closed_at >= since:
+            closer = (issue.get("closed_by") or {}).get("login") or issue["user"]["login"]
             yield ContributionEvent(
-                github_user=issue["user"]["login"],
+                github_user=closer,
                 event_type="issue_closed",
                 repo=repo,
                 created_at=closed_at,
