@@ -190,7 +190,12 @@ class GitHubRestAdapter:
                 submitted_at = _parse_iso8601(review.get("submitted_at"))
                 if not submitted_at or submitted_at < since:
                     continue
-                reviewer = review["user"]["login"]
+                user = review.get("user")
+                if not user:
+                    continue
+                reviewer = user.get("login")
+                if not reviewer:
+                    continue
                 yield ContributionEvent(
                     github_user=reviewer,
                     event_type="pr_reviewed",
