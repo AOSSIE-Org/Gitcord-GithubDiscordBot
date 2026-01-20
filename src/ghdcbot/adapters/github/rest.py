@@ -66,18 +66,34 @@ class GitHubRestAdapter:
         full_name = repo["full_name"]
         self._logger.info("Ingesting repository", extra={"repo": full_name})
 
-        issue_events = list(self._ingest_issues(owner, repo_name, since))
-        pr_events = list(self._ingest_merged_prs(owner, repo_name, since))
+        issue_events, issue_numbers = self._collect_issue_events(owner, repo_name, since)
+        pr_events, pr_numbers, pr_opened_count = self._collect_pull_request_events(
+            owner, repo_name, since
+        )
+        issue_comment_events = list(
+            self._ingest_issue_comments(owner, repo_name, issue_numbers, since)
+        )
+        pr_comment_events = list(
+            self._ingest_pr_comments(owner, repo_name, pr_numbers, since)
+        )
         self._logger.info(
             "Ingestion results",
             extra={
                 "repo": full_name,
                 "issue_events": len(issue_events),
                 "pr_events": len(pr_events),
+                "comment_events": len(issue_comment_events) + len(pr_comment_events),
             },
         )
+        if pr_opened_count:
+            self._logger.info(
+                "Emitted pr_opened event",
+                extra={"repo": full_name, "count": pr_opened_count},
+            )
         yield from issue_events
+        yield from issue_comment_events
         yield from pr_events
+        yield from pr_comment_events
 
     def _list_repos(self) -> Sequence[dict]:
         repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
@@ -100,41 +116,68 @@ class GitHubRestAdapter:
             )
         return filtered
 
-    def _ingest_issues(
+    def _collect_issue_events(
         self, owner: str, repo: str, since: datetime
-    ) -> Iterable[ContributionEvent]:
+    ) -> tuple[list[ContributionEvent], list[int]]:
+        issue_events: list[ContributionEvent] = []
+        issue_numbers: list[int] = []
         params = {"state": "all", "since": since.isoformat(), "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/issues", params=params):
             for issue in page:
                 if "pull_request" in issue:
                     continue
-                yield from self._issue_events(repo, issue, since)
+                issue_numbers.append(issue["number"])
+                issue_events.extend(self._issue_events(repo, issue, since))
+        return issue_events, issue_numbers
 
-    def _ingest_merged_prs(
+    def _collect_pull_request_events(
         self, owner: str, repo: str, since: datetime
-    ) -> Iterable[ContributionEvent]:
-        params = {"state": "closed", "sort": "updated", "direction": "desc", "per_page": 100}
+    ) -> tuple[list[ContributionEvent], list[int], int]:
+        pr_events: list[ContributionEvent] = []
+        pr_numbers: list[int] = []
+        pr_opened_count = 0
+        params = {"state": "all", "sort": "updated", "direction": "desc", "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/pulls", params=params):
             for pr in page:
                 updated_at = _parse_iso8601(pr.get("updated_at"))
                 if updated_at and updated_at < since:
-                    return
+                    return pr_events, pr_numbers, pr_opened_count
+                pr_numbers.append(pr["number"])
+                created_at = _parse_iso8601(pr.get("created_at"))
+                if created_at and created_at >= since:
+                    pr_events.append(
+                        ContributionEvent(
+                            github_user=pr["user"]["login"],
+                            event_type="pr_opened",
+                            repo=repo,
+                            created_at=created_at,
+                            payload={
+                                "pr_number": pr["number"],
+                                "title": pr.get("title"),
+                                "created_at": pr.get("created_at"),
+                            },
+                        )
+                    )
+                    pr_opened_count += 1
                 merged_at = _parse_iso8601(pr.get("merged_at"))
                 if not merged_at or merged_at < since:
                     continue
                 author = pr["user"]["login"]
-                yield ContributionEvent(
-                    github_user=author,
-                    event_type="pr_merged",
-                    repo=repo,
-                    created_at=merged_at,
-                    payload={
-                        "pr_number": pr["number"],
-                        "title": pr.get("title"),
-                        "merged_at": pr.get("merged_at"),
-                    },
+                pr_events.append(
+                    ContributionEvent(
+                        github_user=author,
+                        event_type="pr_merged",
+                        repo=repo,
+                        created_at=merged_at,
+                        payload={
+                            "pr_number": pr["number"],
+                            "title": pr.get("title"),
+                            "merged_at": pr.get("merged_at"),
+                        },
+                    )
                 )
-                yield from self._pull_request_reviews(owner, repo, pr["number"], since)
+                pr_events.extend(self._pull_request_reviews(owner, repo, pr["number"], since))
+        return pr_events, pr_numbers, pr_opened_count
 
     def _pull_request_reviews(
         self, owner: str, repo: str, pr_number: int, since: datetime
@@ -160,6 +203,107 @@ class GitHubRestAdapter:
                         "submitted_at": review.get("submitted_at"),
                     },
                 )
+
+    def _ingest_issue_comments(
+        self, owner: str, repo: str, issue_numbers: Sequence[int], since: datetime
+    ) -> Iterable[ContributionEvent]:
+        if not issue_numbers:
+            return []
+        self._logger.info(
+            "Ingesting issue comments",
+            extra={"repo": f"{owner}/{repo}", "issues": len(issue_numbers)},
+        )
+        comment_events: list[ContributionEvent] = []
+        for issue_number in issue_numbers:
+            params = {"per_page": 100}
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments", params=params
+            ):
+                for comment in page:
+                    created_at = _parse_iso8601(comment.get("created_at"))
+                    if not created_at or created_at < since:
+                        continue
+                    user = comment.get("user") or {}
+                    if _is_bot_user(user):
+                        continue
+                    login = user.get("login")
+                    if not login:
+                        continue
+                    comment_events.append(
+                        ContributionEvent(
+                            github_user=login,
+                            event_type="comment",
+                            repo=repo,
+                            created_at=created_at,
+                            payload={
+                                "issue_number": issue_number,
+                                "comment_id": comment.get("id"),
+                                "url": comment.get("html_url"),
+                            },
+                        )
+                    )
+        if comment_events:
+            self._logger.info(
+                "Emitted comment events",
+                extra={"repo": f"{owner}/{repo}", "count": len(comment_events), "source": "issue"},
+            )
+        return comment_events
+
+    def _ingest_pr_comments(
+        self, owner: str, repo: str, pr_numbers: Sequence[int], since: datetime
+    ) -> Iterable[ContributionEvent]:
+        if not pr_numbers:
+            return []
+        self._logger.info(
+            "Ingesting PR comments",
+            extra={"repo": f"{owner}/{repo}", "prs": len(pr_numbers)},
+        )
+        comment_events: list[ContributionEvent] = []
+        seen: set[tuple[str, int]] = set()
+        for pr_number in pr_numbers:
+            params = {"per_page": 100}
+            paths = [
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+            ]
+            for path in paths:
+                for page in self._paginate(path, params=params):
+                    for comment in page:
+                        comment_id = comment.get("id")
+                        if comment_id is None:
+                            continue
+                        key = (repo, int(comment_id))
+                        if key in seen:
+                            continue
+                        created_at = _parse_iso8601(comment.get("created_at"))
+                        if not created_at or created_at < since:
+                            continue
+                        user = comment.get("user") or {}
+                        if _is_bot_user(user):
+                            continue
+                        login = user.get("login")
+                        if not login:
+                            continue
+                        seen.add(key)
+                        comment_events.append(
+                            ContributionEvent(
+                                github_user=login,
+                                event_type="comment",
+                                repo=repo,
+                                created_at=created_at,
+                                payload={
+                                    "issue_number": pr_number,
+                                    "comment_id": comment_id,
+                                    "url": comment.get("html_url"),
+                                },
+                            )
+                        )
+        if comment_events:
+            self._logger.info(
+                "Emitted comment events",
+                extra={"repo": f"{owner}/{repo}", "count": len(comment_events), "source": "pr"},
+            )
+        return comment_events
 
     def _issue_events(
         self, repo: str, issue: dict, since: datetime
@@ -353,6 +497,12 @@ def _parse_iso8601(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _is_bot_user(user: dict) -> bool:
+    user_type = (user.get("type") or "").lower()
+    login = (user.get("login") or "").lower()
+    return user_type == "bot" or login.endswith("[bot]")
 
 
 def _issue_payload(issue: dict) -> dict:
