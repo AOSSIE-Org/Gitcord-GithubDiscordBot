@@ -25,6 +25,15 @@ class DiscordPlanWriter:
             timeout=30.0,
         )
 
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "DiscordPlanWriter":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def apply_plans(self, plans: Iterable[DiscordRolePlan], policy: MutationPolicy) -> None:
         for plan in plans:
             skip_reason = _skip_reason(policy, policy.allow_discord_mutations)
