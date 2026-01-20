@@ -37,8 +37,7 @@ def test_user_repo_fallback_on_org_unauthorized(monkeypatch, caplog) -> None:
         assignments=AssignmentConfig(),
         identity_mappings=[],
     )
-    loader._ACTIVE_CONFIG = config  # test-only setup
-
+    monkeypatch.setattr(loader, "_ACTIVE_CONFIG", config)  # test-only setup
     adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
     calls: list[str] = []
 
