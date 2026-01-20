@@ -41,7 +41,8 @@ class Orchestrator:
         cursor = self.storage.get_cursor("github") or period_start
         contributions = list(self.github_reader.list_contributions(cursor))
         stored = self.storage.record_contributions(contributions)
-        self.storage.set_cursor("github", period_end)
+        last_seen = max((event.created_at for event in contributions), default=period_end)
+        self.storage.set_cursor("github", last_seen)
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         scoring = WeightedScoreStrategy(
