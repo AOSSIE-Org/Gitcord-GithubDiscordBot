@@ -27,6 +27,21 @@ class GitHubPlanWriter:
             timeout=30.0,
         )
 
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "GitHubPlanWriter":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, tb: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def apply_plans(self, plans: Iterable[GitHubAssignmentPlan], policy: MutationPolicy) -> None:
         seen: set[tuple] = set()
         for plan in plans:

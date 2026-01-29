@@ -154,9 +154,11 @@ class GitHubRestAdapter:
                 pr_numbers.append(pr["number"])
                 created_at = _parse_iso8601(pr.get("created_at"))
                 if created_at and created_at >= since:
+                    pr_author = pr.get("user") or {}
+                    pr_author_login = pr_author.get("login") or "<deleted>"
                     pr_events.append(
                         ContributionEvent(
-                            github_user=pr["user"]["login"],
+                            github_user=pr_author_login,
                             event_type="pr_opened",
                             repo=repo,
                             created_at=created_at,
@@ -171,7 +173,7 @@ class GitHubRestAdapter:
                 merged_at = _parse_iso8601(pr.get("merged_at"))
                 if not merged_at or merged_at < since:
                     continue
-                author = pr["user"]["login"]
+                author = (pr.get("user") or {}).get("login") or "<deleted>"
                 pr_events.append(
                     ContributionEvent(
                         github_user=author,
@@ -322,10 +324,12 @@ class GitHubRestAdapter:
     def _issue_events(
         self, repo: str, issue: dict, since: datetime
     ) -> Iterable[ContributionEvent]:
+        issue_user = issue.get("user") or {}
+        issue_author = issue_user.get("login") or "unknown"
         created_at = _parse_iso8601(issue.get("created_at"))
         if created_at and created_at >= since:
             yield ContributionEvent(
-                github_user=issue["user"]["login"],
+                github_user=issue_author,
                 event_type="issue_opened",
                 repo=repo,
                 created_at=created_at,
@@ -333,7 +337,7 @@ class GitHubRestAdapter:
             )
         closed_at = _parse_iso8601(issue.get("closed_at"))
         if closed_at and closed_at >= since:
-            closer = (issue.get("closed_by") or {}).get("login") or issue["user"]["login"]
+            closer = (issue.get("closed_by") or {}).get("login") or issue_author
             yield ContributionEvent(
                 github_user=closer,
                 event_type="issue_closed",
@@ -344,8 +348,9 @@ class GitHubRestAdapter:
         for assignee in issue.get("assignees") or []:
             assigned_at = _parse_iso8601(issue.get("updated_at"))
             if assigned_at and assigned_at >= since:
+                assignee_login = (assignee or {}).get("login") if isinstance(assignee, dict) else None
                 yield ContributionEvent(
-                    github_user=assignee["login"],
+                    github_user=assignee_login or "unknown",
                     event_type="issue_assigned",
                     repo=repo,
                     created_at=assigned_at,
