@@ -153,9 +153,13 @@ class DiscordApiAdapter:
             return None
 
         if response.status_code == 429:
+            try:
+                body = response.json()
+            except Exception:
+                body = {}
             self._logger.warning(
                 "Discord rate limit reached; stopping",
-                extra={"path": path, "retry_after": response.json().get("retry_after")},
+                extra={"path": path, "retry_after": body.get("retry_after")},
             )
             return None
 

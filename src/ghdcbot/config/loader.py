@@ -29,6 +29,9 @@ def load_config(path: str) -> BotConfig:
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to parse YAML: {exc}") from exc
 
+    if raw is None:
+        raise ConfigError("Config file is empty")
+
     try:
         expanded = _expand_env_vars(raw)
         config = BotConfig.model_validate(expanded)
