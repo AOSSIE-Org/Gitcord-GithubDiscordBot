@@ -136,7 +136,7 @@ class GitHubRestAdapter:
                 if "pull_request" in issue:
                     continue
                 issue_numbers.append(issue["number"])
-                issue_events.extend(self._issue_events(repo, issue, since))
+                issue_events.extend(self._issue_events(owner, repo, issue, since))
         return issue_events, issue_numbers
 
     def _collect_pull_request_events(
@@ -322,7 +322,7 @@ class GitHubRestAdapter:
         return comment_events
 
     def _issue_events(
-        self, repo: str, issue: dict, since: datetime
+        self, owner: str, repo: str, issue: dict, since: datetime
     ) -> Iterable[ContributionEvent]:
         issue_user = issue.get("user") or {}
         issue_author = issue_user.get("login") or "unknown"
@@ -345,17 +345,42 @@ class GitHubRestAdapter:
                 created_at=closed_at,
                 payload=_issue_payload(issue),
             )
-        for assignee in issue.get("assignees") or []:
-            assigned_at = _parse_iso8601(issue.get("updated_at"))
-            if assigned_at and assigned_at >= since:
-                assignee_login = (assignee or {}).get("login") if isinstance(assignee, dict) else None
-                yield ContributionEvent(
-                    github_user=assignee_login or "unknown",
-                    event_type="issue_assigned",
-                    repo=repo,
-                    created_at=assigned_at,
-                    payload=_issue_payload(issue),
-                )
+        yield from self._issue_assignment_events(owner, repo, issue, since)
+
+    def _issue_assignment_events(
+        self, owner: str, repo: str, issue: dict, since: datetime
+    ) -> Iterable[ContributionEvent]:
+        """Fetch issue timeline events for 'assigned' and emit ContributionEvent for each."""
+        issue_number = issue.get("number")
+        if not issue_number:
+            return
+        try:
+            params = {"per_page": 100}
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
+            ):
+                for event in page:
+                    if event.get("event") != "assigned":
+                        continue
+                    created_at = _parse_iso8601(event.get("created_at"))
+                    if not created_at or created_at < since:
+                        continue
+                    assignee = event.get("assignee")
+                    if not assignee or not isinstance(assignee, dict):
+                        continue
+                    assignee_login = assignee.get("login")
+                    if not assignee_login:
+                        continue
+                    yield ContributionEvent(
+                        github_user=assignee_login,
+                        event_type="issue_assigned",
+                        repo=repo,
+                        created_at=created_at,
+                        payload=_issue_payload(issue),
+                    )
+        except Exception:
+            # If timeline call fails, omit assignment events to avoid wrong timestamps
+            pass
 
     def _list_repo_open_issues(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
@@ -450,7 +475,6 @@ class GitHubRestAdapter:
                     else None,
                 },
             )
-            return None
 
         if response.status_code == 403:
             self._log_permission_issue(path, response)
@@ -480,7 +504,6 @@ class GitHubRestAdapter:
                     else None,
                 },
             )
-            return None
 
         if response.status_code in {401, 403}:
             self._log_permission_issue(path, response)
