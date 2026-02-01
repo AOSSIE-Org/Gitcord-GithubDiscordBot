@@ -1,3 +1,8 @@
+## critical
+config.yaml
+
+
+
 ## Core latex/pdflatex auxiliary files:
 *.aux
 *.lof
@@ -11,6 +16,7 @@
 *.cb
 *.cb2
 .*.lb
+venv/
 
 ## Intermediate documents:
 *.dvi
