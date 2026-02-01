@@ -70,7 +70,7 @@ def test_readme_setup_run_once_completes_and_writes_reports(
     config_path = tmp_path / "ghdcbot-config.yaml"
     config_path.write_text(config_content)
 
-    config = load_config(str(config_path))
+    load_config(str(config_path))
     orchestrator = build_orchestrator(str(config_path))
 
     try:
