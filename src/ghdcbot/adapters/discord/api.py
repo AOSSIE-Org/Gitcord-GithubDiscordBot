@@ -246,7 +246,7 @@ class DiscordApiAdapter:
                     else None,
                 },
             )
-            return None
+        return response
 
         return response
 
