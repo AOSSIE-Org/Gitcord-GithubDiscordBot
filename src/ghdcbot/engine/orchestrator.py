@@ -38,6 +38,8 @@ class Orchestrator:
         period_end = datetime.now(timezone.utc)
         period_start = period_end - timedelta(days=self.config.scoring.period_days)
 
+        identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
+
         cursor = self.storage.get_cursor("github") or period_start
         contributions = list(self.github_reader.list_contributions(cursor))
         stored = self.storage.record_contributions(contributions)
@@ -55,7 +57,7 @@ class Orchestrator:
         logger.info("Computed scores", extra={"count": len(scores)})
 
         member_roles = self.discord_reader.list_member_roles()
-        role_to_github = build_role_to_github_map(self.config.identity_mappings, member_roles)
+        role_to_github = build_role_to_github_map(identity_mappings, member_roles)
 
         assignment = RoleBasedAssignmentStrategy(
             role_to_github_users=role_to_github,
@@ -85,7 +87,7 @@ class Orchestrator:
                 discord_plans = plan_discord_roles(
                     member_roles,
                     scores,
-                    self.config.identity_mappings,
+                    identity_mappings,
                     self.config.role_mappings,
                 )
                 github_plans = _to_github_assignment_plans(issue_plans, review_plans)
@@ -114,7 +116,7 @@ class Orchestrator:
             self.discord_writer,
             member_roles,
             scores,
-            self.config.identity_mappings,
+            identity_mappings,
             self.config.role_mappings,
             policy,
         )
@@ -136,6 +138,26 @@ def build_role_to_github_map(
         for role in roles:
             role_to_github[role].append(mapping.github_user)
     return role_to_github
+
+
+def _resolve_identity_mappings(
+    storage: Storage,
+    config_identity_mappings: Iterable[IdentityMapping],
+) -> list[IdentityMapping]:
+    """Prefer verified identity mappings from storage when available.
+
+    This keeps legacy config-based mappings working, while enabling Phase-1
+    verification-based linking without requiring config edits.
+    """
+    getter = getattr(storage, "list_verified_identity_mappings", None)
+    if callable(getter):
+        try:
+            verified = list(getter())
+        except Exception:  # noqa: BLE001
+            verified = []
+        if verified:
+            return verified
+    return list(config_identity_mappings)
 
 
 def apply_github_plans(

@@ -92,16 +92,80 @@ class DiscordApiAdapter:
         return roles
 
     def add_role(self, discord_user_id: str, role_name: str) -> None:
-        self._logger.info(
-            "Discord role assignment stub",
-            extra={"user_id": discord_user_id, "role": role_name},
-        )
+        """Assign a role to a guild member. Calls Discord API unless request fails."""
+        role_id = self._resolve_role_id(role_name)
+        if role_id is None:
+            self._logger.warning(
+                "Discord role not found; cannot add",
+                extra={"user_id": discord_user_id, "role": role_name},
+            )
+            return
+        path = f"/guilds/{self._guild_id}/members/{discord_user_id}/roles/{role_id}"
+        try:
+            response = self._client.request("PUT", path)
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord add role failed",
+                extra={"user_id": discord_user_id, "role": role_name, "error": str(exc)},
+            )
+            return
+        if response.status_code in (200, 204):
+            self._logger.info(
+                "Discord role added",
+                extra={"user_id": discord_user_id, "role": role_name},
+            )
+        else:
+            self._logger.warning(
+                "Discord add role failed",
+                extra={
+                    "user_id": discord_user_id,
+                    "role": role_name,
+                    "status_code": response.status_code,
+                },
+            )
 
     def remove_role(self, discord_user_id: str, role_name: str) -> None:
-        self._logger.info(
-            "Discord role removal stub",
-            extra={"user_id": discord_user_id, "role": role_name},
-        )
+        """Remove a role from a guild member. Calls Discord API unless request fails."""
+        role_id = self._resolve_role_id(role_name)
+        if role_id is None:
+            self._logger.warning(
+                "Discord role not found; cannot remove",
+                extra={"user_id": discord_user_id, "role": role_name},
+            )
+            return
+        path = f"/guilds/{self._guild_id}/members/{discord_user_id}/roles/{role_id}"
+        try:
+            response = self._client.request("DELETE", path)
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord remove role failed",
+                extra={"user_id": discord_user_id, "role": role_name, "error": str(exc)},
+            )
+            return
+        if response.status_code in (200, 204):
+            self._logger.info(
+                "Discord role removed",
+                extra={"user_id": discord_user_id, "role": role_name},
+            )
+        else:
+            self._logger.warning(
+                "Discord remove role failed",
+                extra={
+                    "user_id": discord_user_id,
+                    "role": role_name,
+                    "status_code": response.status_code,
+                },
+            )
+
+    def _resolve_role_id(self, role_name: str) -> str | None:
+        """Resolve role name to Discord role ID. Returns None if not found."""
+        roles, ok = self._list_roles()
+        if not ok:
+            return None
+        for role in roles:
+            if role.get("name") == role_name:
+                return role["id"]
+        return None
 
     def _list_roles(self) -> tuple[list[dict], bool]:
         response = self._request("GET", f"/guilds/{self._guild_id}/roles")

@@ -15,15 +15,15 @@ github:
     write: false
   user_fallback: false
 
-  # Optional repo filtering
-  # repos:
-  #   mode: "allow"
-  #   names:
-  #     - "repo-a"
-  #     - "repo-b"
+# Optional repo filtering
+# repos:
+#   mode: "allow"
+#   names:
+#     - "repo-a"
+#     - "repo-b"
 
 discord:
-  guild_id: "YOUR_GUILD_ID_HERE"
+  guild_id: "000000000000000000"
   token: "${DISCORD_TOKEN}"
   permissions:
     read: true

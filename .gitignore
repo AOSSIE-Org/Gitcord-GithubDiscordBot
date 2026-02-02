@@ -3,11 +3,8 @@
 !.env.example
 .venv/
 __pycache__/
-.pytest_cache/
-.ruff_cache/
-*.pyc
-*.pyo
+*.sqlite
 *.db
-state.db
-logs/
-cache/
+.pytest_cache/
+/tmp/
+

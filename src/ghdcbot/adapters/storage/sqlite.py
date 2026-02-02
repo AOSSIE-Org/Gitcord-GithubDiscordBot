@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 
@@ -43,6 +44,20 @@ class SqliteStorage:
                     source TEXT PRIMARY KEY,
                     cursor TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS identity_links (
+                    discord_user_id TEXT NOT NULL,
+                    github_user TEXT NOT NULL,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    verification_code TEXT,
+                    expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    PRIMARY KEY (discord_user_id, github_user)
+                );
+                CREATE INDEX IF NOT EXISTS idx_identity_links_github_user
+                    ON identity_links (github_user);
+                CREATE INDEX IF NOT EXISTS idx_identity_links_verified
+                    ON identity_links (verified);
                 """
             )
 
@@ -208,6 +223,145 @@ class SqliteStorage:
                 """,
                 (source, cursor_utc.isoformat()),
             )
+
+    def create_identity_claim(
+        self,
+        discord_user_id: str,
+        github_user: str,
+        verification_code: str,
+        expires_at: datetime,
+    ) -> None:
+        """Create or refresh an identity claim for (discord_user_id, github_user).
+
+        Impersonation protection:
+        - If github_user is already verified for a different discord_user_id, reject.
+        - If an unexpired claim exists for github_user under a different discord_user_id, reject.
+        - If an expired claim exists for github_user under a different discord_user_id, replace it.
+        """
+        now = datetime.now(timezone.utc)
+        expires_utc = _ensure_utc(expires_at)
+        with self._connect() as conn:
+            # Verified github_user owned by someone else -> reject
+            row = conn.execute(
+                """
+                SELECT discord_user_id
+                FROM identity_links
+                WHERE github_user = ? AND verified = 1
+                """,
+                (github_user,),
+            ).fetchone()
+            if row and row["discord_user_id"] != discord_user_id:
+                raise ValueError("github_user is already verified for another Discord user")
+
+            # Pending claim for same github_user by someone else
+            row = conn.execute(
+                """
+                SELECT discord_user_id, expires_at
+                FROM identity_links
+                WHERE github_user = ? AND verified = 0
+                """,
+                (github_user,),
+            ).fetchone()
+            if row and row["discord_user_id"] != discord_user_id:
+                existing_expires = row["expires_at"]
+                if existing_expires:
+                    existing_dt = _parse_utc(existing_expires)
+                    if existing_dt > now:
+                        raise ValueError("github_user has an active pending claim by another Discord user")
+                # Expired claim: remove and allow replacement
+                conn.execute(
+                    "DELETE FROM identity_links WHERE github_user = ? AND verified = 0",
+                    (github_user,),
+                )
+
+            # Enforce one verified mapping per discord user (prevent accidental multi-link)
+            row = conn.execute(
+                """
+                SELECT github_user, verified
+                FROM identity_links
+                WHERE discord_user_id = ? AND github_user = ?
+                """,
+                (discord_user_id, github_user),
+            ).fetchone()
+            if row and int(row["verified"] or 0) == 1:
+                raise ValueError("This Discord user and GitHub user are already verified; cannot create a new claim")
+
+            row = conn.execute(
+                """
+                SELECT github_user
+                FROM identity_links
+                WHERE discord_user_id = ? AND verified = 1
+                """,
+                (discord_user_id,),
+            ).fetchone()
+            if row and row["github_user"] != github_user:
+                raise ValueError("discord_user_id is already verified for another GitHub user")
+
+            conn.execute(
+                """
+                INSERT INTO identity_links (
+                    discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                )
+                VALUES (?, ?, 0, ?, ?, ?, NULL)
+                ON CONFLICT(discord_user_id, github_user)
+                DO UPDATE SET
+                    verified = 0,
+                    verification_code = excluded.verification_code,
+                    expires_at = excluded.expires_at,
+                    created_at = excluded.created_at,
+                    verified_at = NULL
+                """,
+                (
+                    discord_user_id,
+                    github_user,
+                    verification_code,
+                    expires_utc.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+
+    def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                FROM identity_links
+                WHERE discord_user_id = ? AND github_user = ?
+                """,
+                (discord_user_id, github_user),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def mark_identity_verified(self, discord_user_id: str, github_user: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE identity_links
+                SET verified = 1,
+                    verified_at = ?,
+                    verification_code = NULL,
+                    expires_at = NULL
+                WHERE discord_user_id = ? AND github_user = ?
+                """,
+                (now, discord_user_id, github_user),
+            )
+
+    def list_verified_identity_mappings(self) -> list[IdentityMapping]:
+        """Return verified identity mappings for engine usage."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT discord_user_id, github_user
+                FROM identity_links
+                WHERE verified = 1
+                ORDER BY discord_user_id ASC
+                """
+            ).fetchall()
+        return [
+            IdentityMapping(github_user=row["github_user"], discord_user_id=row["discord_user_id"])
+            for row in rows
+        ]
 
 
 def _ensure_utc(value: datetime) -> datetime:

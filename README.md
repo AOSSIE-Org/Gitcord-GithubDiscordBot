@@ -169,6 +169,15 @@ Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
 <data_dir>/reports/audit.md
 ```
 
+#### 5. Testing in Discord
+
+1. **Invite the bot** to your Discord server using a URL with scopes `bot` and permissions `Manage Roles`, and optionally `View Channels` / `Read Message History` if you use them. The bot must be in the server to read members and roles (and to apply role changes).
+2. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
+3. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
+   - `runtime.mode: "active"`
+   - `discord.permissions.write: true`
+   Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
+
 ---
 
 ## 📱 App Screenshots

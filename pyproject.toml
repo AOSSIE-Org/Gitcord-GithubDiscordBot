@@ -14,6 +14,7 @@ dependencies = [
   "httpx>=0.26",
   "tenacity>=8.2",
   "python-dotenv>=1.0",
+  "discord.py>=2.0",
 ]
 
 [project.scripts]
