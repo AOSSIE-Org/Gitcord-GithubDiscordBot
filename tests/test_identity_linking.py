@@ -81,7 +81,7 @@ def test_verify_marks_mapping_verified_and_clears_code(tmp_path: Path) -> None:
     storage.init_schema()
 
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
-    claim = svc.create_claim("d1", "octocat")
+    svc.create_claim("d1", "octocat")
     ok, location = svc.verify_claim("d1", "octocat")
     assert ok is True
     assert location == "bio"
