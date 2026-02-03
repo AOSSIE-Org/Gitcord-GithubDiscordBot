@@ -8,9 +8,17 @@ from pathlib import Path
 from typing import Sequence
 
 from ghdcbot.config.models import BotConfig
-from ghdcbot.core.models import ContributionSummary, DiscordRolePlan, GitHubAssignmentPlan
+from ghdcbot.core.models import (
+    ContributionEvent,
+    ContributionSummary,
+    DiscordRolePlan,
+    GitHubAssignmentPlan,
+)
 
 logger = logging.getLogger("Reporting")
+
+# Event types included in the activity feed (read-only mentor visibility)
+_ACTIVITY_FEED_EVENT_TYPES = frozenset({"pr_opened", "pr_merged", "issue_opened", "issue_closed"})
 
 
 def write_reports(
@@ -194,3 +202,89 @@ def _discord_key(plan: DiscordRolePlan) -> tuple:
 
 def _github_key(plan: GitHubAssignmentPlan) -> tuple:
     return (plan.repo, plan.target_type, plan.target_number, plan.action, plan.assignee)
+
+
+def build_activity_feed_markdown(
+    events: Sequence[ContributionEvent],
+    period_start: datetime,
+    period_end: datetime,
+    org: str,
+) -> str:
+    """Build a read-only, repo-wise activity feed for mentor visibility.
+
+    Includes only pr_opened, pr_merged, issue_opened, issue_closed.
+    Events must already be filtered to [period_start, period_end].
+    """
+    period_days = max(1, (period_end - period_start).days)
+    lines = [
+        "# Activity Feed (read-only)",
+        f"Period: last {period_days} days (through {period_end.date().isoformat()} UTC).",
+        "",
+    ]
+    # Filter to feed event types and to period
+    feed_events = [
+        e
+        for e in events
+        if e.event_type in _ACTIVITY_FEED_EVENT_TYPES
+        and period_start <= e.created_at <= period_end
+    ]
+    if not feed_events:
+        lines.append("No PR or issue activity in this period.")
+        return "\n".join(lines)
+
+    # Group by repo
+    by_repo: dict[str, list[ContributionEvent]] = {}
+    for e in feed_events:
+        by_repo.setdefault(e.repo, []).append(e)
+    base = f"https://github.com/{org}"
+    for repo in sorted(by_repo.keys()):
+        repo_events = sorted(by_repo[repo], key=lambda x: (x.created_at, x.event_type))
+        pr_opened = [e for e in repo_events if e.event_type == "pr_opened"]
+        pr_merged = [e for e in repo_events if e.event_type == "pr_merged"]
+        issue_opened = [e for e in repo_events if e.event_type == "issue_opened"]
+        issue_closed = [e for e in repo_events if e.event_type == "issue_closed"]
+        lines.append(f"## {repo}")
+        if pr_opened:
+            lines.append(f"### PRs opened ({len(pr_opened)})")
+            for e in pr_opened:
+                num = e.payload.get("pr_number", "?")
+                title = (e.payload.get("title") or "No title")[:60]
+                lines.append(f"- #{num} **{title}** — {e.github_user} — {base}/{repo}/pull/{num}")
+        if pr_merged:
+            lines.append(f"### PRs merged ({len(pr_merged)})")
+            for e in pr_merged:
+                num = e.payload.get("pr_number", "?")
+                title = (e.payload.get("title") or "No title")[:60]
+                lines.append(f"- #{num} **{title}** — {e.github_user} — {base}/{repo}/pull/{num}")
+        if issue_opened:
+            lines.append(f"### Issues opened ({len(issue_opened)})")
+            for e in issue_opened:
+                num = e.payload.get("issue_number", "?")
+                title = (e.payload.get("title") or "No title")[:60]
+                lines.append(f"- #{num} **{title}** — {e.github_user} — {base}/{repo}/issues/{num}")
+        if issue_closed:
+            lines.append(f"### Issues closed ({len(issue_closed)})")
+            for e in issue_closed:
+                num = e.payload.get("issue_number", "?")
+                title = (e.payload.get("title") or "No title")[:60]
+                lines.append(f"- #{num} **{title}** — {e.github_user} — {base}/{repo}/issues/{num}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def write_activity_report(
+    events: Sequence[ContributionEvent],
+    period_start: datetime,
+    period_end: datetime,
+    config: BotConfig,
+) -> tuple[Path, str]:
+    """Write activity feed to data_dir/reports/activity.md. Returns (path, markdown)."""
+    report_dir = Path(config.runtime.data_dir) / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    activity_path = report_dir / "activity.md"
+    org = config.github.org
+    markdown = build_activity_feed_markdown(events, period_start, period_end, org)
+    activity_path.write_text(markdown, encoding="utf-8")
+    logger.info("Activity report written", extra={"path": str(activity_path)})
+    return activity_path, markdown

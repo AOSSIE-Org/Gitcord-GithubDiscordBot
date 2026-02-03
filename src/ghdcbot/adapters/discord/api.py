@@ -157,6 +157,31 @@ class DiscordApiAdapter:
                 },
             )
 
+    def send_message(self, channel_id: str, content: str) -> bool:
+        """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
+        if not content:
+            return True
+        text = content[:2000]
+        try:
+            response = self._client.request(
+                "POST",
+                f"/channels/{channel_id}/messages",
+                json={"content": text},
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord send_message failed",
+                extra={"channel_id": channel_id, "error": str(exc)},
+            )
+            return False
+        if response.status_code not in (200, 201):
+            self._logger.warning(
+                "Discord send_message failed",
+                extra={"channel_id": channel_id, "status_code": response.status_code},
+            )
+            return False
+        return True
+
     def _resolve_role_id(self, role_name: str) -> str | None:
         """Resolve role name to Discord role ID. Returns None if not found."""
         roles, ok = self._list_roles()

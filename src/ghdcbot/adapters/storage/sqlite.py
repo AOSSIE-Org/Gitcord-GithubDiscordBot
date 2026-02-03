@@ -366,6 +366,33 @@ class SqliteStorage:
             for row in rows
         ]
 
+    def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
+        """Return all identity link rows for a Discord user (verified and pending).
+        Optional method; not part of the Storage protocol. Used for /verify and /status.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                FROM identity_links
+                WHERE discord_user_id = ?
+                ORDER BY verified DESC, created_at DESC
+                """,
+                (discord_user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def append_audit_event(self, event: dict) -> None:
+        """Append a single audit event (append-only) to data_dir/audit_events.jsonl.
+        Optional method; not part of the Storage protocol.
+        """
+        path = self._db_path.parent / "audit_events.jsonl"
+        payload = dict(event)
+        if "timestamp" not in payload:
+            payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+        line = json.dumps(payload, separators=(",", ":")) + "\n"
+        path.open("a", encoding="utf-8").write(line)
+
 
 def _ensure_utc(value: datetime) -> datetime:
     """Normalize timestamps to UTC with tzinfo for safe SQLite ordering."""

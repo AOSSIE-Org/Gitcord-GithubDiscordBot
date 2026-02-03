@@ -18,7 +18,7 @@ from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.planning import plan_discord_roles
-from ghdcbot.engine.reporting import write_reports
+from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.scoring import WeightedScoreStrategy
 
 
@@ -108,6 +108,35 @@ class Orchestrator:
                     "Audit reports written to %s",
                     str(json_path.parent),
                 )
+                # Read-only activity feed (mentor visibility): PR/issue events per repo
+                events_in_period = [
+                    e for e in recent
+                    if period_start <= e.created_at <= period_end
+                ]
+                _activity_path, activity_md = write_activity_report(
+                    events_in_period, period_start, period_end, self.config
+                )
+                append_audit = getattr(self.storage, "append_audit_event", None)
+                if callable(append_audit):
+                    append_audit({
+                        "actor_type": "system",
+                        "actor_id": "",
+                        "event_type": "report_generated",
+                        "context": {
+                            "org": self.config.github.org,
+                            "mode": policy.mode.value,
+                            "report_dir": str(_activity_path.parent),
+                        },
+                    })
+                # Optional: post short summary to Discord if configured
+                activity_channel_id = getattr(
+                    self.config.discord, "activity_channel_id", None
+                )
+                if activity_channel_id and activity_md:
+                    send_msg = getattr(self.discord_writer, "send_message", None)
+                    if callable(send_msg):
+                        summary = activity_md[:1900] + ("..." if len(activity_md) > 1900 else "")
+                        send_msg(activity_channel_id, summary)
             except Exception as exc:
                 logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 

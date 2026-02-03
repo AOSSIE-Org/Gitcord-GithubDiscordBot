@@ -58,6 +58,8 @@ class DiscordConfig(BaseModel):
     guild_id: str
     token: str
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
+    # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
+    activity_channel_id: str | None = None
 
 
 class ScoringConfig(BaseModel):

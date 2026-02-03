@@ -48,6 +48,14 @@ class IdentityLinkService:
             verification_code=code,
             expires_at=expires_at,
         )
+        append_audit = getattr(self._storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit({
+                "actor_type": "discord_user",
+                "actor_id": discord_user_id,
+                "event_type": "identity_claim_created",
+                "context": {"github_user": github_user, "expires_at": expires_at.isoformat()},
+            })
         self._logger.info(
             "Created identity claim",
             extra={
@@ -82,6 +90,14 @@ class IdentityLinkService:
 
         now = datetime.now(timezone.utc)
         if expires_at <= now:
+            append_audit = getattr(self._storage, "append_audit_event", None)
+            if callable(append_audit):
+                append_audit({
+                    "actor_type": "discord_user",
+                    "actor_id": discord_user_id,
+                    "event_type": "identity_verification_expired",
+                    "context": {"github_user": github_user},
+                })
             self._logger.info(
                 "Identity claim expired",
                 extra={"discord_user_id": discord_user_id, "github_user": github_user},
@@ -90,6 +106,14 @@ class IdentityLinkService:
 
         match: VerificationMatch = self._github.search_verification_code(github_user, code)
         if not match.found:
+            append_audit = getattr(self._storage, "append_audit_event", None)
+            if callable(append_audit):
+                append_audit({
+                    "actor_type": "discord_user",
+                    "actor_id": discord_user_id,
+                    "event_type": "identity_verification_not_found",
+                    "context": {"github_user": github_user},
+                })
             self._logger.info(
                 "Identity verification not found yet",
                 extra={"discord_user_id": discord_user_id, "github_user": github_user},
@@ -97,6 +121,14 @@ class IdentityLinkService:
             return False, None
 
         self._storage.mark_identity_verified(discord_user_id, github_user)
+        append_audit = getattr(self._storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit({
+                "actor_type": "discord_user",
+                "actor_id": discord_user_id,
+                "event_type": "identity_verified",
+                "context": {"github_user": github_user, "location": match.location},
+            })
         self._logger.info(
             "Identity verified",
             extra={

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
+import json
 import logging
+from pathlib import Path
 
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import AdapterError, ConfigError
@@ -72,6 +76,9 @@ def main() -> None:
     verify_p.add_argument("--discord-user-id", required=True, help="Discord user ID (numeric)")
     verify_p.add_argument("github_user", help="GitHub username to verify")
     sub.add_parser("bot", help="Run Discord bot with /link and /verify-link slash commands")
+    export_p = sub.add_parser("export-audit", help="Export append-only audit events (JSON or CSV)")
+    export_p.add_argument("--format", choices=("json", "csv"), default="json", help="Output format")
+    export_p.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
 
     args = parser.parse_args()
     orchestrator = None
@@ -83,6 +90,39 @@ def main() -> None:
         elif args.command == "bot":
             from ghdcbot.bot import main as bot_main
             bot_main(args.config)
+        elif args.command == "export-audit":
+            config = load_config(args.config)
+            configure_logging(config.runtime.log_level)
+            path = Path(config.runtime.data_dir) / "audit_events.jsonl"
+            events = []
+            if path.exists():
+                with path.open(encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                events.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            if args.format == "json":
+                out = json.dumps(events, indent=2)
+            else:
+                buf = io.StringIO()
+                w = csv.writer(buf)
+                w.writerow(["timestamp", "actor_type", "actor_id", "event_type", "context"])
+                for e in events:
+                    w.writerow([
+                        e.get("timestamp", ""),
+                        e.get("actor_type", ""),
+                        e.get("actor_id", ""),
+                        e.get("event_type", ""),
+                        json.dumps(e.get("context", {}), separators=(",", ":")),
+                    ])
+                out = buf.getvalue()
+            if args.output:
+                Path(args.output).write_text(out, encoding="utf-8")
+            else:
+                print(out)
         elif args.command in {"link", "verify-link"}:
             config = load_config(args.config)
             configure_logging(config.runtime.log_level)

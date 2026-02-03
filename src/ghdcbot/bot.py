@@ -1,23 +1,29 @@
-"""Discord bot for identity linking via slash commands."""
+"""Discord bot for identity linking and informational slash commands."""
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
 
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
-from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.engine.identity_linking import IdentityLinkService
+from ghdcbot.engine.metrics import (
+    format_metrics_summary,
+    get_contribution_metrics,
+    get_rank_for_user,
+    rank_by_activity,
+)
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
 
 
 def run_bot(config_path: str) -> None:
-    """Run the Discord bot with /link and /verify-link slash commands."""
+    """Run the Discord bot with /link, /verify-link, /verify, /status, and /summary."""
     config = load_config(config_path)
     configure_logging(config.runtime.log_level)
     logger = logging.getLogger("ghdcbot.bot")
@@ -32,6 +38,11 @@ def run_bot(config_path: str) -> None:
         api_base=str(config.github.api_base),
     )
     service = IdentityLinkService(storage=storage, github_identity=github_identity)
+    discord_reader = build_adapter(
+        config.runtime.discord_adapter,
+        token=config.discord.token,
+        guild_id=config.discord.guild_id,
+    )
 
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
@@ -102,6 +113,122 @@ def run_bot(config_path: str) -> None:
                     "Code not found yet. Add the code to your GitHub bio or a public gist, then run `/verify-link` again.",
                     ephemeral=True,
                 )
+
+    @tree.command(
+        name="verify",
+        description="Show your GitHub link verification status (read-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    async def verify_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        get_links = getattr(storage, "get_identity_links_for_discord_user", None)
+        if callable(get_links):
+            links = get_links(discord_user_id)
+        else:
+            links = []
+            verified = getattr(storage, "list_verified_identity_mappings", None)
+            if callable(verified):
+                for m in verified():
+                    if m.discord_user_id == discord_user_id:
+                        links.append({"github_user": m.github_user, "verified": 1})
+                        break
+        if not links:
+            await interaction.followup.send(
+                "Not linked. Use `/link` to start.",
+                ephemeral=True,
+            )
+            return
+        verified_row = next((r for r in links if int(r.get("verified") or 0) == 1), None)
+        pending = [r for r in links if int(r.get("verified") or 0) == 0]
+        if verified_row:
+            await interaction.followup.send(
+                f"Linked to GitHub: **{verified_row.get('github_user', '?')}**.",
+                ephemeral=True,
+            )
+        elif pending:
+            p = pending[0]
+            exp = p.get("expires_at") or "—"
+            await interaction.followup.send(
+                f"Pending: link to **{p.get('github_user', '?')}** (expires: {exp}). Run `/verify-link` to complete.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "Not linked. Use `/link` to start.",
+                ephemeral=True,
+            )
+
+    @tree.command(
+        name="status",
+        description="Show verification state, activity window, and your roles (read-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    async def status_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        period_days = config.scoring.period_days
+        lines = [f"**Activity window:** last {period_days} days (from bot config)."]
+        get_links = getattr(storage, "get_identity_links_for_discord_user", None)
+        if callable(get_links):
+            links = get_links(discord_user_id)
+            verified_row = next((r for r in links if int(r.get("verified") or 0) == 1), None)
+            if verified_row:
+                lines.append(f"**Linked GitHub:** {verified_row.get('github_user', '?')}.")
+            else:
+                lines.append("**Linked GitHub:** not linked.")
+        else:
+            lines.append("**Linked GitHub:** (link status unavailable).")
+        member_roles = discord_reader.list_member_roles()
+        my_roles = member_roles.get(discord_user_id, [])
+        if my_roles:
+            lines.append(f"**Your roles:** {', '.join(my_roles)}.")
+        else:
+            lines.append("**Your roles:** (none or unable to read).")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @tree.command(
+        name="summary",
+        description="Show your contribution metrics summary (last 7 and 30 days; read-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    async def summary_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        get_links = getattr(storage, "get_identity_links_for_discord_user", None)
+        if not callable(get_links):
+            await interaction.followup.send(
+                "Link status unavailable. Use `/link` to link your GitHub account.",
+                ephemeral=True,
+            )
+            return
+        links = get_links(discord_user_id)
+        verified_row = next((r for r in links if int(r.get("verified") or 0) == 1), None)
+        if not verified_row:
+            await interaction.followup.send(
+                "Link your account with `/link` and `/verify-link` to see your summary.",
+                ephemeral=True,
+            )
+            return
+        github_user = verified_row.get("github_user", "")
+        if not github_user:
+            await interaction.followup.send("Linked user unknown.", ephemeral=True)
+            return
+        now = datetime.now(timezone.utc)
+        weights = getattr(config.scoring, "weights", None) or {}
+        parts = []
+        for days in (7, 30):
+            start = now - timedelta(days=days)
+            metrics_list = get_contribution_metrics(storage, start, now, weights)
+            user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
+            parts.append(f"**Last {days} days:**\n{format_metrics_summary(user_metrics)}")
+        ranked_30 = rank_by_activity(
+            get_contribution_metrics(storage, now - timedelta(days=30), now, weights)
+        )
+        rank = get_rank_for_user(ranked_30, github_user)
+        if rank is not None:
+            parts.append(f"Top contributors by activity (last 30 days): you're #{rank}.")
+        await interaction.followup.send("\n\n".join(parts), ephemeral=True)
 
     @client.event
     async def on_ready() -> None:
