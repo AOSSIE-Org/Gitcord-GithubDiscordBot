@@ -39,9 +39,9 @@ class IdentityLinkService:
         # Ensure schema exists for identity_links before writing.
         try:
             self._storage.init_schema()
-        except Exception:  # noqa: BLE001
-            # init_schema is idempotent; ignore failures here as they'll surface on insert.
-            pass
+        except Exception as e:  # noqa: BLE001
+            # init_schema is idempotent; failures will surface on insert if schema is missing.
+            self._logger.debug("init_schema call failed (will retry on insert)", extra={"error": str(e)})
         self._storage.create_identity_claim(
             discord_user_id=discord_user_id,
             github_user=github_user,
