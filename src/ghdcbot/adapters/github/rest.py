@@ -151,8 +151,6 @@ class GitHubRestAdapter:
         pr_events: list[ContributionEvent] = []
         pr_numbers: list[int] = []
         pr_opened_count = 0
-        # Track merged PRs to detect reverts
-        merged_prs: dict[int, dict] = {}  # pr_number -> pr data
         params = {"state": "all", "sort": "updated", "direction": "desc", "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/pulls", params=params):
             for pr in page:
