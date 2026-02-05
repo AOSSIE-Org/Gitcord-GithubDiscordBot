@@ -182,6 +182,56 @@ class DiscordApiAdapter:
             return False
         return True
 
+    def send_dm(self, discord_user_id: str, content: str) -> bool:
+        """Send a direct message to a user. Returns True on success, False on failure.
+        
+        Creates a DM channel if needed. Handles privacy settings gracefully.
+        """
+        if not content:
+            return True
+        text = content[:2000]
+        try:
+            # Create or get DM channel
+            response = self._client.request(
+                "POST",
+                "/users/@me/channels",
+                json={"recipient_id": discord_user_id},
+            )
+            if response.status_code not in (200, 201):
+                self._logger.warning(
+                    "Discord DM channel creation failed",
+                    extra={"user_id": discord_user_id, "status_code": response.status_code},
+                )
+                return False
+            channel_data = response.json()
+            channel_id = channel_data.get("id")
+            if not channel_id:
+                self._logger.warning(
+                    "Discord DM channel creation returned no channel ID",
+                    extra={"user_id": discord_user_id},
+                )
+                return False
+            
+            # Send message to DM channel
+            msg_response = self._client.request(
+                "POST",
+                f"/channels/{channel_id}/messages",
+                json={"content": text},
+            )
+            if msg_response.status_code not in (200, 201):
+                self._logger.warning(
+                    "Discord DM send failed",
+                    extra={"user_id": discord_user_id, "status_code": msg_response.status_code},
+                )
+                return False
+            return True
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord DM failed",
+                extra={"user_id": discord_user_id, "error": str(exc)},
+            )
+            return False
+
     def _resolve_role_id(self, role_name: str) -> str | None:
         """Resolve role name to Discord role ID. Returns None if not found."""
         roles, ok = self._list_roles()
@@ -271,8 +321,6 @@ class DiscordApiAdapter:
                     else None,
                 },
             )
-        return response
-
         return response
 
     def _log_capabilities(self, roles_ok: bool, members_ok: bool) -> None:

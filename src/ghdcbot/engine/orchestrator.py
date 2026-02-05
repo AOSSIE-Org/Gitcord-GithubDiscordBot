@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-from ghdcbot.config.models import BotConfig, IdentityMapping, RoleMappingConfig
+from ghdcbot.config.models import BotConfig, IdentityMapping, MergeRoleRulesConfig, RoleMappingConfig
 from ghdcbot.core.interfaces import (
     DiscordReader,
     DiscordWriter,
@@ -47,9 +47,18 @@ class Orchestrator:
         self.storage.set_cursor("github", last_seen)
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
+        quality_adjustments = None
+        if getattr(self.config.scoring, "quality_adjustments", None) is not None:
+            qa = self.config.scoring.quality_adjustments
+            quality_adjustments = {
+                "penalties": qa.penalties,
+                "bonuses": qa.bonuses,
+            }
         scoring = WeightedScoreStrategy(
             weights=self.config.scoring.weights,
             period_days=self.config.scoring.period_days,
+            difficulty_weights=getattr(self.config.scoring, "difficulty_weights", None),
+            quality_adjustments=quality_adjustments,
         )
         recent = self.storage.list_contributions(period_start)
         scores = scoring.compute_scores(recent, period_end)
@@ -84,18 +93,40 @@ class Orchestrator:
         if policy.mode in {RunMode.DRY_RUN, RunMode.OBSERVER}:
             # Generate audit reports before any mutations are attempted.
             try:
+                merge_role_rules = getattr(self.config, "merge_role_rules", None)
                 discord_plans = plan_discord_roles(
                     member_roles,
                     scores,
                     identity_mappings,
                     self.config.role_mappings,
+                    storage=self.storage,
+                    period_start=period_start,
+                    period_end=period_end,
+                    merge_role_rules=merge_role_rules,
                 )
                 github_plans = _to_github_assignment_plans(issue_plans, review_plans)
-                contribution_summaries = self.storage.list_contribution_summaries(
-                    period_start,
-                    period_end,
-                    self.config.scoring.weights,
-                )
+                # Pass difficulty_weights if available (optional parameter, backward compatible)
+                list_summaries = getattr(self.storage, "list_contribution_summaries", None)
+                if callable(list_summaries):
+                    difficulty_weights = getattr(self.config.scoring, "difficulty_weights", None)
+                    # Check if storage method accepts difficulty_weights (optional param)
+                    import inspect
+                    sig = inspect.signature(list_summaries)
+                    if "difficulty_weights" in sig.parameters:
+                        contribution_summaries = list_summaries(
+                            period_start,
+                            period_end,
+                            self.config.scoring.weights,
+                            difficulty_weights=difficulty_weights,
+                        )
+                    else:
+                        contribution_summaries = list_summaries(
+                            period_start,
+                            period_end,
+                            self.config.scoring.weights,
+                        )
+                else:
+                    contribution_summaries = []
                 repo_count = getattr(self.github_reader, "_last_repo_count", None)
                 json_path, _md_path = write_reports(
                     discord_plans,
@@ -141,6 +172,7 @@ class Orchestrator:
                 logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy)
+        merge_role_rules = getattr(self.config, "merge_role_rules", None)
         apply_discord_roles(
             self.discord_writer,
             member_roles,
@@ -148,6 +180,10 @@ class Orchestrator:
             identity_mappings,
             self.config.role_mappings,
             policy,
+            storage=self.storage,
+            period_start=period_start,
+            period_end=period_end,
+            merge_role_rules=merge_role_rules,
         )
 
     def close(self) -> None:
@@ -212,28 +248,127 @@ def apply_discord_roles(
     identity_mappings: Iterable[IdentityMapping],
     role_mappings: Iterable[RoleMappingConfig],
     policy: MutationPolicy,
+    storage: Storage | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    merge_role_rules: MergeRoleRulesConfig | None = None,
 ) -> None:
     logger = logging.getLogger("DiscordMutations")
     if not policy.allow_discord_mutations:
         logger.info("Discord mutations disabled", extra={"mode": policy.mode.value})
         return
 
+    from ghdcbot.engine.planning import count_merged_prs_per_user
+
     score_lookup = {score.github_user: score.points for score in scores}
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
     managed_roles = {mapping.discord_role for mapping in role_thresholds}
 
+    # Get merge-based role counts if enabled
+    merged_pr_counts: dict[str, int] = {}
+    if (
+        merge_role_rules
+        and merge_role_rules.enabled
+        and merge_role_rules.rules
+        and storage is not None
+        and period_start is not None
+        and period_end is not None
+    ):
+        merged_pr_counts = count_merged_prs_per_user(
+            storage, identity_mappings, period_start, period_end
+        )
+
     for mapping in identity_mappings:
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
         points = score_lookup.get(mapping.github_user, 0)
-        desired_roles = {
+        
+        # Score-based desired roles
+        score_desired = {
             mapping_cfg.discord_role
             for mapping_cfg in role_thresholds
             if points >= mapping_cfg.min_score
         }
-        for role in sorted(desired_roles - current_roles):
+        
+        # Merge-based desired roles (if enabled) - only highest eligible role
+        merge_desired: set[str] = set()
+        if (
+            merge_role_rules
+            and merge_role_rules.enabled
+            and merge_role_rules.rules
+        ):
+            merged_count = merged_pr_counts.get(mapping.github_user, 0)
+            # Find highest eligible role (deterministic: last in sorted rules)
+            eligible_merge_roles = [
+                rule.discord_role
+                for rule in merge_role_rules.rules
+                if merged_count >= rule.min_merged_prs
+            ]
+            # Highest eligible role is the last one (rules sorted by threshold ascending)
+            merge_desired = {eligible_merge_roles[-1]} if eligible_merge_roles else set()
+        
+        # Final desired roles = max(score_based, merge_based)
+        desired_roles = score_desired | merge_desired
+        
+        # Track newly added roles for congratulatory messages
+        newly_added_roles = sorted(desired_roles - current_roles)
+        
+        for role in newly_added_roles:
             discord_writer.add_role(mapping.discord_user_id, role)
-        for role in sorted((current_roles & managed_roles) - desired_roles):
+            # Send congratulatory message for newly assigned roles
+            _send_role_congratulation(
+                discord_writer=discord_writer,
+                discord_user_id=mapping.discord_user_id,
+                role_name=role,
+                policy=policy,
+            )
+        # Remove roles only if score-based system says so (merge-based is promotion-only)
+        for role in sorted((current_roles & managed_roles) - score_desired):
             discord_writer.remove_role(mapping.discord_user_id, role)
+
+
+def _send_role_congratulation(
+    discord_writer: DiscordWriter,
+    discord_user_id: str,
+    role_name: str,
+    policy: MutationPolicy,
+) -> None:
+    """Send a congratulatory DM to a user when they receive a new role.
+    
+    Only sends if mutations are allowed (active mode) and DM sending is available.
+    Fails gracefully if DM cannot be sent (privacy settings, etc.).
+    """
+    logger = logging.getLogger("DiscordMutations")
+    
+    # Only send in active mode (mutations allowed)
+    if not policy.allow_discord_mutations:
+        return
+    
+    # Check if discord_writer supports DM sending
+    send_dm = getattr(discord_writer, "send_dm", None)
+    if not callable(send_dm):
+        # DM sending not available (e.g., using DiscordPlanWriter)
+        return
+    
+    # Build congratulatory message
+    message = (
+        f"🎉 Congratulations!\n\n"
+        f"Hi <@{discord_user_id}>,\n\n"
+        f"Your recent merged pull request has earned you the **{role_name}** role in the server.\n\n"
+        f"Thank you for your contribution — keep building 🚀"
+    )
+    
+    # Send DM (fails gracefully if user has DMs disabled)
+    success = send_dm(discord_user_id, message)
+    if success:
+        logger.info(
+            "Sent congratulation message for role",
+            extra={"discord_user_id": discord_user_id, "role": role_name},
+        )
+    else:
+        logger.warning(
+            "Failed to send congratulation message (user may have DMs disabled)",
+            extra={"discord_user_id": discord_user_id, "role": role_name},
+        )
 
 
 def _to_github_assignment_plans(issue_plans, review_plans) -> list[GitHubAssignmentPlan]:

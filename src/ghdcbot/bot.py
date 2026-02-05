@@ -27,6 +27,11 @@ def run_bot(config_path: str) -> None:
     config = load_config(config_path)
     configure_logging(config.runtime.log_level)
     logger = logging.getLogger("ghdcbot.bot")
+    logger.info(
+        "Using config: %s → data_dir: %s (identity links persist here)",
+        config_path,
+        config.runtime.data_dir,
+    )
 
     storage = build_adapter(
         config.runtime.storage_adapter,
@@ -58,8 +63,11 @@ def run_bot(config_path: str) -> None:
     async def link_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
         discord_user_id = str(interaction.user.id)
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
         try:
-            claim = service.create_claim(discord_user_id, github_username)
+            claim = service.create_claim(discord_user_id, github_username, max_age_days=max_age_days)
         except ValueError as e:
             await interaction.followup.send(
                 f"Cannot create link: {e}",
@@ -142,10 +150,17 @@ def run_bot(config_path: str) -> None:
         verified_row = next((r for r in links if int(r.get("verified") or 0) == 1), None)
         pending = [r for r in links if int(r.get("verified") or 0) == 0]
         if verified_row:
-            await interaction.followup.send(
-                f"Linked to GitHub: **{verified_row.get('github_user', '?')}**.",
-                ephemeral=True,
-            )
+            msg = f"Linked to GitHub: **{verified_row.get('github_user', '?')}**."
+            # Check for stale status
+            get_status = getattr(storage, "get_identity_status", None)
+            if callable(get_status):
+                max_age_days = None
+                if getattr(config, "identity", None) is not None:
+                    max_age_days = getattr(config.identity, "verified_max_age_days", None)
+                status = get_status(discord_user_id, max_age_days=max_age_days)
+                if status.get("is_stale"):
+                    msg += "\n\n⚠️ **Warning:** Your identity verification is stale. Use `/verify-link` to refresh it."
+            await interaction.followup.send(msg, ephemeral=True)
         elif pending:
             p = pending[0]
             exp = p.get("expires_at") or "—"
@@ -175,6 +190,15 @@ def run_bot(config_path: str) -> None:
             verified_row = next((r for r in links if int(r.get("verified") or 0) == 1), None)
             if verified_row:
                 lines.append(f"**Linked GitHub:** {verified_row.get('github_user', '?')}.")
+                # Check for stale status
+                get_status = getattr(storage, "get_identity_status", None)
+                if callable(get_status):
+                    max_age_days = None
+                    if getattr(config, "identity", None) is not None:
+                        max_age_days = getattr(config.identity, "verified_max_age_days", None)
+                    status = get_status(discord_user_id, max_age_days=max_age_days)
+                    if status.get("is_stale"):
+                        lines.append("⚠️ **Warning:** Identity verification is stale. Use `/verify-link` to refresh.")
             else:
                 lines.append("**Linked GitHub:** not linked.")
         else:
@@ -214,6 +238,16 @@ def run_bot(config_path: str) -> None:
         if not github_user:
             await interaction.followup.send("Linked user unknown.", ephemeral=True)
             return
+        # Check for stale status
+        stale_warning = ""
+        get_status = getattr(storage, "get_identity_status", None)
+        if callable(get_status):
+            max_age_days = None
+            if getattr(config, "identity", None) is not None:
+                max_age_days = getattr(config.identity, "verified_max_age_days", None)
+            status = get_status(discord_user_id, max_age_days=max_age_days)
+            if status.get("is_stale"):
+                stale_warning = "\n\n⚠️ **Warning:** Identity verification is stale. Use `/verify-link` to refresh it."
         now = datetime.now(timezone.utc)
         weights = getattr(config.scoring, "weights", None) or {}
         parts = []
@@ -228,7 +262,79 @@ def run_bot(config_path: str) -> None:
         rank = get_rank_for_user(ranked_30, github_user)
         if rank is not None:
             parts.append(f"Top contributors by activity (last 30 days): you're #{rank}.")
-        await interaction.followup.send("\n\n".join(parts), ephemeral=True)
+        await interaction.followup.send("\n\n".join(parts) + stale_warning, ephemeral=True)
+
+    identity_group = app_commands.Group(
+        name="identity",
+        description="Identity linking status (read-only)",
+    )
+
+    @identity_group.command(
+        name="status",
+        description="Show your linked GitHub account and verification status (read-only)",
+    )
+    async def identity_status_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        get_status = getattr(storage, "get_identity_status", None)
+        if not callable(get_status):
+            await interaction.followup.send(
+                "Identity status is unavailable.",
+                ephemeral=True,
+            )
+            return
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
+        status = get_status(discord_user_id, max_age_days=max_age_days)
+        github_user = status.get("github_user") or "—"
+        st = status.get("status") or "not_linked"
+        if st == "verified":
+            status_label = "Verified ✅"
+        elif st == "verified_stale":
+            status_label = "Verified ⚠️ (Stale)"
+        elif st == "pending":
+            status_label = "Pending ⏳"
+        else:
+            status_label = "Not linked ❌"
+        verified_at = status.get("verified_at")
+        verified_at_str = verified_at if verified_at else "—"
+        if verified_at_str != "—":
+            try:
+                dt = datetime.fromisoformat(verified_at_str.replace("Z", "+00:00"))
+                verified_at_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except (ValueError, TypeError):
+                pass
+        msg = (
+            f"**GitHub user:** {github_user}\n"
+            f"**Status:** {status_label}\n"
+            f"**Verified at:** {verified_at_str}"
+        )
+        if status.get("is_stale"):
+            msg += "\n\n⚠️ **Warning:** Your identity verification is stale. Use `/verify-link` to refresh it."
+        await interaction.followup.send(msg, ephemeral=True)
+
+    tree.add_command(identity_group, guild=discord.Object(id=guild_id))
+
+    @tree.command(
+        name="unlink",
+        description="Unlink your verified GitHub identity (cooldown applies after verification)",
+        guild=discord.Object(id=guild_id),
+    )
+    async def unlink_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        cooldown = 24
+        if getattr(config, "identity", None) is not None:
+            cooldown = getattr(config.identity, "unlink_cooldown_hours", 24) or 24
+        try:
+            service.unlink(discord_user_id, cooldown)
+            await interaction.followup.send(
+                "Identity unlinked. You can use `/link` again to relink.",
+                ephemeral=True,
+            )
+        except ValueError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
 
     @client.event
     async def on_ready() -> None:

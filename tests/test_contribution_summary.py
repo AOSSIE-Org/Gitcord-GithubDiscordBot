@@ -67,10 +67,12 @@ def test_list_contribution_summaries_counts_and_scores(tmp_path) -> None:
     assert alice.prs_opened == 0
     assert alice.prs_reviewed == 1
     assert alice.comments == 0
-    assert alice.total_score == 5
+    # Merge-only scoring: alice has no merged PRs, so score is 0
+    assert alice.total_score == 0
 
     assert bob.issues_opened == 0
     assert bob.prs_opened == 1
     assert bob.prs_reviewed == 0
     assert bob.comments == 1
-    assert bob.total_score == 5
+    # Merge-only scoring: bob has 1 merged PR, so score is 4 (pr_merged weight)
+    assert bob.total_score == 4

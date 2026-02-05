@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, Sequence
@@ -85,6 +86,10 @@ class GitHubRestAdapter:
         pr_comment_events = list(
             self._ingest_pr_comments(owner, repo_name, pr_numbers, since)
         )
+        # Emit helpful_comment events for non-author comments
+        helpful_comment_events = list(
+            self._ingest_helpful_comments(owner, repo_name, issue_numbers, pr_numbers, since)
+        )
         self._logger.info(
             "Ingestion results",
             extra={
@@ -103,6 +108,7 @@ class GitHubRestAdapter:
         yield from issue_comment_events
         yield from pr_events
         yield from pr_comment_events
+        yield from helpful_comment_events
 
     def _list_repos(self) -> Sequence[dict]:
         repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
@@ -145,6 +151,8 @@ class GitHubRestAdapter:
         pr_events: list[ContributionEvent] = []
         pr_numbers: list[int] = []
         pr_opened_count = 0
+        # Track merged PRs to detect reverts
+        merged_prs: dict[int, dict] = {}  # pr_number -> pr data
         params = {"state": "all", "sort": "updated", "direction": "desc", "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/pulls", params=params):
             for pr in page:
@@ -171,24 +179,127 @@ class GitHubRestAdapter:
                     )
                     pr_opened_count += 1
                 merged_at = _parse_iso8601(pr.get("merged_at"))
-                if not merged_at or merged_at < since:
-                    continue
-                author = (pr.get("user") or {}).get("login") or "<deleted>"
-                pr_events.append(
-                    ContributionEvent(
-                        github_user=author,
-                        event_type="pr_merged",
-                        repo=repo,
-                        created_at=merged_at,
-                        payload={
-                            "pr_number": pr["number"],
-                            "title": pr.get("title"),
-                            "merged_at": pr.get("merged_at"),
-                        },
+                if merged_at and merged_at >= since:
+                    author = (pr.get("user") or {}).get("login") or "<deleted>"
+                    # Extract linked issue numbers and fetch difficulty labels
+                    pr_body = pr.get("body") or ""
+                    linked_issue_numbers = _extract_linked_issue_numbers(pr_body)
+                    difficulty_labels = []
+                    if linked_issue_numbers:
+                        difficulty_labels = self._fetch_issue_difficulty_labels(
+                            owner, repo, linked_issue_numbers
+                        )
+                    # Check CI status
+                    ci_failed = _check_pr_ci_status(pr, owner, repo, self._client)
+                    payload = {
+                        "pr_number": pr["number"],
+                        "title": pr.get("title"),
+                        "merged_at": pr.get("merged_at"),
+                    }
+                    if difficulty_labels:
+                        payload["difficulty_labels"] = difficulty_labels
+                    if ci_failed:
+                        payload["ci_failed"] = True
+                    pr_events.append(
+                        ContributionEvent(
+                            github_user=author,
+                            event_type="pr_merged",
+                            repo=repo,
+                            created_at=merged_at,
+                            payload=payload,
+                        )
                     )
-                )
+                    # Emit pr_merged_with_failed_ci if CI failed
+                    if ci_failed:
+                        pr_events.append(
+                            ContributionEvent(
+                                github_user=author,
+                                event_type="pr_merged_with_failed_ci",
+                                repo=repo,
+                                created_at=merged_at,
+                                payload={
+                                    "pr_number": pr["number"],
+                                    "merged_at": pr.get("merged_at"),
+                                },
+                            )
+                        )
+                # Check if this PR reverts another PR (whether merged or not)
+                reverted_pr_number = _detect_reverted_pr(pr, owner, repo, self._client)
+                if reverted_pr_number:
+                    # Fetch the reverted PR to check if it was merged
+                    try:
+                        revert_response = self._client.get(
+                            f"/repos/{owner}/{repo}/pulls/{reverted_pr_number}",
+                            headers={"Accept": "application/vnd.github+json"},
+                        )
+                        if revert_response.status_code == 200:
+                            reverted_pr = revert_response.json()
+                            reverted_merged_at = _parse_iso8601(reverted_pr.get("merged_at"))
+                            if reverted_merged_at and reverted_merged_at >= since:
+                                reverted_author = (reverted_pr.get("user") or {}).get("login") or "<deleted>"
+                                # Emit pr_reverted event for the original author
+                                pr_events.append(
+                                    ContributionEvent(
+                                        github_user=reverted_author,
+                                        event_type="pr_reverted",
+                                        repo=repo,
+                                        created_at=reverted_merged_at,  # Use original merge time
+                                        payload={
+                                            "pr_number": reverted_pr_number,
+                                            "reverted_by_pr": pr["number"],
+                                            "reverted_at": pr.get("created_at"),
+                                        },
+                                    )
+                                )
+                    except Exception:  # noqa: BLE001
+                        # Network errors, etc. - skip revert detection
+                        pass
                 pr_events.extend(self._pull_request_reviews(owner, repo, pr["number"], since))
         return pr_events, pr_numbers, pr_opened_count
+
+    def _fetch_issue_difficulty_labels(
+        self, owner: str, repo: str, issue_numbers: list[int]
+    ) -> list[str]:
+        """Fetch labels from linked issues and return difficulty labels only.
+        
+        Returns list of difficulty label names (case-normalized) found in any linked issue.
+        If an issue doesn't exist or API call fails, it's silently skipped.
+        """
+        difficulty_labels = []
+        for issue_number in issue_numbers:
+            try:
+                response = self._client.get(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}",
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                if response.status_code == 200:
+                    issue = response.json()
+                    labels = issue.get("labels", [])
+                    for label in labels:
+                        label_name = label.get("name", "").lower() if isinstance(label, dict) else str(label).lower()
+                        if label_name:
+                            difficulty_labels.append(label_name)
+                elif response.status_code == 404:
+                    # Issue doesn't exist or is a PR (which is fine, skip it)
+                    continue
+                # Other errors: log but don't fail
+                elif response.status_code not in (200, 404):
+                    self._logger.debug(
+                        "Failed to fetch issue labels",
+                        extra={
+                            "repo": f"{owner}/{repo}",
+                            "issue_number": issue_number,
+                            "status": response.status_code,
+                        },
+                    )
+            except Exception:  # noqa: BLE001
+                # Network errors, etc. - skip this issue
+                self._logger.debug(
+                    "Error fetching issue labels",
+                    extra={"repo": f"{owner}/{repo}", "issue_number": issue_number},
+                    exc_info=True,
+                )
+        return difficulty_labels
 
     def _pull_request_reviews(
         self, owner: str, repo: str, pr_number: int, since: datetime
@@ -320,6 +431,131 @@ class GitHubRestAdapter:
                 extra={"repo": f"{owner}/{repo}", "count": len(comment_events), "source": "pr"},
             )
         return comment_events
+
+    def _ingest_helpful_comments(
+        self,
+        owner: str,
+        repo: str,
+        issue_numbers: Sequence[int],
+        pr_numbers: Sequence[int],
+        since: datetime,
+    ) -> Iterable[ContributionEvent]:
+        """Emit helpful_comment events for non-author comments on issues and PRs.
+        
+        A comment is "helpful" if:
+        - It's on an issue/PR
+        - The commenter is not the issue/PR author
+        - It's not a bot comment
+        
+        Bonus is capped per PR/issue (max 5 helpful comments count for bonus).
+        """
+        helpful_events: list[ContributionEvent] = []
+        # Track authors for issues and PRs
+        issue_authors: dict[int, str] = {}
+        pr_authors: dict[int, str] = {}
+        
+        # Fetch issue authors
+        for issue_number in issue_numbers:
+            try:
+                response = self._client.get(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}",
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                if response.status_code == 200:
+                    issue = response.json()
+                    author = (issue.get("user") or {}).get("login")
+                    if author:
+                        issue_authors[issue_number] = author
+            except Exception:  # noqa: BLE001
+                pass
+        
+        # Fetch PR authors
+        for pr_number in pr_numbers:
+            try:
+                response = self._client.get(
+                    f"/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                if response.status_code == 200:
+                    pr = response.json()
+                    author = (pr.get("user") or {}).get("login")
+                    if author:
+                        pr_authors[pr_number] = author
+            except Exception:  # noqa: BLE001
+                pass
+        
+        # Process issue comments
+        for issue_number in issue_numbers:
+            params = {"per_page": 100}
+            helpful_count = 0
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments", params=params
+            ):
+                for comment in page:
+                    created_at = _parse_iso8601(comment.get("created_at"))
+                    if not created_at or created_at < since:
+                        continue
+                    user = comment.get("user") or {}
+                    if _is_bot_user(user):
+                        continue
+                    commenter = user.get("login")
+                    if not commenter:
+                        continue
+                    author = issue_authors.get(issue_number)
+                    if author and commenter != author and helpful_count < 5:
+                        helpful_events.append(
+                            ContributionEvent(
+                                github_user=commenter,
+                                event_type="helpful_comment",
+                                repo=repo,
+                                created_at=created_at,
+                                payload={
+                                    "issue_number": issue_number,
+                                    "comment_id": comment.get("id"),
+                                    "target_type": "issue",
+                                },
+                            )
+                        )
+                        helpful_count += 1
+        
+        # Process PR comments
+        for pr_number in pr_numbers:
+            params = {"per_page": 100}
+            helpful_count = 0
+            paths = [
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+            ]
+            for path in paths:
+                for page in self._paginate(path, params=params):
+                    for comment in page:
+                        created_at = _parse_iso8601(comment.get("created_at"))
+                        if not created_at or created_at < since:
+                            continue
+                        user = comment.get("user") or {}
+                        if _is_bot_user(user):
+                            continue
+                        commenter = user.get("login")
+                        if not commenter:
+                            continue
+                        author = pr_authors.get(pr_number)
+                        if author and commenter != author and helpful_count < 5:
+                            helpful_events.append(
+                                ContributionEvent(
+                                    github_user=commenter,
+                                    event_type="helpful_comment",
+                                    repo=repo,
+                                    created_at=created_at,
+                                    payload={
+                                        "pr_number": pr_number,
+                                        "comment_id": comment.get("id"),
+                                        "target_type": "pull_request",
+                                    },
+                                )
+                            )
+                            helpful_count += 1
+        
+        return helpful_events
 
     def _issue_events(
         self, owner: str, repo: str, issue: dict, since: datetime
@@ -561,6 +797,119 @@ def _is_bot_user(user: dict) -> bool:
     user_type = (user.get("type") or "").lower()
     login = (user.get("login") or "").lower()
     return user_type == "bot" or login.endswith("[bot]")
+
+
+def _extract_linked_issue_numbers(pr_body: str) -> list[int]:
+    """Extract issue numbers from PR body that are closed/fixed/resolved.
+    
+    Matches patterns like: closes #123, fixes #456, resolves #789, or just #123
+    Returns list of unique issue numbers (integers).
+    """
+    if not pr_body:
+        return []
+    # Match: closes/fixes/resolves #123 or just #123
+    patterns = [
+        r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)",
+        r"#(\d+)",
+    ]
+    issue_numbers = set()
+    for pattern in patterns:
+        matches = re.finditer(pattern, pr_body, re.IGNORECASE)
+        for match in matches:
+            try:
+                issue_numbers.add(int(match.group(1)))
+            except (ValueError, IndexError):
+                continue
+    return sorted(list(issue_numbers))
+
+
+def _detect_reverted_pr(pr: dict, owner: str, repo: str, client: httpx.Client) -> int | None:
+    """Detect if a PR reverts another PR.
+    
+    Checks PR title/body and commit messages for revert patterns.
+    Returns the PR number being reverted, or None if not a revert.
+    """
+    pr_title = (pr.get("title") or "").lower()
+    pr_body = (pr.get("body") or "").lower()
+    combined_text = f"{pr_title} {pr_body}"
+    
+    # Match: revert #123, reverts #123, rollback #123, etc.
+    revert_patterns = [
+        r"(?:revert|reverts|reverted|rollback|rollbacks|rollbacked)\s+#(\d+)",
+    ]
+    for pattern in revert_patterns:
+        matches = re.finditer(pattern, combined_text, re.IGNORECASE)
+        for match in matches:
+            try:
+                return int(match.group(1))
+            except (ValueError, IndexError):
+                continue
+    
+    # Also check commit messages (if PR has commits)
+    pr_number = pr.get("number")
+    if pr_number:
+        try:
+            # Get commits for this PR
+            response = client.get(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/commits",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            if response.status_code == 200:
+                commits = response.json()
+                for commit in commits:
+                    commit_msg = (commit.get("commit", {}).get("message") or "").lower()
+                    for pattern in revert_patterns:
+                        matches = re.finditer(pattern, commit_msg, re.IGNORECASE)
+                        for match in matches:
+                            try:
+                                return int(match.group(1))
+                            except (ValueError, IndexError):
+                                continue
+        except Exception:  # noqa: BLE001
+            # Network errors, etc. - skip commit check
+            pass
+    return None
+
+
+def _check_pr_ci_status(pr: dict, owner: str, repo: str, client: httpx.Client) -> bool:
+    """Check if PR was merged with failing CI status.
+    
+    Returns True if merged_at exists and CI checks failed at merge time.
+    Uses GitHub Checks API to check status.
+    """
+    merged_at = pr.get("merged_at")
+    merge_sha = pr.get("merge_commit_sha")
+    if not merged_at or not merge_sha:
+        return False
+    
+    try:
+        # Check check runs for the merge commit
+        response = client.get(
+            f"/repos/{owner}/{repo}/commits/{merge_sha}/check-runs",
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        if response.status_code == 200:
+            data = response.json()
+            check_runs = data.get("check_runs", [])
+            # If any check run failed, CI failed
+            for run in check_runs:
+                conclusion = run.get("conclusion", "").lower()
+                if conclusion == "failure":
+                    return True
+        # Also check status API (legacy status checks)
+        status_response = client.get(
+            f"/repos/{owner}/{repo}/commits/{merge_sha}/status",
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        if status_response.status_code == 200:
+            status_data = status_response.json()
+            state = status_data.get("state", "").lower()
+            if state == "failure":
+                return True
+    except Exception:  # noqa: BLE001
+        # Network errors, etc. - assume CI passed (fail closed)
+        pass
+    return False
 
 
 def _issue_payload(issue: dict) -> dict:

@@ -123,7 +123,7 @@ def render_markdown_report(
     sections = [
         "\n".join(summary_lines),
         _render_contribution_summary_section(
-            contribution_summaries or [], config.scoring.period_days
+            contribution_summaries or [], config.scoring.period_days, config=config
         ),
         _render_discord_section(discord_sorted),
         _render_issue_section(github_sorted),
@@ -133,9 +133,26 @@ def render_markdown_report(
 
 
 def _render_contribution_summary_section(
-    summaries: Sequence[ContributionSummary], period_days: int
+    summaries: Sequence[ContributionSummary], period_days: int, config=None
 ) -> str:
     lines = [f"## Contribution Summary (Last {period_days} days)"]
+    # Add note about difficulty-aware scoring if configured
+    if config and getattr(config.scoring, "difficulty_weights", None):
+        difficulty_weights = config.scoring.difficulty_weights
+        weights_str = ", ".join(f"{k}: {v}" for k, v in sorted(difficulty_weights.items()))
+        lines.append(f"*Note: Difficulty-aware scoring enabled ({weights_str}). Merged PRs are scored based on linked issue labels.*")
+    # Add note about quality adjustments if configured
+    if config and getattr(config.scoring, "quality_adjustments", None):
+        qa = config.scoring.quality_adjustments
+        adjustment_notes = []
+        if qa.penalties:
+            penalty_strs = [f"{k}: {v}" for k, v in sorted(qa.penalties.items())]
+            adjustment_notes.append(f"Penalties: {', '.join(penalty_strs)}")
+        if qa.bonuses:
+            bonus_strs = [f"{k}: {v}" for k, v in sorted(qa.bonuses.items())]
+            adjustment_notes.append(f"Bonuses: {', '.join(bonus_strs)}")
+        if adjustment_notes:
+            lines.append(f"*Quality adjustments enabled: {'; '.join(adjustment_notes)}.*")
     if not summaries:
         lines.append("No activity in period.")
         return "\n".join(lines)
@@ -160,11 +177,37 @@ def _render_discord_section(plans: Sequence[DiscordRolePlan]) -> str:
     if not plans:
         lines.append("No Discord role changes planned.")
         return "\n".join(lines)
+    
+    # Group plans by user for better readability
+    by_user: dict[str, list[DiscordRolePlan]] = {}
     for plan in plans:
-        lines.append(
-            f"- `{plan.action}` `{plan.role}` for `{plan.discord_user_id}` "
-            f"(reason: {plan.reason}; source: {json.dumps(plan.source, sort_keys=True)})"
-        )
+        by_user.setdefault(plan.discord_user_id, []).append(plan)
+    
+    for user_id in sorted(by_user.keys()):
+        user_plans = sorted(by_user[user_id], key=lambda p: p.role)
+        for plan in user_plans:
+            source = plan.source
+            decision_reason = source.get("decision_reason", "score_role_rules")
+            details_parts = []
+            
+            # Add merge-based info if present
+            if "merged_pr_count" in source:
+                details_parts.append(f"merged PRs: {source['merged_pr_count']}")
+                if "merge_threshold" in source:
+                    details_parts.append(f"threshold: {source['merge_threshold']}")
+            
+            # Add score-based info if present
+            if "score" in source:
+                details_parts.append(f"score: {source['score']}")
+                if "score_threshold" in source:
+                    details_parts.append(f"threshold: {source['score_threshold']}")
+            
+            details_str = f" ({', '.join(details_parts)})" if details_parts else ""
+            lines.append(
+                f"- `{plan.action}` `{plan.role}` for `{user_id}` "
+                f"(reason: {plan.reason}; decision: {decision_reason}{details_str})"
+            )
+    
     return "\n".join(lines)
 
 
@@ -255,7 +298,13 @@ def build_activity_feed_markdown(
             for e in pr_merged:
                 num = e.payload.get("pr_number", "?")
                 title = (e.payload.get("title") or "No title")[:60]
-                lines.append(f"- #{num} **{title}** — {e.github_user} — {base}/{repo}/pull/{num}")
+                difficulty_labels = e.payload.get("difficulty_labels", [])
+                difficulty_note = ""
+                if difficulty_labels:
+                    # Show difficulty labels if present
+                    label_str = ", ".join(difficulty_labels)
+                    difficulty_note = f" [Labels: {label_str}]"
+                lines.append(f"- #{num} **{title}** — {e.github_user}{difficulty_note} — {base}/{repo}/pull/{num}")
         if issue_opened:
             lines.append(f"### Issues opened ({len(issue_opened)})")
             for e in issue_opened:

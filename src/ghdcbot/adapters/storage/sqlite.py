@@ -60,6 +60,12 @@ class SqliteStorage:
                     ON identity_links (verified);
                 """
             )
+            # Additive: unlinked_at for unlink flow (preserve history, no row delete).
+            try:
+                conn.execute("ALTER TABLE identity_links ADD COLUMN unlinked_at TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
         stored = 0
@@ -110,9 +116,16 @@ class SqliteStorage:
         period_start: datetime,
         period_end: datetime,
         weights: dict[str, int],
+        difficulty_weights: dict[str, int] | None = None,
     ) -> Sequence[ContributionSummary]:
         start_utc = _ensure_utc(period_start)
         end_utc = _ensure_utc(period_end)
+        # Normalize difficulty weights keys to lowercase for case-insensitive matching
+        normalized_difficulty_weights = None
+        if difficulty_weights:
+            normalized_difficulty_weights = {
+                k.lower(): v for k, v in difficulty_weights.items()
+            }
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -146,7 +159,29 @@ class SqliteStorage:
                 bucket["prs_reviewed"] += 1
             elif event_type == "comment":
                 bucket["comments"] += 1
-            bucket["total_score"] += weights.get(event_type, 0)
+            # Scoring: merge-only to prevent spam and align incentives with mentor-approved contributions.
+            # Only pr_merged events contribute to scores. All other events remain visible in reports
+            # but do not affect scores.
+            if event_type == "pr_merged":
+                # Check if this is a merged PR with difficulty labels
+                if normalized_difficulty_weights:
+                    import json
+                    payload = json.loads(row["payload_json"])
+                    difficulty_labels = payload.get("difficulty_labels", [])
+                    if difficulty_labels:
+                        # Find matching difficulty labels (case-insensitive)
+                        matching_weights = []
+                        for label in difficulty_labels:
+                            label_lower = label.lower() if isinstance(label, str) else str(label).lower()
+                            if label_lower in normalized_difficulty_weights:
+                                matching_weights.append(normalized_difficulty_weights[label_lower])
+                        if matching_weights:
+                            # Use max weight if multiple labels exist
+                            bucket["total_score"] += max(matching_weights)
+                            continue
+                # Fallback to weight-based scoring for merged PRs
+                bucket["total_score"] += weights.get("pr_merged", 0)
+            # All other event types are ignored for scoring (but remain in counts/reports)
 
         return [
             ContributionSummary(
@@ -230,6 +265,8 @@ class SqliteStorage:
         github_user: str,
         verification_code: str,
         expires_at: datetime,
+        *,
+        max_age_days: int | None = None,
     ) -> None:
         """Create or refresh an identity claim for (discord_user_id, github_user).
 
@@ -237,6 +274,9 @@ class SqliteStorage:
         - If github_user is already verified for a different discord_user_id, reject.
         - If an unexpired claim exists for github_user under a different discord_user_id, reject.
         - If an expired claim exists for github_user under a different discord_user_id, replace it.
+
+        Stale refresh:
+        - If already verified for same pair and stale (per max_age_days), allow creating new claim to refresh.
         """
         now = datetime.now(timezone.utc)
         expires_utc = _ensure_utc(expires_at)
@@ -278,16 +318,27 @@ class SqliteStorage:
             )
 
             # Enforce one verified mapping per discord user (prevent accidental multi-link)
+            # Exception: allow refresh if verified identity is stale
             row = conn.execute(
                 """
-                SELECT github_user, verified
+                SELECT github_user, verified, verified_at
                 FROM identity_links
                 WHERE discord_user_id = ? AND github_user = ?
                 """,
                 (discord_user_id, github_user),
             ).fetchone()
             if row and int(row["verified"] or 0) == 1:
-                raise ValueError("This Discord user and GitHub user are already verified; cannot create a new claim")
+                # Check if stale
+                is_stale = False
+                if max_age_days is not None and max_age_days > 0:
+                    verified_at_raw = row["verified_at"]
+                    if verified_at_raw:
+                        verified_at = _parse_utc(verified_at_raw)
+                        age_days = (now - verified_at).days
+                        if age_days >= max_age_days:
+                            is_stale = True
+                if not is_stale:
+                    raise ValueError("This Discord user and GitHub user are already verified; cannot create a new claim")
 
             row = conn.execute(
                 """
@@ -324,10 +375,12 @@ class SqliteStorage:
             )
 
     def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
+        self.init_schema()
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                SELECT discord_user_id, github_user, verified, verification_code,
+                       expires_at, created_at, verified_at, unlinked_at
                 FROM identity_links
                 WHERE discord_user_id = ? AND github_user = ?
                 """,
@@ -349,6 +402,63 @@ class SqliteStorage:
                 """,
                 (now, discord_user_id, github_user),
             )
+
+    def unlink_identity(
+        self, discord_user_id: str, cooldown_hours: int
+    ) -> dict | None:
+        """Unlink the verified identity for this Discord user (set verified=0, unlinked_at=now).
+        Rows are never deleted. Returns unlink info for audit, or None if no verified link.
+        Raises ValueError if inside cooldown window.
+        """
+        from datetime import timedelta
+
+        self.init_schema()
+        now = datetime.now(timezone.utc)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT discord_user_id, github_user, verified_at
+                FROM identity_links
+                WHERE discord_user_id = ? AND verified = 1
+                """,
+                (discord_user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        verified_at_raw = row["verified_at"]
+        if not verified_at_raw:
+            return None
+        verified_at = _parse_utc(verified_at_raw)
+        cooldown = timedelta(hours=cooldown_hours)
+        if now - verified_at < cooldown:
+            remaining = (verified_at + cooldown) - now
+            total_seconds = int(remaining.total_seconds())
+            hours, rem = divmod(total_seconds, 3600)
+            minutes, _ = divmod(rem, 60)
+            if hours > 0:
+                remaining_str = f"{hours}h {minutes}m"
+            else:
+                remaining_str = f"{minutes}m"
+            raise ValueError(
+                f"Identity was verified recently. You can unlink after {remaining_str}."
+            )
+        now_iso = now.isoformat()
+        github_user = row["github_user"]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE identity_links
+                SET verified = 0, unlinked_at = ?
+                WHERE discord_user_id = ? AND github_user = ?
+                """,
+                (now_iso, discord_user_id, github_user),
+            )
+        return {
+            "discord_user_id": discord_user_id,
+            "github_user": github_user,
+            "verified_at": verified_at_raw,
+            "unlinked_at": now_iso,
+        }
 
     def list_verified_identity_mappings(self) -> list[IdentityMapping]:
         """Return verified identity mappings for engine usage."""
@@ -373,7 +483,8 @@ class SqliteStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                SELECT discord_user_id, github_user, verified, verification_code,
+                       expires_at, created_at, verified_at, unlinked_at
                 FROM identity_links
                 WHERE discord_user_id = ?
                 ORDER BY verified DESC, created_at DESC
@@ -381,6 +492,53 @@ class SqliteStorage:
                 (discord_user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_identity_status(self, discord_user_id: str, max_age_days: int | None = None) -> dict:
+        """Read-only: return current identity status for a Discord user.
+        Returns dict with github_user, status ('verified'|'verified_stale'|'pending'|'not_linked'),
+        verified_at (UTC ISO or None), is_stale (bool).
+        Does not modify data, auto-verify, or clean expired claims.
+        
+        Args:
+            discord_user_id: Discord user ID to check
+            max_age_days: Optional max age in days for verified identities. If set and verified_at
+                         is older than this, status will be 'verified_stale' and is_stale=True.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT discord_user_id, github_user, verified, verified_at
+                FROM identity_links
+                WHERE discord_user_id = ? AND (unlinked_at IS NULL)
+                ORDER BY verified DESC, created_at DESC
+                LIMIT 1
+                """,
+                (discord_user_id,),
+            ).fetchone()
+        if not row:
+            return {"github_user": None, "status": "not_linked", "verified_at": None, "is_stale": False}
+        if int(row["verified"] or 0) == 1:
+            verified_at_raw = row["verified_at"]
+            is_stale = False
+            status = "verified"
+            if verified_at_raw and max_age_days is not None and max_age_days > 0:
+                verified_at = _parse_utc(verified_at_raw)
+                age_days = (datetime.now(timezone.utc) - verified_at).days
+                if age_days >= max_age_days:
+                    is_stale = True
+                    status = "verified_stale"
+            return {
+                "github_user": row["github_user"],
+                "status": status,
+                "verified_at": verified_at_raw,
+                "is_stale": is_stale,
+            }
+        return {
+            "github_user": row["github_user"],
+            "status": "pending",
+            "verified_at": None,
+            "is_stale": False,
+        }
 
     def append_audit_event(self, event: dict) -> None:
         """Append a single audit event (append-only) to data_dir/audit_events.jsonl.
@@ -392,6 +550,24 @@ class SqliteStorage:
             payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         line = json.dumps(payload, separators=(",", ":")) + "\n"
         path.open("a", encoding="utf-8").write(line)
+
+    def list_audit_events(self) -> list[dict]:
+        """Read-only: return all audit events from audit_events.jsonl.
+        Returns empty list if file doesn't exist. Does not modify data.
+        Optional method; not part of the Storage protocol.
+        """
+        path = self._db_path.parent / "audit_events.jsonl"
+        events = []
+        if path.exists():
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            events.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+        return events
 
 
 def _ensure_utc(value: datetime) -> datetime:

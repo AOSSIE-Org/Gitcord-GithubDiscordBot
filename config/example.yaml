@@ -49,6 +49,10 @@ assignments:
   issue_assignees:
     - "Contributor"
 
+# Optional: unlink cooldown (hours) after verification before /unlink or CLI unlink is allowed
+# identity:
+#   unlink_cooldown_hours: 24
+
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"
     discord_user_id: "YOUR_DISCORD_USER_ID"

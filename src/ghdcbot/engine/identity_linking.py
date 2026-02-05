@@ -33,7 +33,7 @@ class IdentityLinkService:
         self._github = github_identity
         self._ttl = timedelta(minutes=ttl_minutes)
 
-    def create_claim(self, discord_user_id: str, github_user: str) -> LinkClaim:
+    def create_claim(self, discord_user_id: str, github_user: str, *, max_age_days: int | None = None) -> LinkClaim:
         code = _generate_verification_code()
         expires_at = datetime.now(timezone.utc) + self._ttl
         # Ensure schema exists for identity_links before writing.
@@ -47,6 +47,7 @@ class IdentityLinkService:
             github_user=github_user,
             verification_code=code,
             expires_at=expires_at,
+            max_age_days=max_age_days,
         )
         append_audit = getattr(self._storage, "append_audit_event", None)
         if callable(append_audit):
@@ -138,6 +139,37 @@ class IdentityLinkService:
             },
         )
         return True, match.location
+
+    def unlink(self, discord_user_id: str, cooldown_hours: int = 24) -> None:
+        """Unlink the verified identity for this Discord user. Cooldown enforced.
+        Raises ValueError if no verified link or inside cooldown. Emits identity_unlinked audit event.
+        """
+        unlinker = getattr(self._storage, "unlink_identity", None)
+        if not callable(unlinker):
+            raise ValueError("Storage does not support unlink")
+        info = unlinker(discord_user_id, cooldown_hours)
+        if info is None:
+            raise ValueError("No verified identity link found for this Discord user.")
+        append_audit = getattr(self._storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit({
+                "actor_type": "discord_user",
+                "actor_id": discord_user_id,
+                "event_type": "identity_unlinked",
+                "context": {
+                    "github_user": info["github_user"],
+                    "verified_at": info["verified_at"],
+                    "unlinked_at": info["unlinked_at"],
+                },
+            })
+        self._logger.info(
+            "Identity unlinked",
+            extra={
+                "discord_user_id": discord_user_id,
+                "github_user": info["github_user"],
+                "unlinked_at": info["unlinked_at"],
+            },
+        )
 
 
 def _generate_verification_code(length: int = 10) -> str:

@@ -8,3 +8,8 @@ __pycache__/
 .pytest_cache/
 /tmp/
 
+data/
+config/shubh-olrd.yaml
+src/ghdcbot.egg-info/
+*.egg-info/
+run-bot.sh

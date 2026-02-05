@@ -1,12 +1,101 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Sequence
+from datetime import datetime
+from typing import Any, Iterable, Sequence
 
-from ghdcbot.config.models import IdentityMapping, RoleMappingConfig
+from ghdcbot.config.models import IdentityMapping, MergeRoleRuleConfig, MergeRoleRulesConfig, RoleMappingConfig
+from ghdcbot.core.interfaces import Storage
 from ghdcbot.core.models import DiscordRolePlan, GitHubAssignmentPlan, Score
 
 logger = logging.getLogger("Planning")
+
+
+def count_merged_prs_per_user(
+    storage: Storage,
+    identity_mappings: Iterable[IdentityMapping],
+    period_start: datetime,
+    period_end: datetime,
+) -> dict[str, int]:
+    """Count merged PRs per verified GitHub user for the given period.
+    
+    Returns a dictionary mapping github_user to merged PR count.
+    Only counts events for verified users in identity_mappings.
+    """
+    # Get all contributions since period_start
+    all_events = storage.list_contributions(period_start)
+    
+    # Filter to merged PRs in the period
+    verified_github_users = {mapping.github_user for mapping in identity_mappings}
+    merged_pr_counts: dict[str, int] = {}
+    
+    for event in all_events:
+        if (
+            event.event_type == "pr_merged"
+            and event.github_user in verified_github_users
+            and period_start <= event.created_at <= period_end
+        ):
+            merged_pr_counts[event.github_user] = merged_pr_counts.get(event.github_user, 0) + 1
+    
+    return merged_pr_counts
+
+
+def plan_merge_based_roles(
+    member_roles: dict[str, Sequence[str]],
+    merged_pr_counts: dict[str, int],
+    identity_mappings: Iterable[IdentityMapping],
+    merge_rules: list[MergeRoleRuleConfig],
+) -> list[DiscordRolePlan]:
+    """Compute promotion-only Discord role plans based on merged PR counts.
+    
+    Returns only "add" actions (promotion-only). Never removes roles.
+    Determines the highest eligible role per user based on merged PR count.
+    """
+    if not merge_rules:
+        return []
+    
+    # Sort rules by threshold (ascending) for deterministic processing
+    sorted_rules = sorted(merge_rules, key=lambda r: r.min_merged_prs)
+    managed_merge_roles = {rule.discord_role for rule in sorted_rules}
+    
+    plans: list[DiscordRolePlan] = []
+    for mapping in sorted(identity_mappings, key=lambda m: m.discord_user_id):
+        current_roles = set(member_roles.get(mapping.discord_user_id, []))
+        merged_count = merged_pr_counts.get(mapping.github_user, 0)
+        
+        # Find highest eligible role (promotion-only)
+        eligible_roles = {
+            rule.discord_role
+            for rule in sorted_rules
+            if merged_count >= rule.min_merged_prs
+        }
+        
+        # Only add roles that user doesn't have yet (promotion-only)
+        roles_to_add = sorted(eligible_roles - current_roles)
+        if roles_to_add:
+            # Add the highest eligible role (last in sorted list)
+            highest_role = roles_to_add[-1]
+            threshold = next(
+                rule.min_merged_prs
+                for rule in sorted_rules
+                if rule.discord_role == highest_role
+            )
+            plans.append(
+                DiscordRolePlan(
+                    discord_user_id=mapping.discord_user_id,
+                    role=highest_role,
+                    action="add",
+                    reason=f"Merged PR count {merged_count} meets threshold for {highest_role}",
+                    source={
+                        "github_user": mapping.github_user,
+                        "merged_pr_count": merged_count,
+                        "threshold": threshold,
+                        "decision_reason": "merge_role_rules",
+                    },
+                )
+            )
+    
+    return plans
 
 
 def plan_discord_roles(
@@ -14,41 +103,123 @@ def plan_discord_roles(
     scores: Sequence[Score],
     identity_mappings: Iterable[IdentityMapping],
     role_mappings: Iterable[RoleMappingConfig],
+    storage: Storage | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    merge_role_rules: MergeRoleRulesConfig | None = None,
 ) -> list[DiscordRolePlan]:
-    """Compute Discord role add/remove plans from scores and role thresholds."""
+    """Compute Discord role add/remove plans from scores and role thresholds.
+    
+    If merge_role_rules is enabled, also considers merge-based roles.
+    Final role per user is max(score_based_role, merge_based_role).
+    """
     score_lookup = {score.github_user: score.points for score in scores}
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
     managed_roles = {mapping.discord_role for mapping in role_thresholds}
 
     plans: list[DiscordRolePlan] = []
+    
+    # Compute merged PR counts once (if merge-based roles are enabled)
+    merged_pr_counts: dict[str, int] = {}
+    if (
+        merge_role_rules
+        and merge_role_rules.enabled
+        and merge_role_rules.rules
+        and storage is not None
+        and period_start is not None
+        and period_end is not None
+    ):
+        merged_pr_counts = count_merged_prs_per_user(
+            storage, identity_mappings, period_start, period_end
+        )
+    
+    # Compute score-based desired roles
+    score_based_roles: dict[str, set[str]] = {}
+    merge_based_roles: dict[str, set[str]] = {}
+    
     for mapping in sorted(identity_mappings, key=lambda m: m.discord_user_id):
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
         points = score_lookup.get(mapping.github_user, 0)
-        desired_roles = {
+        
+        # Score-based roles
+        score_desired = {
             mapping_cfg.discord_role
             for mapping_cfg in role_thresholds
             if points >= mapping_cfg.min_score
         }
-
-        for role in sorted(desired_roles - current_roles):
+        score_based_roles[mapping.discord_user_id] = score_desired
+        
+        # Merge-based roles (if enabled) - only highest eligible role
+        if (
+            merge_role_rules
+            and merge_role_rules.enabled
+            and merge_role_rules.rules
+        ):
+            merged_count = merged_pr_counts.get(mapping.github_user, 0)
+            # Find highest eligible role (deterministic: last in sorted rules)
+            eligible_merge_roles = [
+                rule.discord_role
+                for rule in merge_role_rules.rules
+                if merged_count >= rule.min_merged_prs
+            ]
+            # Highest eligible role is the last one (rules sorted by threshold ascending)
+            merge_desired = {eligible_merge_roles[-1]} if eligible_merge_roles else set()
+            merge_based_roles[mapping.discord_user_id] = merge_desired
+        else:
+            merge_based_roles[mapping.discord_user_id] = set()
+        
+        # Final desired roles = max(score_based, merge_based)
+        # For each role, if either system wants it, include it
+        final_desired_roles = score_based_roles[mapping.discord_user_id] | merge_based_roles[mapping.discord_user_id]
+        
+        # Determine decision reason for each role
+        for role in sorted(final_desired_roles - current_roles):
+            # Determine which system granted this role
+            score_granted = role in score_based_roles[mapping.discord_user_id]
+            merge_granted = role in merge_based_roles[mapping.discord_user_id]
+            
+            if score_granted and merge_granted:
+                decision_reason = "score_role_rules,merge_role_rules"
+            elif merge_granted:
+                decision_reason = "merge_role_rules"
+            else:
+                decision_reason = "score_role_rules"
+            
+            # Build source with relevant info
+            source: dict[str, Any] = {
+                "github_user": mapping.github_user,
+                "decision_reason": decision_reason,
+            }
+            
+            if score_granted:
+                source["score"] = points
+                source["score_threshold"] = next(
+                    mapping_cfg.min_score
+                    for mapping_cfg in role_thresholds
+                    if mapping_cfg.discord_role == role
+                )
+            
+            if merge_granted:
+                merged_count = merged_pr_counts.get(mapping.github_user, 0)
+                source["merged_pr_count"] = merged_count
+                source["merge_threshold"] = next(
+                    rule.min_merged_prs
+                    for rule in merge_role_rules.rules
+                    if rule.discord_role == role
+                )
+            
             plans.append(
                 DiscordRolePlan(
                     discord_user_id=mapping.discord_user_id,
                     role=role,
                     action="add",
-                    reason=f"Score {points} meets threshold for {role}",
-                    source={
-                        "github_user": mapping.github_user,
-                        "score": points,
-                        "threshold": next(
-                            mapping_cfg.min_score
-                            for mapping_cfg in role_thresholds
-                            if mapping_cfg.discord_role == role
-                        ),
-                    },
+                    reason=f"Score {points} meets threshold for {role}" if score_granted else f"Merged PR count {merged_count} meets threshold for {role}",
+                    source=source,
                 )
             )
-        for role in sorted((current_roles & managed_roles) - desired_roles):
+        
+        # Remove roles only if score-based system says so (merge-based is promotion-only)
+        for role in sorted((current_roles & managed_roles) - score_desired):
             plans.append(
                 DiscordRolePlan(
                     discord_user_id=mapping.discord_user_id,
@@ -63,6 +234,7 @@ def plan_discord_roles(
                             for mapping_cfg in role_thresholds
                             if mapping_cfg.discord_role == role
                         ),
+                        "decision_reason": "score_role_rules",
                     },
                 )
             )
