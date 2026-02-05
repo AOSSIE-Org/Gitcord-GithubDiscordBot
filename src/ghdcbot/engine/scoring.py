@@ -34,12 +34,12 @@ class WeightedScoreStrategy(ScoreStrategy):
         period_start = period_end - self._period
         totals: dict[str, int] = defaultdict(int)
         # Track helpful comments per PR/issue (cap at 5)
-        helpful_comment_counts: dict[tuple[str, int], int] = defaultdict(int)  # (user, target) -> count
+        helpful_comment_counts: dict[tuple[str, str, str, int], int] = defaultdict(int)  # (user, repo, type, target) -> count
         # Track PR reviews (only APPROVED reviews get bonus)
-        pr_reviews: dict[tuple[str, int], bool] = {}  # (user, pr_number) -> has_approved_review
+        pr_reviews: dict[tuple[str, str, int], bool] = {}  # (user, repo, pr_number) -> has_approved_review
         # Track penalties applied (once per PR)
-        reverted_prs: set[tuple[str, int]] = set()  # (user, pr_number) -> already penalized
-        failed_ci_prs: set[tuple[str, int]] = set()  # (user, pr_number) -> already penalized
+        reverted_prs: set[tuple[str, str, int]] = set()  # (user, repo, pr_number) -> already penalized
+        failed_ci_prs: set[tuple[str, str, int]] = set()  # (user, repo, pr_number) -> already penalized
         
         for event in contributions:
             if event.created_at < period_start or event.created_at > period_end:
@@ -49,7 +49,7 @@ class WeightedScoreStrategy(ScoreStrategy):
             if event.event_type == "pr_reverted" and "reverted_pr" in self._penalties:
                 pr_number = event.payload.get("pr_number")
                 if pr_number:
-                    key = (event.github_user, pr_number)
+                    key = (event.github_user, event.repo, pr_number)
                     if key not in reverted_prs:
                         totals[event.github_user] += self._penalties["reverted_pr"]
                         reverted_prs.add(key)
@@ -57,7 +57,7 @@ class WeightedScoreStrategy(ScoreStrategy):
             if event.event_type == "pr_merged_with_failed_ci" and "failed_ci_merge" in self._penalties:
                 pr_number = event.payload.get("pr_number")
                 if pr_number:
-                    key = (event.github_user, pr_number)
+                    key = (event.github_user, event.repo, pr_number)
                     if key not in failed_ci_prs:
                         totals[event.github_user] += self._penalties["failed_ci_merge"]
                         failed_ci_prs.add(key)
@@ -70,7 +70,7 @@ class WeightedScoreStrategy(ScoreStrategy):
                 if state == "APPROVED":
                     pr_number = event.payload.get("pr_number")
                     if pr_number:
-                        key = (event.github_user, pr_number)
+                        key = (event.github_user, event.repo, pr_number)
                         if key not in pr_reviews:
                             totals[event.github_user] += self._bonuses["pr_review"]
                             pr_reviews[key] = True
@@ -78,8 +78,11 @@ class WeightedScoreStrategy(ScoreStrategy):
             
             if event.event_type == "helpful_comment" and "helpful_comment" in self._bonuses:
                 target_number = event.payload.get("issue_number") or event.payload.get("pr_number")
+                target_type = event.payload.get("target_type") or (
+                    "issue" if "issue_number" in event.payload else "pull_request"
+                )
                 if target_number:
-                    key = (event.github_user, target_number)
+                    key = (event.github_user, event.repo, target_type, target_number)
                     if helpful_comment_counts[key] < 5:
                         totals[event.github_user] += self._bonuses["helpful_comment"]
                         helpful_comment_counts[key] += 1
