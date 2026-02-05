@@ -249,9 +249,19 @@ class GitHubRestAdapter:
                                         },
                                     )
                                 )
-                    except Exception:  # noqa: BLE001
-                        # Network errors, etc. - skip revert detection
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        # Network errors, etc. - skip revert detection but log for debugging
+                        self._logger.debug(
+                            "Failed to fetch reverted PR for revert detection",
+                            exc_info=True,
+                            extra={
+                                "owner": owner,
+                                "repo": repo,
+                                "reverted_pr_number": reverted_pr_number,
+                                "reverting_pr_number": pr["number"],
+                                "error": str(exc),
+                            },
+                        )
                 pr_events.extend(self._pull_request_reviews(owner, repo, pr["number"], since))
         return pr_events, pr_numbers, pr_opened_count
 

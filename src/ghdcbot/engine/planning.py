@@ -71,15 +71,13 @@ def plan_merge_based_roles(
         }
         
         # Only add roles that user doesn't have yet (promotion-only)
-        roles_to_add = sorted(eligible_roles - current_roles)
+        roles_to_add = eligible_roles - current_roles
         if roles_to_add:
-            # Add the highest eligible role (last in sorted list)
-            highest_role = roles_to_add[-1]
-            threshold = next(
-                rule.min_merged_prs
-                for rule in sorted_rules
-                if rule.discord_role == highest_role
-            )
+            # Build role -> threshold mapping for selection
+            role_threshold_map = {rule.discord_role: rule.min_merged_prs for rule in sorted_rules}
+            # Select role with highest threshold value (not alphabetical)
+            highest_role = max(roles_to_add, key=lambda r: role_threshold_map.get(r, 0))
+            threshold = role_threshold_map[highest_role]
             plans.append(
                 DiscordRolePlan(
                     discord_user_id=mapping.discord_user_id,
@@ -119,6 +117,9 @@ def plan_discord_roles(
 
     plans: list[DiscordRolePlan] = []
     
+    # Materialize identity_mappings into a list to avoid iterator consumption
+    identity_list = list(identity_mappings)
+    
     # Compute merged PR counts once (if merge-based roles are enabled)
     merged_pr_counts: dict[str, int] = {}
     if (
@@ -130,14 +131,14 @@ def plan_discord_roles(
         and period_end is not None
     ):
         merged_pr_counts = count_merged_prs_per_user(
-            storage, identity_mappings, period_start, period_end
+            storage, identity_list, period_start, period_end
         )
     
     # Compute score-based desired roles
     score_based_roles: dict[str, set[str]] = {}
     merge_based_roles: dict[str, set[str]] = {}
     
-    for mapping in sorted(identity_mappings, key=lambda m: m.discord_user_id):
+    for mapping in sorted(identity_list, key=lambda m: m.discord_user_id):
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
         points = score_lookup.get(mapping.github_user, 0)
         

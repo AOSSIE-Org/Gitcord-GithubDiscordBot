@@ -39,17 +39,21 @@ def filter_audit_events(
         filtered = [e for e in filtered if e.get("event_type") == event_type]
     if from_time:
         from_time_utc = _ensure_utc(from_time)
+        max_datetime = datetime.max.replace(tzinfo=timezone.utc)
         filtered = [
             e
             for e in filtered
-            if _parse_timestamp(e.get("timestamp", "")) >= from_time_utc
+            if _parse_timestamp(e.get("timestamp", "")) != max_datetime
+            and _parse_timestamp(e.get("timestamp", "")) >= from_time_utc
         ]
     if to_time:
         to_time_utc = _ensure_utc(to_time)
+        max_datetime = datetime.max.replace(tzinfo=timezone.utc)
         filtered = [
             e
             for e in filtered
-            if _parse_timestamp(e.get("timestamp", "")) <= to_time_utc
+            if _parse_timestamp(e.get("timestamp", "")) != max_datetime
+            and _parse_timestamp(e.get("timestamp", "")) <= to_time_utc
         ]
     return filtered
 
@@ -131,9 +135,13 @@ def _ensure_utc(value: datetime) -> datetime:
 
 
 def _parse_timestamp(value: str) -> datetime:
-    """Parse ISO-8601 timestamp to UTC datetime."""
+    """Parse ISO-8601 timestamp to UTC datetime.
+    
+    Returns datetime.max for empty values to ensure events with missing timestamps
+    are excluded from time-range checks (>= from_time and <= to_time).
+    """
     if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.max.replace(tzinfo=timezone.utc)
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)

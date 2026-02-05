@@ -125,6 +125,6 @@ All of the following are additive. No existing APIs, storage schema (no new tabl
 |------------|--------|--------|
 | Who did what, when, where (event records) | Logs + tables; no dedicated event log | Append-only audit_events.jsonl for identity and report events. |
 | Immutable activity logs | contributions append-only; reports overwritten | audit_events.jsonl append-only; no mutation. |
-| Exportable audit (JSON/CSV) | Manual (cat audit.json) | Optional `export-audit --format json|csv` from audit_events.jsonl. |
+| Exportable audit (JSON/CSV) | Manual (cat audit.json) | Optional `export-audit --format json\|csv` from audit_events.jsonl. |
 
 Existing audit-related behavior (audit.json, audit.md, activity.md, contributions, logging) is unchanged and remains valid.

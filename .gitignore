@@ -9,7 +9,9 @@ __pycache__/
 /tmp/
 
 data/
-config/shubh-olrd.yaml
+# Local developer runtime configs (use config/example.yaml as template)
+config/*-local.yaml
+config/*.local.yaml
 src/ghdcbot.egg-info/
 *.egg-info/
 run-bot.sh
