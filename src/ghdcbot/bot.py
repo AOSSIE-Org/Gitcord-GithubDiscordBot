@@ -1286,7 +1286,7 @@ def run_bot(config_path: str) -> None:
             pr, reviews, ci_status, last_commit_time = fetch_pr_context(
                 github_adapter, owner, repo, pr_number
             )
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "Failed to fetch PR context from message",
                 extra={"owner": owner, "repo": repo, "pr_number": pr_number},
