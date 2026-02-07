@@ -58,17 +58,175 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)
 
-    def assign_issue(self, repo: str, issue_number: int, assignee: str) -> None:
-        self._logger.info(
-            "GitHub issue assignment stub",
-            extra={"repo": repo, "issue_number": issue_number, "assignee": assignee},
-        )
+    def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
+        """Assign a GitHub issue to a user.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            issue_number: Issue number
+            assignee: GitHub username to assign
+        
+        Returns:
+            True if assignment succeeded, False otherwise.
+        """
+        try:
+            response = self._client.post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                json={"assignees": [assignee]},
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub request failed",
+                extra={"path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", "error": str(exc)},
+            )
+            return False
+        
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+        
+        if response.status_code in {200, 201}:
+            self._logger.info(
+                "Issue assigned successfully",
+                extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
+            )
+            return True
+        else:
+            error_body = ""
+            try:
+                error_body = (response.text or "")[:300]
+            except Exception:
+                pass
+            self._logger.warning(
+                "Issue assignment failed",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "assignee": assignee,
+                    "status_code": response.status_code,
+                    "error_response": error_body,
+                },
+            )
+            return False
+
+    def unassign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
+        """Unassign a GitHub issue from a user.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            issue_number: Issue number
+            assignee: GitHub username to unassign
+        
+        Returns:
+            True if unassignment succeeded, False otherwise.
+        """
+        try:
+            response = self._client.delete(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                json={"assignees": [assignee]},
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub request failed",
+                extra={"path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", "error": str(exc)},
+            )
+            return False
+        
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+        
+        if response.status_code in {200, 201}:
+            self._logger.info(
+                "Issue unassigned successfully",
+                extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
+            )
+            return True
+        else:
+            self._logger.warning(
+                "Issue unassignment failed",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "assignee": assignee,
+                    "status_code": response.status_code,
+                },
+            )
+            return False
 
     def request_review(self, repo: str, pr_number: int, reviewer: str) -> None:
         self._logger.info(
             "GitHub review request stub",
             extra={"repo": repo, "pr_number": pr_number, "reviewer": reviewer},
         )
+
+    def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
+        """Fetch a single pull request by number.
+        
+        Returns PR dict or None if not found/accessible.
+        """
+        response = self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", params={})
+        if response and response.status_code == 200:
+            return response.json()
+        return None
+
+    def get_pull_request_reviews(self, owner: str, repo: str, pr_number: int) -> list[dict]:
+        """Fetch reviews for a pull request.
+        
+        Returns list of review dicts (empty list on error).
+        """
+        reviews = []
+        for page in self._paginate(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", params={"per_page": 100}):
+            reviews.extend(page)
+        return reviews
+
+    def get_pull_request_check_runs(self, owner: str, repo: str, head_sha: str) -> list[dict]:
+        """Fetch check runs for a commit (used for CI status).
+        
+        Returns list of check run dicts (empty list on error).
+        Note: Requires 'checks:read' permission for private repos.
+        """
+        check_runs = []
+        # Use check-runs endpoint (requires checks:read scope)
+        response = self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+            params={"per_page": 100},
+        )
+        if response and response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict) and "check_runs" in data:
+                check_runs = data["check_runs"]
+        return check_runs
+
+    def get_issue(self, owner: str, repo: str, issue_number: int) -> dict | None:
+        """Fetch a single issue by number.
+        
+        Returns issue dict or None if not found/accessible.
+        Note: GitHub API uses /issues/{number} for both issues and PRs.
+        """
+        response = self._request("GET", f"/repos/{owner}/{repo}/issues/{issue_number}", params={})
+        if response and response.status_code == 200:
+            return response.json()
+        return None
 
     def _ingest_repo(self, repo: dict, since: datetime) -> Iterable[ContributionEvent]:
         repo_name = repo["name"]

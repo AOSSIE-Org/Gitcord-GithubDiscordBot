@@ -28,6 +28,11 @@ discord:
   permissions:
     read: true
     write: false
+  # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
+  activity_channel_id: null
+  # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
+  # Example: ["mentor-chat", "review-queue"]
+  pr_preview_channels: []
 
 scoring:
   period_days: 30
@@ -48,6 +53,8 @@ assignments:
     - "Maintainer"
   issue_assignees:
     - "Contributor"
+  # Optional: roles required for a contributor to be "eligible" for issue assignment (empty = any verified user)
+  issue_request_eligible_roles: []
 
 # Optional: unlink cooldown (hours) after verification before /unlink or CLI unlink is allowed
 # identity:

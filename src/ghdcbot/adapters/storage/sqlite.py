@@ -66,6 +66,24 @@ class SqliteStorage:
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     raise
+            # Issue requests: contributor requests for assignment, mentor reviews
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS issue_requests (
+                    request_id TEXT PRIMARY KEY,
+                    discord_user_id TEXT NOT NULL,
+                    github_user TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    repo TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    issue_url TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                );
+                CREATE INDEX IF NOT EXISTS idx_issue_requests_status ON issue_requests (status);
+                CREATE INDEX IF NOT EXISTS idx_issue_requests_created ON issue_requests (created_at);
+                """
+            )
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
         stored = 0
@@ -539,6 +557,59 @@ class SqliteStorage:
             "verified_at": None,
             "is_stale": False,
         }
+
+    def insert_issue_request(
+        self,
+        request_id: str,
+        discord_user_id: str,
+        github_user: str,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        issue_url: str,
+    ) -> None:
+        """Store a new issue assignment request. Status is pending."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO issue_requests (
+                    request_id, discord_user_id, github_user, owner, repo,
+                    issue_number, issue_url, created_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, now),
+            )
+
+    def list_pending_issue_requests(self) -> list[dict]:
+        """Return all issue requests with status pending, ordered by created_at ascending."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT request_id, discord_user_id, github_user, owner, repo,
+                       issue_number, issue_url, created_at, status
+                FROM issue_requests
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_issue_request(self, request_id: str) -> dict | None:
+        """Return a single issue request by request_id, or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, created_at, status FROM issue_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_issue_request_status(self, request_id: str, status: str) -> None:
+        """Update request status to approved, rejected, or cancelled."""
+        if status not in ("pending", "approved", "rejected", "cancelled"):
+            raise ValueError(f"Invalid status: {status}")
+        with self._connect() as conn:
+            conn.execute("UPDATE issue_requests SET status = ? WHERE request_id = ?", (status, request_id))
 
     def append_audit_event(self, event: dict) -> None:
         """Append a single audit event (append-only) to data_dir/audit_events.jsonl.
