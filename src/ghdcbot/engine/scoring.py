@@ -51,7 +51,7 @@ class WeightedScoreStrategy(ScoreStrategy):
                 if pr_number:
                     key = (event.github_user, event.repo, pr_number)
                     if key not in reverted_prs:
-                        totals[event.github_user] += self._penalties["reverted_pr"]
+                        totals[event.github_user] -= abs(self._penalties["reverted_pr"])
                         reverted_prs.add(key)
                 continue
             if event.event_type == "pr_merged_with_failed_ci" and "failed_ci_merge" in self._penalties:
@@ -59,7 +59,7 @@ class WeightedScoreStrategy(ScoreStrategy):
                 if pr_number:
                     key = (event.github_user, event.repo, pr_number)
                     if key not in failed_ci_prs:
-                        totals[event.github_user] += self._penalties["failed_ci_merge"]
+                        totals[event.github_user] -= abs(self._penalties["failed_ci_merge"])
                         failed_ci_prs.add(key)
                 continue
             
