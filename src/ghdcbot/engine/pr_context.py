@@ -69,16 +69,19 @@ def format_relative_time(timestamp: datetime | None, now: datetime) -> str:
     
     # Weeks
     weeks = days // 7
-    if weeks < 4:
+    if weeks < 5:
         return f"{weeks} week{'s' if weeks != 1 else ''} ago"
     
     # Months (approximate, using 30 days)
     months = days // 30
-    if months < 12:
+    if months < 12 and months > 0:
         return f"{months} month{'s' if months != 1 else ''} ago"
     
     # Years
     years = days // 365
+    if years < 1:
+        # Edge case: 28-30 days or 360-364 days
+        return f"{days} day{'s' if days != 1 else ''} ago"
     return f"{years} year{'s' if years != 1 else ''} ago"
 
 
