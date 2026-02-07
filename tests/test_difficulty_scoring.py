@@ -26,8 +26,9 @@ def test_extract_linked_issue_numbers() -> None:
     # Test multiple issues
     assert _extract_linked_issue_numbers("closes #123 and fixes #456") == [123, 456]
     
-    # Test just #number
-    assert _extract_linked_issue_numbers("See #123") == [123]
+    # Bare #number (no closing keyword) is not captured
+    assert _extract_linked_issue_numbers("See #123") == []
+    assert _extract_linked_issue_numbers("part of #100") == []
     
     # Test empty
     assert _extract_linked_issue_numbers("") == []

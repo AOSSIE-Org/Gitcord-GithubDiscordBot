@@ -234,8 +234,10 @@ class GitHubRestAdapter:
         full_name = repo["full_name"]
         self._logger.info("Ingesting repository", extra={"repo": full_name})
 
-        issue_events, issue_numbers = self._collect_issue_events(owner, repo_name, since)
-        pr_events, pr_numbers, pr_opened_count = self._collect_pull_request_events(
+        issue_events, issue_numbers, issue_authors = self._collect_issue_events(
+            owner, repo_name, since
+        )
+        pr_events, pr_numbers, pr_opened_count, pr_authors = self._collect_pull_request_events(
             owner, repo_name, since
         )
         issue_comment_events = list(
@@ -244,9 +246,12 @@ class GitHubRestAdapter:
         pr_comment_events = list(
             self._ingest_pr_comments(owner, repo_name, pr_numbers, since)
         )
-        # Emit helpful_comment events for non-author comments
+        # Emit helpful_comment events for non-author comments (authors from collectors, no extra API)
         helpful_comment_events = list(
-            self._ingest_helpful_comments(owner, repo_name, issue_numbers, pr_numbers, since)
+            self._ingest_helpful_comments(
+                owner, repo_name, issue_numbers, pr_numbers, since,
+                issue_authors=issue_authors, pr_authors=pr_authors,
+            )
         )
         self._logger.info(
             "Ingestion results",
@@ -291,31 +296,41 @@ class GitHubRestAdapter:
 
     def _collect_issue_events(
         self, owner: str, repo: str, since: datetime
-    ) -> tuple[list[ContributionEvent], list[int]]:
+    ) -> tuple[list[ContributionEvent], list[int], dict[int, str]]:
         issue_events: list[ContributionEvent] = []
         issue_numbers: list[int] = []
+        issue_authors: dict[int, str] = {}
         params = {"state": "all", "since": since.isoformat(), "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/issues", params=params):
             for issue in page:
                 if "pull_request" in issue:
                     continue
-                issue_numbers.append(issue["number"])
+                num = issue["number"]
+                issue_numbers.append(num)
+                author = (issue.get("user") or {}).get("login")
+                if author:
+                    issue_authors[num] = author
                 issue_events.extend(self._issue_events(owner, repo, issue, since))
-        return issue_events, issue_numbers
+        return issue_events, issue_numbers, issue_authors
 
     def _collect_pull_request_events(
         self, owner: str, repo: str, since: datetime
-    ) -> tuple[list[ContributionEvent], list[int], int]:
+    ) -> tuple[list[ContributionEvent], list[int], int, dict[int, str]]:
         pr_events: list[ContributionEvent] = []
         pr_numbers: list[int] = []
+        pr_authors: dict[int, str] = {}
         pr_opened_count = 0
         params = {"state": "all", "sort": "updated", "direction": "desc", "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo}/pulls", params=params):
             for pr in page:
                 updated_at = _parse_iso8601(pr.get("updated_at"))
                 if updated_at and updated_at < since:
-                    return pr_events, pr_numbers, pr_opened_count
-                pr_numbers.append(pr["number"])
+                    return pr_events, pr_numbers, pr_opened_count, pr_authors
+                num = pr["number"]
+                pr_numbers.append(num)
+                author = (pr.get("user") or {}).get("login")
+                if author:
+                    pr_authors[num] = author
                 created_at = _parse_iso8601(pr.get("created_at"))
                 if created_at and created_at >= since:
                     pr_author = pr.get("user") or {}
@@ -421,7 +436,7 @@ class GitHubRestAdapter:
                             },
                         )
                 pr_events.extend(self._pull_request_reviews(owner, repo, pr["number"], since))
-        return pr_events, pr_numbers, pr_opened_count
+        return pr_events, pr_numbers, pr_opened_count, pr_authors
 
     def _fetch_issue_difficulty_labels(
         self, owner: str, repo: str, issue_numbers: list[int]
@@ -605,6 +620,9 @@ class GitHubRestAdapter:
         issue_numbers: Sequence[int],
         pr_numbers: Sequence[int],
         since: datetime,
+        *,
+        issue_authors: dict[int, str] | None = None,
+        pr_authors: dict[int, str] | None = None,
     ) -> Iterable[ContributionEvent]:
         """Emit helpful_comment events for non-author comments on issues and PRs.
         
@@ -614,42 +632,14 @@ class GitHubRestAdapter:
         - It's not a bot comment
         
         Bonus is capped per PR/issue (max 5 helpful comments count for bonus).
+        
+        issue_authors and pr_authors should be precomputed by callers (e.g. from
+        _collect_issue_events / _collect_pull_request_events) to avoid N+1 API calls.
         """
         helpful_events: list[ContributionEvent] = []
-        # Track authors for issues and PRs
-        issue_authors: dict[int, str] = {}
-        pr_authors: dict[int, str] = {}
-        
-        # Fetch issue authors
-        for issue_number in issue_numbers:
-            try:
-                response = self._client.get(
-                    f"/repos/{owner}/{repo}/issues/{issue_number}",
-                    headers={"Accept": "application/vnd.github+json"},
-                )
-                if response.status_code == 200:
-                    issue = response.json()
-                    author = (issue.get("user") or {}).get("login")
-                    if author:
-                        issue_authors[issue_number] = author
-            except Exception:  # noqa: BLE001
-                pass
-        
-        # Fetch PR authors
-        for pr_number in pr_numbers:
-            try:
-                response = self._client.get(
-                    f"/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={"Accept": "application/vnd.github+json"},
-                )
-                if response.status_code == 200:
-                    pr = response.json()
-                    author = (pr.get("user") or {}).get("login")
-                    if author:
-                        pr_authors[pr_number] = author
-            except Exception:  # noqa: BLE001
-                pass
-        
+        issue_authors = issue_authors or {}
+        pr_authors = pr_authors or {}
+
         # Process issue comments
         for issue_number in issue_numbers:
             params = {"per_page": 100}
@@ -966,26 +956,22 @@ def _is_bot_user(user: dict) -> bool:
 
 
 def _extract_linked_issue_numbers(pr_body: str) -> list[int]:
-    """Extract issue numbers from PR body that are closed/fixed/resolved.
+    """Extract issue numbers from PR body that are explicitly closed/fixed/resolved.
     
-    Matches patterns like: closes #123, fixes #456, resolves #789, or just #123
+    Only matches closing-keyword patterns: closes #123, fixes #456, resolves #789.
+    Does not match bare #number references to avoid unrelated issue lookups.
     Returns list of unique issue numbers (integers).
     """
     if not pr_body:
         return []
-    # Match: closes/fixes/resolves #123 or just #123
-    patterns = [
-        r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)",
-        r"#(\d+)",
-    ]
+    # Only match explicit closing keywords + #number (not bare #number)
+    pattern = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)"
     issue_numbers = set()
-    for pattern in patterns:
-        matches = re.finditer(pattern, pr_body, re.IGNORECASE)
-        for match in matches:
-            try:
-                issue_numbers.add(int(match.group(1)))
-            except (ValueError, IndexError):
-                continue
+    for match in re.finditer(pattern, pr_body, re.IGNORECASE):
+        try:
+            issue_numbers.add(int(match.group(1)))
+        except (ValueError, IndexError):
+            continue
     return sorted(list(issue_numbers))
 
 

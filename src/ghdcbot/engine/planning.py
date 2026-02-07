@@ -219,8 +219,10 @@ def plan_discord_roles(
                 )
             )
         
-        # Remove roles only if score-based system says so (merge-based is promotion-only)
-        for role in sorted((current_roles & managed_roles) - score_desired):
+        # Remove roles only if score-based says so, and never remove merge-granted roles
+        merge_granted_roles = merge_based_roles.get(mapping.discord_user_id, set())
+        removal_candidates = (current_roles & managed_roles) - score_desired - merge_granted_roles
+        for role in sorted(removal_candidates):
             plans.append(
                 DiscordRolePlan(
                     discord_user_id=mapping.discord_user_id,

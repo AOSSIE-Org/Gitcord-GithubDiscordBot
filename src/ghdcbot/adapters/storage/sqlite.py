@@ -427,11 +427,13 @@ class SqliteStorage:
         """Unlink the verified identity for this Discord user (set verified=0, unlinked_at=now).
         Rows are never deleted. Returns unlink info for audit, or None if no verified link.
         Raises ValueError if inside cooldown window.
+        Read-check-write is done in a single connection to avoid TOCTOU races.
         """
         from datetime import timedelta
 
         self.init_schema()
         now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -441,28 +443,26 @@ class SqliteStorage:
                 """,
                 (discord_user_id,),
             ).fetchone()
-        if not row:
-            return None
-        verified_at_raw = row["verified_at"]
-        if not verified_at_raw:
-            return None
-        verified_at = _parse_utc(verified_at_raw)
-        cooldown = timedelta(hours=cooldown_hours)
-        if now - verified_at < cooldown:
-            remaining = (verified_at + cooldown) - now
-            total_seconds = int(remaining.total_seconds())
-            hours, rem = divmod(total_seconds, 3600)
-            minutes, _ = divmod(rem, 60)
-            if hours > 0:
-                remaining_str = f"{hours}h {minutes}m"
-            else:
-                remaining_str = f"{minutes}m"
-            raise ValueError(
-                f"Identity was verified recently. You can unlink after {remaining_str}."
-            )
-        now_iso = now.isoformat()
-        github_user = row["github_user"]
-        with self._connect() as conn:
+            if not row:
+                return None
+            verified_at_raw = row["verified_at"]
+            if not verified_at_raw:
+                return None
+            verified_at = _parse_utc(verified_at_raw)
+            cooldown = timedelta(hours=cooldown_hours)
+            if now - verified_at < cooldown:
+                remaining = (verified_at + cooldown) - now
+                total_seconds = int(remaining.total_seconds())
+                hours, rem = divmod(total_seconds, 3600)
+                minutes, _ = divmod(rem, 60)
+                if hours > 0:
+                    remaining_str = f"{hours}h {minutes}m"
+                else:
+                    remaining_str = f"{minutes}m"
+                raise ValueError(
+                    f"Identity was verified recently. You can unlink after {remaining_str}."
+                )
+            github_user = row["github_user"]
             conn.execute(
                 """
                 UPDATE identity_links

@@ -603,14 +603,40 @@ def run_bot(config_path: str) -> None:
                     })
                 return
             
-            # Unassign old assignee and assign new one
+            # Unassign old assignee and assign new one; rollback if assign fails
             unassign_success = self.github_adapter.unassign_issue(
                 self.owner, self.repo, self.issue_number, old_assignee
             )
             assign_success = self.github_adapter.assign_issue(
                 self.owner, self.repo, self.issue_number, self.new_assignee_github
             )
-            
+            if unassign_success and not assign_success:
+                # Rollback: restore old assignee to avoid leaving issue unassigned
+                rollback_ok = self.github_adapter.assign_issue(
+                    self.owner, self.repo, self.issue_number, old_assignee
+                )
+                if not rollback_ok:
+                    logger.warning(
+                        "Rollback failed after assign_issue failed; issue may be unassigned",
+                        extra={
+                            "owner": self.owner,
+                            "repo": self.repo,
+                            "issue_number": self.issue_number,
+                            "old_assignee": old_assignee,
+                            "new_assignee": self.new_assignee_github,
+                        },
+                    )
+                await interaction.followup.send(
+                    "❌ Reassignment failed (e.g. network or permissions). Old assignee was restored where possible.",
+                    ephemeral=True,
+                )
+                return
+            if not unassign_success:
+                await interaction.followup.send(
+                    "❌ Failed to unassign current assignee.",
+                    ephemeral=True,
+                )
+                return
             if unassign_success and assign_success:
                 # Log audit event
                 if self.storage and hasattr(self.storage, "append_audit_event"):
@@ -639,12 +665,7 @@ def run_bot(config_path: str) -> None:
                         await self.message.edit(embed=embed, view=None)
                     except Exception:
                         pass
-            else:
-                await interaction.followup.send(
-                    "❌ Failed to reassign issue. Please try again or check GitHub permissions.",
-                    ephemeral=True,
-                )
-        
+
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
         async def cancel_assignment(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
             """Handle cancel button."""
@@ -1035,15 +1056,25 @@ def run_bot(config_path: str) -> None:
                 )
                 return False
             assignees = issue.get("assignees", [])
+            old_assignee: str | None = None
             if replace:
                 if not assignees:
                     await interaction.followup.send("❌ No existing assignee to replace.", ephemeral=True)
                     return False
-                old = assignees[0].get("login", "")
-                if not self.github_adapter.unassign_issue(self.owner, self.repo, self.issue_number, old):
+                old_assignee = assignees[0].get("login", "")
+                if not self.github_adapter.unassign_issue(self.owner, self.repo, self.issue_number, old_assignee):
                     await interaction.followup.send("❌ Failed to unassign current assignee.", ephemeral=True)
                     return False
             if not self.github_adapter.assign_issue(self.owner, self.repo, self.issue_number, self.requester_github):
+                if old_assignee:
+                    rollback_ok = self.github_adapter.assign_issue(
+                        self.owner, self.repo, self.issue_number, old_assignee
+                    )
+                    if not rollback_ok:
+                        logger.warning(
+                            "Rollback failed after assign_issue failed in issue request flow",
+                            extra={"owner": self.owner, "repo": self.repo, "issue_number": self.issue_number},
+                        )
                 await interaction.followup.send("❌ Failed to assign issue. Check GitHub permissions.", ephemeral=True)
                 return False
             return True
