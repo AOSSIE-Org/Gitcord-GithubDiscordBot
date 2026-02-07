@@ -60,6 +60,8 @@ class DiscordConfig(BaseModel):
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
+    # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
+    pr_preview_channels: list[str] = Field(default_factory=list)
 
 
 class QualityAdjustmentsConfig(BaseModel):
@@ -134,6 +136,8 @@ class MergeRoleRulesConfig(BaseModel):
 class AssignmentConfig(BaseModel):
     review_roles: list[str] = Field(default_factory=list)
     issue_assignees: list[str] = Field(default_factory=list)
+    # Roles that make a contributor eligible for issue assignment (for /request-issue review). Empty = any verified user.
+    issue_request_eligible_roles: list[str] = Field(default_factory=list)
 
 
 class IdentityMapping(BaseModel):
