@@ -337,23 +337,13 @@ def fetch_pr_context(
             else:
                 ci_status = "unknown"
     
-    # Get last commit time from head commit (if available in PR data)
-    head_commit = pr.get("head", {}).get("commit", {})
-    if head_commit:
-        commit_date_str = head_commit.get("commit", {}).get("author", {}).get("date")
-        if commit_date_str:
-            try:
-                last_commit_time = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
-    
-    # Fallback: use updated_at if commit time not available
-    if not last_commit_time:
-        updated_at_str = pr.get("updated_at", "")
-        if updated_at_str:
-            try:
-                last_commit_time = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
+    # GitHub Pulls API "head" has sha/label/ref/repo/user but no nested "commit" object.
+    # Use updated_at as proxy for last activity / last commit time (no extra API call).
+    updated_at_str = pr.get("updated_at", "")
+    if updated_at_str:
+        try:
+            last_commit_time = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
     
     return (pr, reviews, ci_status, last_commit_time)
