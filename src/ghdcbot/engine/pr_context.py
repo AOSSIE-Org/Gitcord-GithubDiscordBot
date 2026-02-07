@@ -124,13 +124,14 @@ def determine_mentor_signal(
     """
     state = pr.get("state", "").lower()
     draft = pr.get("draft", False)
+    merged = pr.get("merged", False)
     
-    if state != "open" or draft:
-        if state == "merged":
+    if state != "open" or draft or merged:
+        if merged:
             return "Merged"
         elif state == "closed":
             return "Closed"
-        else:
+        elif draft:
             return "Draft"
     
     # Check CI status
