@@ -35,7 +35,7 @@ def test_extract_linked_issue_numbers() -> None:
     assert _extract_linked_issue_numbers("No issue here") == []
     
     # Test deduplication
-    assert _extract_linked_issue_numbers("closes #123 and #123") == [123]
+    assert _extract_linked_issue_numbers("closes `#123` and fixes `#123`") == [123]
 
 
 def test_scoring_uses_difficulty_label_good_first_issue(tmp_path: Path) -> None:
