@@ -54,6 +54,18 @@ class GitHubConfig(BaseModel):
     user_fallback: bool = False
 
 
+class NotificationConfig(BaseModel):
+    """Configuration for verified-only GitHub → Discord notifications."""
+    enabled: bool = True
+    issue_assignment: bool = True
+    pr_review_requested: bool = True
+    pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
+    pr_merged: bool = True
+    coderabbit_reminders: bool = False  # Unresolved CodeRabbit comments after X days
+    # Default to DM; set channel_id to post to a channel instead
+    channel_id: str | None = None  # If None, sends DM; if set, posts to channel
+
+
 class DiscordConfig(BaseModel):
     guild_id: str
     token: str
@@ -62,6 +74,8 @@ class DiscordConfig(BaseModel):
     activity_channel_id: str | None = None
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
     pr_preview_channels: list[str] = Field(default_factory=list)
+    # Optional: verified-only GitHub → Discord notifications
+    notifications: NotificationConfig | None = None
 
 
 class QualityAdjustmentsConfig(BaseModel):

@@ -435,7 +435,10 @@ class GitHubRestAdapter:
                                 "error": str(exc),
                             },
                         )
-                pr_events.extend(self._pull_request_reviews(owner, repo, pr["number"], since))
+                pr_author_for_reviews = pr_authors.get(pr["number"])
+                pr_events.extend(
+                    self._pull_request_reviews(owner, repo, pr["number"], since, pr_author=pr_author_for_reviews)
+                )
         return pr_events, pr_numbers, pr_opened_count, pr_authors
 
     def _fetch_issue_difficulty_labels(
@@ -483,7 +486,7 @@ class GitHubRestAdapter:
         return difficulty_labels
 
     def _pull_request_reviews(
-        self, owner: str, repo: str, pr_number: int, since: datetime
+        self, owner: str, repo: str, pr_number: int, since: datetime, pr_author: str | None = None
     ) -> Iterable[ContributionEvent]:
         params = {"per_page": 100}
         for page in self._paginate(
@@ -499,17 +502,20 @@ class GitHubRestAdapter:
                 reviewer = user.get("login")
                 if not reviewer:
                     continue
+                payload = {
+                    "pr_number": pr_number,
+                    "review_id": review.get("id"),
+                    "state": review.get("state"),
+                    "submitted_at": review.get("submitted_at"),
+                }
+                if pr_author:
+                    payload["pr_author"] = pr_author
                 yield ContributionEvent(
                     github_user=reviewer,
                     event_type="pr_reviewed",
                     repo=repo,
                     created_at=submitted_at,
-                    payload={
-                        "pr_number": pr_number,
-                        "review_id": review.get("id"),
-                        "state": review.get("state"),
-                        "submitted_at": review.get("submitted_at"),
-                    },
+                    payload=payload,
                 )
 
     def _ingest_issue_comments(
@@ -763,12 +769,19 @@ class GitHubRestAdapter:
                     assignee_login = assignee.get("login")
                     if not assignee_login:
                         continue
+                    payload = _issue_payload(issue)
+                    # Include assigned_by (actor) if available in timeline event
+                    actor = event.get("actor")
+                    if actor and isinstance(actor, dict):
+                        assigned_by = actor.get("login")
+                        if assigned_by:
+                            payload["assigned_by"] = assigned_by
                     yield ContributionEvent(
                         github_user=assignee_login,
                         event_type="issue_assigned",
                         repo=repo,
                         created_at=created_at,
-                        payload=_issue_payload(issue),
+                        payload=payload,
                     )
         except Exception:
             # If timeline call fails, omit assignment events to avoid wrong timestamps

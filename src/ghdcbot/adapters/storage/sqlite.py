@@ -82,6 +82,18 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_status ON issue_requests (status);
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_created ON issue_requests (created_at);
+                CREATE TABLE IF NOT EXISTS notifications_sent (
+                    dedupe_key TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    github_user TEXT NOT NULL,
+                    discord_user_id TEXT NOT NULL,
+                    repo TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    channel_id TEXT,
+                    sent_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_notifications_sent_github_user ON notifications_sent (github_user);
+                CREATE INDEX IF NOT EXISTS idx_notifications_sent_discord_user ON notifications_sent (discord_user_id);
                 """
             )
 
@@ -639,6 +651,47 @@ class SqliteStorage:
                         except json.JSONDecodeError:
                             continue
         return events
+
+    def was_notification_sent(self, dedupe_key: str) -> bool:
+        """Check if notification was already sent (deduplication)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM notifications_sent WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+        return row is not None
+
+    def mark_notification_sent(
+        self,
+        dedupe_key: str,
+        event: Any,
+        discord_user_id: str,
+        channel_id: str | None,
+        target_github_user: str | None = None,
+    ) -> None:
+        """Mark notification as sent (deduplication tracking)."""
+        now = datetime.now(timezone.utc).isoformat()
+        target = str(event.payload.get("issue_number") or event.payload.get("pr_number") or "")
+        # Use target_github_user if provided (for pr_reviewed), else event.github_user
+        github_user = target_github_user or event.github_user
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO notifications_sent
+                (dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dedupe_key,
+                    event.event_type,
+                    github_user,
+                    discord_user_id,
+                    event.repo,
+                    target,
+                    channel_id,
+                    now,
+                ),
+            )
 
 
 def _ensure_utc(value: datetime) -> datetime:
