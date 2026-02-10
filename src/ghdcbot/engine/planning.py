@@ -56,7 +56,6 @@ def plan_merge_based_roles(
     
     # Sort rules by threshold (ascending) for deterministic processing
     sorted_rules = sorted(merge_rules, key=lambda r: r.min_merged_prs)
-    managed_merge_roles = {rule.discord_role for rule in sorted_rules}
     
     plans: list[DiscordRolePlan] = []
     for mapping in sorted(identity_mappings, key=lambda m: m.discord_user_id):
