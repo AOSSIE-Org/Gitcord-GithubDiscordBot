@@ -17,6 +17,7 @@ from ghdcbot.core.interfaces import (
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
+from ghdcbot.engine.notifications import send_notification_for_event
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.scoring import WeightedScoreStrategy
@@ -84,6 +85,18 @@ class Orchestrator:
             github_write_allowed=self.config.github.permissions.write,
             discord_write_allowed=self.config.discord.permissions.write,
         )
+        
+        # Send verified-only notifications for new events (if enabled)
+        notification_config = getattr(self.config.discord, "notifications", None)
+        if notification_config and notification_config.enabled:
+            _send_notifications_for_new_events(
+                contributions,
+                self.storage,
+                self.discord_writer,
+                policy,
+                notification_config,
+                self.config.github.org,
+            )
 
         if not issues and not prs and not contributions:
             logging.getLogger("Planning").info(
@@ -171,7 +184,7 @@ class Orchestrator:
             except Exception as exc:
                 logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 
-        apply_github_plans(self.github_writer, issue_plans, review_plans, policy)
+        apply_github_plans(self.github_writer, issue_plans, review_plans, policy, self.config.github.org)
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
         apply_discord_roles(
             self.discord_writer,
@@ -191,6 +204,27 @@ class Orchestrator:
             close = getattr(adapter, "close", None)
             if callable(close):
                 close()
+
+
+def _send_notifications_for_new_events(
+    contributions: list[ContributionEvent],
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: Any,
+    github_org: str,
+) -> None:
+    """Send Discord notifications for notification-worthy events (verified users only)."""
+    from ghdcbot.engine.notifications import send_notification_for_event
+    
+    logger = logging.getLogger("Notifications")
+    sent_count = 0
+    for event in contributions:
+        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged"}:
+            if send_notification_for_event(event, storage, discord_writer, policy, config, github_org):
+                sent_count += 1
+    if sent_count > 0:
+        logger.info("Sent GitHub notifications", extra={"count": sent_count})
 
 
 def build_role_to_github_map(
@@ -230,15 +264,17 @@ def apply_github_plans(
     issue_plans,
     review_plans,
     policy: MutationPolicy,
+    github_org: str,
 ) -> None:
     logger = logging.getLogger("GitHubMutations")
     if not policy.allow_github_mutations:
         logger.info("GitHub mutations disabled", extra={"mode": policy.mode.value})
         return
     for plan in issue_plans:
-        github_writer.assign_issue(plan.repo, plan.issue_number, plan.assignee)
+        # plan.repo is just the repo name, owner comes from config
+        github_writer.assign_issue(github_org, plan.repo, plan.issue_number, plan.assignee)
     for plan in review_plans:
-        github_writer.request_review(plan.repo, plan.pr_number, plan.reviewer)
+        github_writer.request_review(github_org, plan.repo, plan.pr_number, plan.reviewer)
 
 
 def apply_discord_roles(

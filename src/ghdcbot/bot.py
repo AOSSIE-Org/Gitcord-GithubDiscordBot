@@ -36,6 +36,7 @@ from ghdcbot.engine.issue_request_flow import (
     get_merged_pr_count_and_last_time,
     group_pending_requests_by_repo,
 )
+from ghdcbot.engine.notifications import send_notification_for_event
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -85,6 +86,18 @@ def run_bot(config_path: str) -> None:
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
     guild_id = int(config.discord.guild_id)
+    
+    # Wrapper to adapt discord_reader (has send_dm/send_message) to DiscordWriter interface for notifications
+    class DiscordWriterAdapter:
+        def __init__(self, reader: Any) -> None:
+            self._reader = reader
+        def send_dm(self, discord_user_id: str, content: str) -> bool:
+            send_dm = getattr(self._reader, "send_dm", None)
+            return send_dm(discord_user_id, content) if callable(send_dm) else False
+        def send_message(self, channel_id: str, content: str) -> bool:
+            send_msg = getattr(self._reader, "send_message", None)
+            return send_msg(channel_id, content) if callable(send_msg) else False
+    discord_writer_adapter = DiscordWriterAdapter(discord_reader)
 
     @tree.command(
         name="link",
@@ -448,6 +461,9 @@ def run_bot(config_path: str) -> None:
             github_adapter: Any,
             storage: Any,
             policy: MutationPolicy,
+            discord_writer: Any = None,
+            notification_config: Any = None,
+            github_org: str = "",
             timeout: float = 300.0,  # 5 minutes
         ) -> None:
             super().__init__(timeout=timeout)
@@ -460,6 +476,9 @@ def run_bot(config_path: str) -> None:
             self.github_adapter = github_adapter
             self.storage = storage
             self.policy = policy
+            self.discord_writer = discord_writer
+            self.notification_config = notification_config
+            self.github_org = github_org
         
         async def on_timeout(self) -> None:
             """Handle view timeout."""
@@ -529,6 +548,32 @@ def run_bot(config_path: str) -> None:
                             "replaced": self.has_existing_assignee,
                         },
                     })
+                
+                # Send notification to assignee (if enabled and verified)
+                if self.notification_config and self.notification_config.enabled and self.notification_config.issue_assignment:
+                    from ghdcbot.core.models import ContributionEvent
+                    mentor_github = resolve_discord_to_github(self.storage, str(interaction.user.id))
+                    issue_title = issue.get("title", "Untitled")
+                    event = ContributionEvent(
+                        github_user=self.new_assignee_github,
+                        event_type="issue_assigned",
+                        repo=self.repo,
+                        created_at=datetime.now(timezone.utc),
+                        payload={
+                            "issue_number": self.issue_number,
+                            "title": issue_title,
+                            "assigned_by": mentor_github or str(interaction.user.id),
+                        },
+                    )
+                    if self.discord_writer:
+                        send_notification_for_event(
+                            event,
+                            self.storage,
+                            self.discord_writer,
+                            self.policy,
+                            self.notification_config,
+                            self.github_org,
+                        )
                 
                 await interaction.followup.send(
                     "✅ Issue assigned successfully!",
@@ -649,6 +694,32 @@ def run_bot(config_path: str) -> None:
                             "new_assignee": self.new_assignee_github,
                         },
                     })
+                
+                # Send notification to new assignee (if enabled and verified)
+                if self.notification_config and self.notification_config.enabled and self.notification_config.issue_assignment:
+                    from ghdcbot.core.models import ContributionEvent
+                    mentor_github = resolve_discord_to_github(self.storage, str(interaction.user.id))
+                    issue_title = issue.get("title", "Untitled")
+                    event = ContributionEvent(
+                        github_user=self.new_assignee_github,
+                        event_type="issue_assigned",
+                        repo=self.repo,
+                        created_at=datetime.now(timezone.utc),
+                        payload={
+                            "issue_number": self.issue_number,
+                            "title": issue_title,
+                            "assigned_by": mentor_github or str(interaction.user.id),
+                        },
+                    )
+                    if self.discord_writer:
+                        send_notification_for_event(
+                            event,
+                            self.storage,
+                            self.discord_writer,
+                            self.policy,
+                            self.notification_config,
+                            self.github_org,
+                        )
                 
                 await interaction.followup.send(
                     "🔁 Issue reassigned successfully!",
@@ -811,6 +882,7 @@ def run_bot(config_path: str) -> None:
             discord_write_allowed=config.discord.permissions.write,
         )
         
+        notification_config = getattr(config.discord, "notifications", None)
         view = IssueAssignmentView(
             owner=owner,
             repo=repo,
@@ -821,6 +893,9 @@ def run_bot(config_path: str) -> None:
             github_adapter=github_adapter,
             storage=storage,
             policy=policy,
+            discord_writer=discord_writer_adapter,
+            notification_config=notification_config,
+            github_org=config.github.org,
         )
         
         # Show appropriate buttons based on assignment state
@@ -1352,6 +1427,79 @@ def run_bot(config_path: str) -> None:
         
         embed = discord.Embed.from_dict(embed_dict)
         await message.channel.send(embed=embed)
+
+    @tree.command(
+        name="sync",
+        description="Sync GitHub events and send notifications (mentor-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    async def sync_cmd(interaction: discord.Interaction) -> None:
+        """Manually trigger run-once to sync GitHub events and send notifications."""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Check mentor role
+        mentor_roles = getattr(config, "assignments", None)
+        if mentor_roles:
+            issue_assignee_roles = getattr(mentor_roles, "issue_assignees", [])
+            user_roles = [role.name for role in interaction.user.roles]
+            if not any(role in issue_assignee_roles for role in user_roles):
+                await interaction.followup.send(
+                    f"❌ Permission denied. Only mentors with roles {', '.join(issue_assignee_roles)} can sync.",
+                    ephemeral=True,
+                )
+                return
+        
+        try:
+            # Build orchestrator and run once
+            from ghdcbot.engine.orchestrator import Orchestrator
+            
+            github_adapter_for_sync = build_adapter(
+                config.runtime.github_adapter,
+                token=config.github.token,
+                org=config.github.org,
+                api_base=str(config.github.api_base),
+            )
+            discord_reader_for_sync = build_adapter(
+                config.runtime.discord_adapter,
+                token=config.discord.token,
+                guild_id=config.discord.guild_id,
+            )
+            github_writer_for_sync = build_adapter(
+                config.runtime.github_adapter,
+                token=config.github.token,
+                org=config.github.org,
+                api_base=str(config.github.api_base),
+            )
+            discord_writer_for_sync = build_adapter(
+                config.runtime.discord_adapter,
+                token=config.discord.token,
+                guild_id=config.discord.guild_id,
+            )
+            
+            orchestrator = Orchestrator(
+                github_reader=github_adapter_for_sync,
+                github_writer=github_writer_for_sync,
+                discord_reader=discord_reader_for_sync,
+                discord_writer=discord_writer_for_sync,
+                storage=storage,
+                config=config,
+            )
+            
+            await interaction.followup.send("🔄 Syncing GitHub events and sending notifications...", ephemeral=True)
+            
+            # Run orchestrator (this will ingest and send notifications)
+            orchestrator.run_once()
+            
+            await interaction.followup.send("✅ Sync complete! Notifications sent for new GitHub events.", ephemeral=True)
+            
+            # Cleanup
+            orchestrator.close()
+        except Exception as exc:
+            logger.exception("Sync failed", exc_info=True)
+            await interaction.followup.send(
+                f"❌ Sync failed: {exc}",
+                ephemeral=True,
+            )
 
     @client.event
     async def on_ready() -> None:
