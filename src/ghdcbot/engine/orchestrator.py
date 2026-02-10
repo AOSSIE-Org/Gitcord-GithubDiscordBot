@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from ghdcbot.config.models import BotConfig, IdentityMapping, MergeRoleRulesConfig, RoleMappingConfig
 from ghdcbot.core.interfaces import (
@@ -15,12 +15,13 @@ from ghdcbot.core.interfaces import (
     Storage,
 )
 from ghdcbot.core.modes import MutationPolicy, RunMode
-from ghdcbot.core.models import GitHubAssignmentPlan
+from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.notifications import send_notification_for_event
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.scoring import WeightedScoreStrategy
+from ghdcbot.engine.snapshots import write_snapshots_to_github
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,38 @@ class Orchestrator:
             period_end=period_end,
             merge_role_rules=merge_role_rules,
         )
+        
+        # Write GitHub snapshots (additive, non-blocking)
+        # This happens AFTER all processing completes successfully
+        try:
+            # Compute contribution summaries for snapshot if not already computed
+            contribution_summaries_for_snapshot = None
+            list_summaries = getattr(self.storage, "list_contribution_summaries", None)
+            if callable(list_summaries):
+                try:
+                    contribution_summaries_for_snapshot = list_summaries(
+                        period_start,
+                        period_end,
+                        self.config.scoring.weights,
+                    )
+                except Exception:
+                    # If summaries can't be computed, snapshot will have empty contributors data
+                    pass
+            
+            write_snapshots_to_github(
+                storage=self.storage,
+                config=self.config,
+                github_writer=self.github_writer,
+                identity_mappings=identity_mappings,
+                scores=scores,
+                member_roles=member_roles,
+                period_start=period_start,
+                period_end=period_end,
+                contribution_summaries=contribution_summaries_for_snapshot,
+            )
+        except Exception as exc:
+            # Never block run-once completion
+            logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
 
     def close(self) -> None:
         for adapter in {self.github_reader, self.github_writer, self.discord_reader, self.discord_writer}:

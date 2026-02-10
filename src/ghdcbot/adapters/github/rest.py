@@ -228,6 +228,106 @@ class GitHubRestAdapter:
             return response.json()
         return None
 
+    def write_file(
+        self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None
+    ) -> bool:
+        """Write a file to GitHub repo using Contents API.
+        
+        Creates or updates a file in the repository. Uses the default branch if branch is not specified.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            file_path: Path to file within repo (e.g., "snapshots/2024-01-01/meta.json")
+            content: File content (will be base64 encoded)
+            commit_message: Commit message
+            branch: Branch name (default: main or master)
+        
+        Returns:
+            True if successful, False otherwise.
+        """
+        import base64
+        
+        try:
+            # Get default branch if not specified
+            if not branch:
+                repo_info = self._request("GET", f"/repos/{owner}/{repo}", params={})
+                if repo_info and repo_info.status_code == 200:
+                    branch = repo_info.json().get("default_branch", "main")
+                else:
+                    branch = "main"
+            
+            # Check if file exists to get SHA for update
+            file_sha = None
+            try:
+                file_response = self._request(
+                    "GET",
+                    f"/repos/{owner}/{repo}/contents/{file_path}",
+                    params={"ref": branch},
+                )
+                if file_response and file_response.status_code == 200:
+                    file_sha = file_response.json().get("sha")
+            except Exception:
+                # File doesn't exist yet, will create new
+                pass
+            
+            # Prepare content (base64 encode)
+            content_bytes = content.encode("utf-8")
+            content_b64 = base64.b64encode(content_bytes).decode("ascii")
+            
+            # Create/update file
+            payload = {
+                "message": commit_message,
+                "content": content_b64,
+                "branch": branch,
+            }
+            if file_sha:
+                payload["sha"] = file_sha
+            
+            # Use _client directly for PUT with JSON body
+            try:
+                response = self._client.put(
+                    f"/repos/{owner}/{repo}/contents/{file_path}",
+                    json=payload,
+                )
+            except httpx.HTTPError as exc:
+                self._logger.warning(
+                    "GitHub request failed",
+                    extra={"path": f"/repos/{owner}/{repo}/contents/{file_path}", "error": str(exc)},
+                )
+                return False
+            
+            if response and response.status_code in {200, 201}:
+                self._logger.info(
+                    "File written to GitHub",
+                    extra={"owner": owner, "repo": repo, "file_path": file_path, "branch": branch},
+                )
+                return True
+            else:
+                error_body = ""
+                try:
+                    error_body = (response.text or "")[:300] if response else ""
+                except Exception:
+                    pass
+                self._logger.warning(
+                    "Failed to write file to GitHub",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "file_path": file_path,
+                        "status_code": response.status_code if response else None,
+                        "error": error_body,
+                    },
+                )
+                return False
+        except Exception as exc:
+            self._logger.warning(
+                "Exception writing file to GitHub",
+                exc_info=True,
+                extra={"owner": owner, "repo": repo, "file_path": file_path, "error": str(exc)},
+            )
+            return False
+
     def _ingest_repo(self, repo: dict, since: datetime) -> Iterable[ContributionEvent]:
         repo_name = repo["name"]
         owner = repo["owner"]["login"]

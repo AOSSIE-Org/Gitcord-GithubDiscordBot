@@ -693,6 +693,23 @@ class SqliteStorage:
                 ),
             )
 
+    def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+        """List recent notifications (for snapshot export).
+        Returns list of notification dicts, ordered by sent_at DESC.
+        Optional method; not part of the Storage protocol.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at
+                FROM notifications_sent
+                ORDER BY sent_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
 
 def _ensure_utc(value: datetime) -> datetime:
     """Normalize timestamps to UTC with tzinfo for safe SQLite ordering."""
