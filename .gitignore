@@ -15,3 +15,7 @@ config/*.local.yaml
 src/ghdcbot.egg-info/
 *.egg-info/
 run-bot.sh
+config/shubh-olrd.yaml
+test_snapshots_comprehensive.sh
+bot.log
+bot_output.log
