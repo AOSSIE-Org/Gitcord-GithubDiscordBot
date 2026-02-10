@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score

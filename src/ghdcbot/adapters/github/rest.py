@@ -340,16 +340,17 @@ class GitHubRestAdapter:
         pr_events, pr_numbers, pr_opened_count, pr_authors = self._collect_pull_request_events(
             owner, repo_name, since
         )
-        issue_comment_events = list(
-            self._ingest_issue_comments(owner, repo_name, issue_numbers, since)
+        # Ingest comments (returns both events and raw comments for reuse)
+        issue_comment_events, issue_comments_by_number = self._ingest_issue_comments(
+            owner, repo_name, issue_numbers, since
         )
-        pr_comment_events = list(
-            self._ingest_pr_comments(owner, repo_name, pr_numbers, since)
+        pr_comment_events, pr_comments_by_number = self._ingest_pr_comments(
+            owner, repo_name, pr_numbers, since
         )
-        # Emit helpful_comment events for non-author comments (authors from collectors, no extra API)
+        # Emit helpful_comment events for non-author comments (authors from collectors, pre-fetched comments)
         helpful_comment_events = list(
             self._ingest_helpful_comments(
-                owner, repo_name, issue_numbers, pr_numbers, since,
+                owner, repo_name, issue_comments_by_number, pr_comments_by_number, since,
                 issue_authors=issue_authors, pr_authors=pr_authors,
             )
         )
@@ -620,62 +621,81 @@ class GitHubRestAdapter:
 
     def _ingest_issue_comments(
         self, owner: str, repo: str, issue_numbers: Sequence[int], since: datetime
-    ) -> Iterable[ContributionEvent]:
+    ) -> tuple[list[ContributionEvent], dict[int, list[dict]]]:
+        """Ingest issue comments and return both events and raw comments for reuse.
+        
+        Returns:
+            Tuple of (comment_events, comments_by_number) where comments_by_number
+            maps issue_number -> list of comment dicts.
+        """
         if not issue_numbers:
-            return []
+            return [], {}
         self._logger.info(
             "Ingesting issue comments",
             extra={"repo": f"{owner}/{repo}", "issues": len(issue_numbers)},
         )
         comment_events: list[ContributionEvent] = []
+        comments_by_number: dict[int, list[dict]] = {}
         for issue_number in issue_numbers:
             params = {"per_page": 100}
+            comments_list: list[dict] = []
             for page in self._paginate(
                 f"/repos/{owner}/{repo}/issues/{issue_number}/comments", params=params
             ):
-                for comment in page:
-                    created_at = _parse_iso8601(comment.get("created_at"))
-                    if not created_at or created_at < since:
-                        continue
-                    user = comment.get("user") or {}
-                    if _is_bot_user(user):
-                        continue
-                    login = user.get("login")
-                    if not login:
-                        continue
-                    comment_events.append(
-                        ContributionEvent(
-                            github_user=login,
-                            event_type="comment",
-                            repo=repo,
-                            created_at=created_at,
-                            payload={
-                                "issue_number": issue_number,
-                                "comment_id": comment.get("id"),
-                                "url": comment.get("html_url"),
-                            },
-                        )
+                comments_list.extend(page)
+            comments_by_number[issue_number] = comments_list
+            
+            for comment in comments_list:
+                created_at = _parse_iso8601(comment.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+                user = comment.get("user") or {}
+                if _is_bot_user(user):
+                    continue
+                login = user.get("login")
+                if not login:
+                    continue
+                comment_events.append(
+                    ContributionEvent(
+                        github_user=login,
+                        event_type="comment",
+                        repo=repo,
+                        created_at=created_at,
+                        payload={
+                            "issue_number": issue_number,
+                            "comment_id": comment.get("id"),
+                            "url": comment.get("html_url"),
+                        },
                     )
+                )
         if comment_events:
             self._logger.info(
                 "Emitted comment events",
                 extra={"repo": f"{owner}/{repo}", "count": len(comment_events), "source": "issue"},
             )
-        return comment_events
+        return comment_events, comments_by_number
 
     def _ingest_pr_comments(
         self, owner: str, repo: str, pr_numbers: Sequence[int], since: datetime
-    ) -> Iterable[ContributionEvent]:
+    ) -> tuple[list[ContributionEvent], dict[int, list[dict]]]:
+        """Ingest PR comments and return both events and raw comments for reuse.
+        
+        Returns:
+            Tuple of (comment_events, comments_by_number) where comments_by_number
+            maps pr_number -> list of comment dicts.
+        """
         if not pr_numbers:
-            return []
+            return [], {}
         self._logger.info(
             "Ingesting PR comments",
             extra={"repo": f"{owner}/{repo}", "prs": len(pr_numbers)},
         )
         comment_events: list[ContributionEvent] = []
+        comments_by_number: dict[int, list[dict]] = {}
         seen: set[tuple[str, int]] = set()
         for pr_number in pr_numbers:
             params = {"per_page": 100}
+            comments_list: list[dict] = []
             paths = [
                 f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
                 f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
@@ -687,44 +707,47 @@ class GitHubRestAdapter:
                         if comment_id is None:
                             continue
                         key = (repo, int(comment_id))
-                        if key in seen:
-                            continue
-                        created_at = _parse_iso8601(comment.get("created_at"))
-                        if not created_at or created_at < since:
-                            continue
-                        user = comment.get("user") or {}
-                        if _is_bot_user(user):
-                            continue
-                        login = user.get("login")
-                        if not login:
-                            continue
-                        seen.add(key)
-                        comment_events.append(
-                            ContributionEvent(
-                                github_user=login,
-                                event_type="comment",
-                                repo=repo,
-                                created_at=created_at,
-                                payload={
-                                    "issue_number": pr_number,
-                                    "comment_id": comment_id,
-                                    "url": comment.get("html_url"),
-                                },
-                            )
-                        )
+                        if key not in seen:
+                            seen.add(key)
+                            comments_list.append(comment)
+            comments_by_number[pr_number] = comments_list
+            
+            for comment in comments_list:
+                created_at = _parse_iso8601(comment.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+                user = comment.get("user") or {}
+                if _is_bot_user(user):
+                    continue
+                login = user.get("login")
+                if not login:
+                    continue
+                comment_events.append(
+                    ContributionEvent(
+                        github_user=login,
+                        event_type="comment",
+                        repo=repo,
+                        created_at=created_at,
+                        payload={
+                            "issue_number": pr_number,
+                            "comment_id": comment.get("id"),
+                            "url": comment.get("html_url"),
+                        },
+                    )
+                )
         if comment_events:
             self._logger.info(
                 "Emitted comment events",
                 extra={"repo": f"{owner}/{repo}", "count": len(comment_events), "source": "pr"},
             )
-        return comment_events
+        return comment_events, comments_by_number
 
     def _ingest_helpful_comments(
         self,
         owner: str,
         repo: str,
-        issue_numbers: Sequence[int],
-        pr_numbers: Sequence[int],
+        issue_comments_by_number: dict[int, Iterable[dict]],
+        pr_comments_by_number: dict[int, Iterable[dict]],
         since: datetime,
         *,
         issue_authors: dict[int, str] | None = None,
@@ -741,81 +764,73 @@ class GitHubRestAdapter:
         
         issue_authors and pr_authors should be precomputed by callers (e.g. from
         _collect_issue_events / _collect_pull_request_events) to avoid N+1 API calls.
+        
+        issue_comments_by_number and pr_comments_by_number should contain pre-fetched
+        comment iterables to avoid duplicate API pagination.
         """
         helpful_events: list[ContributionEvent] = []
         issue_authors = issue_authors or {}
         pr_authors = pr_authors or {}
 
         # Process issue comments
-        for issue_number in issue_numbers:
-            params = {"per_page": 100}
+        for issue_number, comments in issue_comments_by_number.items():
             helpful_count = 0
-            for page in self._paginate(
-                f"/repos/{owner}/{repo}/issues/{issue_number}/comments", params=params
-            ):
-                for comment in page:
-                    created_at = _parse_iso8601(comment.get("created_at"))
-                    if not created_at or created_at < since:
-                        continue
-                    user = comment.get("user") or {}
-                    if _is_bot_user(user):
-                        continue
-                    commenter = user.get("login")
-                    if not commenter:
-                        continue
-                    author = issue_authors.get(issue_number)
-                    if author and commenter != author and helpful_count < 5:
-                        helpful_events.append(
-                            ContributionEvent(
-                                github_user=commenter,
-                                event_type="helpful_comment",
-                                repo=repo,
-                                created_at=created_at,
-                                payload={
-                                    "issue_number": issue_number,
-                                    "comment_id": comment.get("id"),
-                                    "target_type": "issue",
-                                },
-                            )
+            for comment in comments:
+                created_at = _parse_iso8601(comment.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+                user = comment.get("user") or {}
+                if _is_bot_user(user):
+                    continue
+                commenter = user.get("login")
+                if not commenter:
+                    continue
+                author = issue_authors.get(issue_number)
+                if author and commenter != author and helpful_count < 5:
+                    helpful_events.append(
+                        ContributionEvent(
+                            github_user=commenter,
+                            event_type="helpful_comment",
+                            repo=repo,
+                            created_at=created_at,
+                            payload={
+                                "issue_number": issue_number,
+                                "comment_id": comment.get("id"),
+                                "target_type": "issue",
+                            },
                         )
-                        helpful_count += 1
+                    )
+                    helpful_count += 1
         
         # Process PR comments
-        for pr_number in pr_numbers:
-            params = {"per_page": 100}
+        for pr_number, comments in pr_comments_by_number.items():
             helpful_count = 0
-            paths = [
-                f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
-            ]
-            for path in paths:
-                for page in self._paginate(path, params=params):
-                    for comment in page:
-                        created_at = _parse_iso8601(comment.get("created_at"))
-                        if not created_at or created_at < since:
-                            continue
-                        user = comment.get("user") or {}
-                        if _is_bot_user(user):
-                            continue
-                        commenter = user.get("login")
-                        if not commenter:
-                            continue
-                        author = pr_authors.get(pr_number)
-                        if author and commenter != author and helpful_count < 5:
-                            helpful_events.append(
-                                ContributionEvent(
-                                    github_user=commenter,
-                                    event_type="helpful_comment",
-                                    repo=repo,
-                                    created_at=created_at,
-                                    payload={
-                                        "pr_number": pr_number,
-                                        "comment_id": comment.get("id"),
-                                        "target_type": "pull_request",
-                                    },
-                                )
-                            )
-                            helpful_count += 1
+            for comment in comments:
+                created_at = _parse_iso8601(comment.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+                user = comment.get("user") or {}
+                if _is_bot_user(user):
+                    continue
+                commenter = user.get("login")
+                if not commenter:
+                    continue
+                author = pr_authors.get(pr_number)
+                if author and commenter != author and helpful_count < 5:
+                    helpful_events.append(
+                        ContributionEvent(
+                            github_user=commenter,
+                            event_type="helpful_comment",
+                            repo=repo,
+                            created_at=created_at,
+                            payload={
+                                "pr_number": pr_number,
+                                "comment_id": comment.get("id"),
+                                "target_type": "pull_request",
+                            },
+                        )
+                    )
+                    helpful_count += 1
         
         return helpful_events
 
@@ -883,9 +898,18 @@ class GitHubRestAdapter:
                         created_at=created_at,
                         payload=payload,
                     )
-        except Exception:
+        except Exception as e:
             # If timeline call fails, omit assignment events to avoid wrong timestamps
-            pass
+            self._logger.debug(
+                "Failed to fetch issue timeline for assignment events",
+                exc_info=True,
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "error": str(e),
+                },
+            )
 
     def _list_repo_open_issues(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
@@ -1130,9 +1154,20 @@ def _detect_reverted_pr(pr: dict, owner: str, repo: str, client: httpx.Client) -
                                 return int(match.group(1))
                             except (ValueError, IndexError):
                                 continue
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             # Network errors, etc. - skip commit check
-            pass
+            import logging
+            logger = logging.getLogger("GitHubRestAdapter")
+            logger.debug(
+                "Failed to check commits for revert detection",
+                exc_info=True,
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "error": str(e),
+                },
+            )
     return None
 
 
@@ -1171,9 +1206,21 @@ def _check_pr_ci_status(pr: dict, owner: str, repo: str, client: httpx.Client) -
             state = status_data.get("state", "").lower()
             if state == "failure":
                 return True
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         # Network errors, etc. - assume CI passed (fail closed)
-        pass
+        import logging
+        logger = logging.getLogger("GitHubRestAdapter")
+        logger.debug(
+            "Failed to check CI status for PR",
+            exc_info=True,
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "pr_number": pr.get("number"),
+                "merge_sha": merge_sha,
+                "error": str(e),
+            },
+        )
     return False
 
 
