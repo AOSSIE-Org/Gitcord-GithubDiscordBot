@@ -390,8 +390,9 @@ def apply_discord_roles(
                 role_name=role,
                 policy=policy,
             )
-        # Remove roles only if score-based system says so (merge-based is promotion-only)
-        for role in sorted((current_roles & managed_roles) - score_desired):
+        # Remove roles that are no longer desired (preserve merge-based roles)
+        roles_to_remove = (current_roles & managed_roles) - (score_desired | merge_desired)
+        for role in sorted(roles_to_remove):
             discord_writer.remove_role(mapping.discord_user_id, role)
 
 
@@ -418,11 +419,11 @@ def _send_role_congratulation(
         # DM sending not available (e.g., using DiscordPlanWriter)
         return
     
-    # Build congratulatory message
+    # Build congratulatory message (generic, works for any role source)
     message = (
         f"🎉 Congratulations!\n\n"
         f"Hi <@{discord_user_id}>,\n\n"
-        f"Your recent merged pull request has earned you the **{role_name}** role in the server.\n\n"
+        f"You have earned the **{role_name}** role in the server.\n\n"
         f"Thank you for your contribution — keep building 🚀"
     )
     

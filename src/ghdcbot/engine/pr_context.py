@@ -150,6 +150,9 @@ def determine_mentor_signal(
     if approved_count > 0 and mergeable is True:
         return "Ready to merge"
     
+    if approved_count > 0 and mergeable is not True:
+        return "Waiting on contributor"
+    
     if approved_count == 0:
         return "Waiting on reviewer"
     
