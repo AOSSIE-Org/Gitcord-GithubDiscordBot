@@ -179,6 +179,14 @@ class IdentityConfig(BaseModel):
         return value
 
 
+class SnapshotConfig(BaseModel):
+    """Configuration for GitHub-backed JSON snapshots."""
+    enabled: bool = False
+    repo_path: str = ""  # Format: "owner/repo" (e.g., "org/gitcord-data")
+    # Optional: branch to write to (default: main/master)
+    branch: str | None = None
+
+
 class BotConfig(BaseModel):
     runtime: RuntimeConfig
     github: GitHubConfig
@@ -189,6 +197,8 @@ class BotConfig(BaseModel):
     identity_mappings: list[IdentityMapping] = Field(default_factory=list)
     identity: IdentityConfig | None = None
     merge_role_rules: MergeRoleRulesConfig | None = None
+    # Optional: GitHub snapshot storage
+    snapshots: SnapshotConfig | None = None
 
     @field_validator("role_mappings")
     @classmethod
