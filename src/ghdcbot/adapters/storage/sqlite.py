@@ -195,7 +195,6 @@ class SqliteStorage:
             if event_type == "pr_merged":
                 # Check if this is a merged PR with difficulty labels
                 if normalized_difficulty_weights:
-                    import json
                     payload = json.loads(row["payload_json"])
                     difficulty_labels = payload.get("difficulty_labels", [])
                     if difficulty_labels:
