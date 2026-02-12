@@ -70,6 +70,18 @@ class GitHubRestAdapter:
         Returns:
             True if assignment succeeded, False otherwise.
         """
+        # Log exact assignee being sent to GitHub
+        self._logger.info(
+            "Assigning issue to GitHub user",
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "issue_number": issue_number,
+                "assignee_exact": assignee,
+                "assignee_length": len(assignee),
+                "assignee_repr": repr(assignee),
+            },
+        )
         try:
             response = self._client.post(
                 f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
@@ -94,19 +106,36 @@ class GitHubRestAdapter:
             )
         
         if response.status_code in {200, 201}:
-            self._logger.info(
-                "Issue assigned successfully",
-                extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
-            )
+            # Log GitHub's response to see what assignees were actually set
+            try:
+                response_data = response.json()
+                actual_assignees = response_data.get("assignees", [])
+                assignee_logins = [a.get("login", "") for a in actual_assignees if isinstance(a, dict)]
+                self._logger.info(
+                    "Issue assigned successfully",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "requested_assignee": assignee,
+                        "actual_assignees_from_github": assignee_logins,
+                        "response_assignee_count": len(assignee_logins),
+                    },
+                )
+            except Exception:
+                self._logger.info(
+                    "Issue assigned successfully (could not parse response)",
+                    extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
+                )
             return True
         else:
             error_body = ""
             try:
-                error_body = (response.text or "")[:300]
+                error_body = (response.text or "")[:500]
             except Exception:
                 pass
             self._logger.warning(
-                "Issue assignment failed",
+                "Issue assignment failed (GitHub API non-2xx)",
                 extra={
                     "owner": owner,
                     "repo": repo,
@@ -919,7 +948,12 @@ class GitHubRestAdapter:
             for issue in page:
                 if "pull_request" in issue:
                     continue
-                yield {"repo": repo["name"], "number": issue["number"]}
+                # Include assignees so planning can skip already-assigned issues
+                yield {
+                    "repo": repo["name"],
+                    "number": issue["number"],
+                    "assignees": issue.get("assignees", []),
+                }
 
     def _list_repo_open_prs(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]

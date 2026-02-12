@@ -1,0 +1,1123 @@
+# Gitcord Manual Audit Testing Points
+# Check off each item [ ] as you test. Goal: 1000+ test points.
+
+## 1. SETUP & ENVIRONMENT (Items 1-60)
+
+### 1.1 Installation & Dependencies
+[ ] 1. Python 3.10+ available
+[ ] 2. pip install -e . succeeds
+[ ] 3. All dependencies resolve (no conflicts)
+[ ] 4. python -m ghdcbot --help shows usage
+[ ] 5. --config required and enforced
+[ ] 6. Invalid --config path exits with error
+[ ] 7. Missing config file exits with clear message
+[ ] 8. Config with wrong YAML syntax fails load
+[ ] 9. Config with missing required key fails (e.g. runtime)
+[ ] 10. Config with invalid type for a key fails (e.g. guild_id as int)
+[ ] 11. .env or env vars for GITHUB_TOKEN work when referenced in config
+[ ] 12. .env or env vars for DISCORD_TOKEN work when referenced in config
+[ ] 13. Empty token in config fails or warns appropriately
+[ ] 14. data_dir is created if missing when bot/run-once runs
+[ ] 15. data_dir is used for state.db (SQLite)
+[ ] 16. data_dir is used for audit_events.jsonl if applicable
+[ ] 17. Log level DEBUG produces more output than INFO
+[ ] 18. Log level WARNING suppresses INFO
+[ ] 19. Log level ERROR suppresses WARNING
+[ ] 20. Invalid log_level in config fails validation
+[ ] 21. mode dry-run is default
+[ ] 22. mode observer accepted
+[ ] 23. mode active accepted
+[ ] 24. Invalid mode value fails validation
+[ ] 25. github_adapter plugin path loads
+[ ] 26. discord_adapter plugin path loads
+[ ] 27. storage_adapter plugin path loads
+[ ] 28. Invalid adapter path fails with clear error
+[ ] 29. Bot starts without Discord token (fails at runtime appropriately)
+[ ] 30. Bot starts without GitHub token (fails at runtime appropriately)
+[ ] 31. run-once with valid config completes without crash
+[ ] 32. bot with valid config connects to Discord
+[ ] 33. Slash commands sync to guild on ready
+[ ] 34. Only configured guild_id receives command registration
+[ ] 35. Second guild does not see commands (if applicable)
+[ ] 36. Bot reconnects after network blip (resume session)
+[ ] 37. Bot restart re-syncs commands
+[ ] 38. Config change requires restart to take effect
+[ ] 39. data_dir persists across restarts
+[ ] 40. state.db survives bot restart
+[ ] 41. No corruption after kill -9 and restart
+[ ] 42. Concurrent run-once and bot (same data_dir) - no DB lock errors or document behavior
+[ ] 43. Read-only filesystem on data_dir fails gracefully
+[ ] 44. Full disk on data_dir fails gracefully
+[ ] 45. UTF-8 config with non-ASCII (e.g. comments) loads
+[ ] 46. Very long data_dir path handled
+[ ] 47. Symlink data_dir works
+[ ] 48. Relative path for data_dir resolved from CWD
+[ ] 49. Absolute path for data_dir used as-is
+[ ] 50. api_base URL with trailing slash accepted
+[ ] 51. api_base URL without trailing slash accepted
+[ ] 52. GitHub API base overridden (e.g. GitHub Enterprise) used for requests
+[ ] 53. guild_id as string numeric accepted
+[ ] 54. guild_id with leading zeros (if any) behavior
+[ ] 55. repos.mode allow with empty names fails validation
+[ ] 56. repos.mode deny with names filters repos
+[ ] 57. repos.mode allow with names allows only those repos
+[ ] 58. user_fallback true allows user repos when org repos fail
+[ ] 59. user_fallback false uses only org repos
+[ ] 60. github.permissions.read false prevents GitHub reads (run-once behavior)
+
+## 2. CONFIGURATION VALIDATION (Items 61-150)
+
+### 2.1 Runtime
+[ ] 61. runtime.mode required
+[ ] 62. runtime.log_level default INFO
+[ ] 63. runtime.data_dir required
+[ ] 64. runtime.github_adapter required
+[ ] 65. runtime.discord_adapter required
+[ ] 66. runtime.storage_adapter required
+[ ] 67. runtime with extra keys (ignore or error per implementation)
+
+### 2.2 GitHub
+[ ] 68. github.org required
+[ ] 69. github.token required
+[ ] 70. github.api_base default https://api.github.com
+[ ] 71. github.permissions.read default true
+[ ] 72. github.permissions.write default false
+[ ] 73. github.repos optional
+[ ] 74. github.repos.mode only allow or deny
+[ ] 75. github.repos.names non-empty when repos present
+
+### 2.3 Discord
+[ ] 76. discord.guild_id required
+[ ] 77. discord.token required
+[ ] 78. discord.permissions.read default true
+[ ] 79. discord.permissions.write default false
+[ ] 80. discord.activity_channel_id optional null
+[ ] 81. discord.pr_preview_channels optional list
+[ ] 82. discord.notifications optional
+[ ] 83. discord.notifications.enabled default true
+[ ] 84. discord.notifications.issue_assignment default true
+[ ] 85. discord.notifications.pr_review_requested default true
+[ ] 86. discord.notifications.pr_review_result default true
+[ ] 87. discord.notifications.pr_merged default true
+[ ] 88. discord.notifications.channel_id optional null (DM)
+[ ] 89. discord.notifications.coderabbit_reminders default false
+
+### 2.4 Scoring
+[ ] 90. scoring.period_days required positive
+[ ] 91. scoring.period_days 0 or negative fails
+[ ] 92. scoring.weights required
+[ ] 93. scoring.weights.issue_opened used
+[ ] 94. scoring.weights.pr_opened used
+[ ] 95. scoring.weights.pr_reviewed used
+[ ] 96. scoring.weights.comment used
+[ ] 97. scoring.difficulty_weights optional
+[ ] 98. scoring.difficulty_weights negative value fails
+[ ] 99. scoring.quality_adjustments optional
+[ ] 100. scoring.quality_adjustments.penalties integer values
+
+### 2.5 Roles & Assignments
+[ ] 101. role_mappings required non-empty
+[ ] 102. role_mappings[].discord_role required
+[ ] 103. role_mappings[].min_score default 0
+[ ] 104. assignments.review_roles list
+[ ] 105. assignments.issue_assignees list (mentor roles)
+[ ] 106. assignments.issue_request_eligible_roles list
+[ ] 107. merge_role_rules optional
+[ ] 108. merge_role_rules.enabled default false
+[ ] 109. merge_role_rules.rules[].discord_role required
+[ ] 110. merge_role_rules.rules[].min_merged_prs non-negative
+[ ] 111. identity_mappings optional list
+[ ] 112. identity_mappings[].github_user required
+[ ] 113. identity_mappings[].discord_user_id required
+[ ] 114. identity.unlink_cooldown_hours optional default 24
+[ ] 115. identity.unlink_cooldown_hours negative fails
+[ ] 116. identity.verified_max_age_days optional
+[ ] 117. identity.verified_max_age_days positive when set
+[ ] 118. snapshots optional
+[ ] 119. snapshots.enabled default false
+[ ] 120. snapshots.repo_path format owner/repo
+[ ] 121. snapshots.branch optional
+[ ] 122. Extra top-level keys in config (ignore or error)
+[ ] 123. Empty role_mappings fails validation
+[ ] 124. Duplicate discord_role in role_mappings allowed or documented
+[ ] 125. Duplicate discord_role in merge_role_rules allowed or documented
+[ ] 126. issue_assignees empty: mentor commands still exist but no one can run (check behavior)
+[ ] 127. issue_request_eligible_roles empty: any verified user eligible (documented)
+[ ] 128. issue_request_eligible_roles non-empty: only those roles eligible
+[ ] 129. review_roles empty: no review assignment plans
+[ ] 130. All notification flags false: no notifications sent
+[ ] 131. pr_preview_channels empty: no PR preview on message
+[ ] 132. pr_preview_channels with name: only that channel triggers preview
+[ ] 133. activity_channel_id set: run-once can post summary (if implemented)
+[ ] 134. Config file with tabs instead of spaces (YAML allows?)
+[ ] 135. Config file with Windows line endings
+[ ] 136. Config file with BOM
+[ ] 137. Very long org name
+[ ] 138. Org name with special characters
+[ ] 139. repo_path with typo (wrong repo) - snapshot write fails gracefully
+[ ] 140. branch with typo - snapshot write fails gracefully
+[ ] 141. Multiple identity_mappings for same discord_user_id (last wins or documented)
+[ ] 142. Multiple identity_mappings for same github_user (allowed or not)
+[ ] 143. Discord role name with spaces
+[ ] 144. Discord role name with special characters
+[ ] 145. Discord role that doesn't exist on server - role add/remove no-op or error
+[ ] 146. min_score negative in role_mappings (if allowed)
+[ ] 147. weights with zero values
+[ ] 148. weights with negative values (if allowed)
+[ ] 149. period_days very large (e.g. 3650)
+[ ] 150. period_days 1
+
+## 3. /link COMMAND (Items 151-230)
+
+[ ] 151. /link with valid GitHub username (first time) returns verification code
+[ ] 152. Verification code is numeric or alphanumeric as implemented
+[ ] 153. Response is ephemeral (only requester sees)
+[ ] 154. /link with same GitHub username again (pending) returns new or same code
+[ ] 155. /link with empty github_username shows error
+[ ] 156. /link with whitespace-only username shows error
+[ ] 157. /link with username longer than 39 chars (GitHub limit) - accept or error
+[ ] 158. /link with username with hyphen
+[ ] 159. /link with username with numbers
+[ ] 160. /link with username that doesn't exist on GitHub - behavior (error or still create claim)
+[ ] 161. /link with username that is already verified for another Discord user - behavior
+[ ] 162. /link with username that is already verified for same Discord user - behavior
+[ ] 163. /link with case variations (e.g. UserName vs username) - case handling
+[ ] 164. /link from user who already has pending claim for different GitHub user - behavior
+[ ] 165. /link from user who already has verified link - message
+[ ] 166. /link stores claim in storage (state.db)
+[ ] 167. /link sets expiration on verification code (if implemented)
+[ ] 168. /link audit event appended (if implemented)
+[ ] 169. /link with GitHub API down - error message
+[ ] 170. /link with invalid characters in username
+[ ] 171. /link response includes instruction to put code in bio or gist
+[ ] 172. /link response mentions same username for /verify-link
+[ ] 173. /link from different Discord account with same GitHub - behavior
+[ ] 174. /link then verify-link then link again - behavior
+[ ] 175. /link rate limit (if any) - many links in short time
+[ ] 176. /link in DMs vs in server (if bot allows DMs)
+[ ] 177. /link when bot has no permission to DM - behavior
+[ ] 178. /link with username "undefined" or "null" string
+[ ] 179. /link with username containing emoji (if GitHub allows)
+[ ] 180. /link with username that was previously unlinked - can link again
+[ ] 181. /link creates identity_links row with verified=0
+[ ] 182. /link verification_code stored
+[ ] 183. /link expires_at set if applicable
+[ ] 184. /link created_at set
+[ ] 185. /link from user not in guild (if applicable)
+[ ] 186. /link slash command visible to all members (no default permission)
+[ ] 187. /link autocomplete (if any) for github_username
+[ ] 188. /link with 1-char username
+[ ] 189. /link with 39-char username
+[ ] 190. /link then immediate /verify-link without code in bio - fails
+[ ] 191. /link then put code in bio then /verify-link - succeeds
+[ ] 192. /link then put code in gist then /verify-link - succeeds (if gist supported)
+[ ] 193. /link code in bio with extra text - verify still finds code
+[ ] 194. /link code in gist with extra text - verify still finds code
+[ ] 195. /link two users link same GitHub - second verify fails or first unlinked (documented)
+[ ] 196. /link response embed or message format correct
+[ ] 197. /link no sensitive data in non-ephemeral message
+[ ] 198. /link bot mentions correct command /verify-link
+[ ] 199. /link with username that has 2FA - no difference (we don't login as user)
+[ ] 200. /link from mobile Discord client
+[ ] 201. /link from web Discord client
+[ ] 202. /link when storage is full or read-only
+[ ] 203. /link when Discord API returns 5xx
+[ ] 204. /link when Discord API rate limited
+[ ] 205. /link defer then response within 3s (Discord limit)
+[ ] 206. /link long-running (e.g. slow GitHub) - defer used
+[ ] 207. /link duplicate submission (double-click) - no duplicate claim
+[ ] 208. /link then cancel (no verify) - claim expires or stays
+[ ] 209. /link with GitHub username that is organization - behavior
+[ ] 210. /link with GitHub username that is bot (e.g. dependabot)
+[ ] 211. /link case sensitivity of github_user in storage
+[ ] 212. /link trim leading/trailing spaces on username
+[ ] 213. /link and verify-link with different casing - single canonical storage
+[ ] 214. /link audit event type correct
+[ ] 215. /link audit event has discord_user_id
+[ ] 216. /link audit event has github_user
+[ ] 217. /link audit event timestamp
+[ ] 218. /link then unlink then link again - works
+[ ] 219. /link with repo-scoped token (if bot uses token to check user) - behavior
+[ ] 220. /link when config has identity_mappings pre-filled - /link still allowed
+[ ] 221. /link from user in identity_mappings (already linked) - message
+[ ] 222. /link max length of verification code
+[ ] 223. /link verification code uniqueness
+[ ] 224. /link no PII in logs (or redacted)
+[ ] 225. /link error message on storage failure
+[ ] 226. /link error message on GitHub fetch failure
+[ ] 227. /link error message on Discord reply failure
+[ ] 228. /link with username "0"
+[ ] 229. /link with username "a"
+[ ] 230. /link with username containing only numbers
+
+## 4. /verify-link COMMAND (Items 231-310)
+
+[ ] 231. /verify-link with correct code in bio succeeds
+[ ] 232. /verify-link with correct code in gist succeeds
+[ ] 233. /verify-link with wrong GitHub username (no claim) shows error
+[ ] 234. /verify-link with wrong GitHub username (claim for other user) shows error
+[ ] 235. /verify-link without prior /link shows error
+[ ] 236. /verify-link with code not in bio yet shows error
+[ ] 237. /verify-link with code in bio but wrong username shows error
+[ ] 238. /verify-link response is ephemeral
+[ ] 239. /verify-link marks identity as verified in storage
+[ ] 240. /verify-link sets verified_at timestamp
+[ ] 241. /verify-link clears or keeps verification_code (documented)
+[ ] 242. /verify-link audit event appended
+[ ] 243. /verify-link from different Discord user than link - fails
+[ ] 244. /verify-link with empty username - error
+[ ] 245. /verify-link with username case mismatch - case-insensitive match
+[ ] 246. /verify-link code in bio with leading/trailing spaces in bio
+[ ] 247. /verify-link code in gist body (full text)
+[ ] 248. /verify-link when GitHub API fails (fetch bio/gist) - error
+[ ] 249. /verify-link when user has private profile - behavior
+[ ] 250. /verify-link when gist is private - behavior
+[ ] 251. /verify-link expired claim - error or allow (documented)
+[ ] 252. /verify-link already verified - success message or idempotent
+[ ] 253. /verify-link updates identity_links.verified = 1
+[ ] 254. /verify-link after that /status shows verified
+[ ] 255. /verify-link after that /identity shows linked
+[ ] 256. /verify-link then /link same user - message (already verified)
+[ ] 257. /verify-link then /link different user - new claim
+[ ] 258. /verify-link rate limit (GitHub bio fetch)
+[ ] 259. /verify-link defer used if GitHub slow
+[ ] 260. /verify-link duplicate submission - idempotent
+[ ] 261. /verify-link with code in multiple gists - first found wins or documented
+[ ] 262. /verify-link with code in bio and gist - both work
+[ ] 263. /verify-link username with hyphen
+[ ] 264. /verify-link username with numbers
+[ ] 265. /verify-link audit event type identity_verified or similar
+[ ] 266. /verify-link no code leaked in response
+[ ] 267. /verify-link success message clear
+[ ] 268. /verify-link failure message clear (code not found vs user not found)
+[ ] 269. /verify-link when storage write fails - error
+[ ] 270. /verify-link when Discord reply fails - no crash
+[ ] 271. /verify-link from mobile
+[ ] 272. /verify-link from web
+[ ] 273. /verify-link list_verified_identity_mappings includes new link
+[ ] 274. /verify-link run-once can use this identity for scoring
+[ ] 275. /verify-link /summary includes this user after run-once
+[ ] 276. /verify-link notifications can target this user
+[ ] 277. /verify-link then request-issue eligible (if roles match)
+[ ] 278. /verify-link then assign-issue can assign to this user
+[ ] 279. /verify-link two Discord users verify same GitHub - second fails or first unlinked
+[ ] 280. /verify-link trim username
+[ ] 281. /verify-link 1-char username
+[ ] 282. /verify-link 39-char username
+[ ] 283. /verify-link GitHub user deleted after link - verify still works (we have claim)
+[ ] 284. /verify-link GitHub user renames - stored username vs new (documented)
+[ ] 285. /verify-link bot has read access to user profile/gist
+[ ] 286. /verify-link token scope (public user read)
+[ ] 287. /verify-link no PII in logs
+[ ] 288. /verify-link event in export-audit
+[ ] 289. /verify-link then unlink - unlink works
+[ ] 290. /verify-link then unlink then verify-link again - new link needed
+[ ] 291. /verify-link response time < 5s typical
+[ ] 292. /verify-link with very long bio - code still found
+[ ] 293. /verify-link with code at start of bio
+[ ] 294. /verify-link with code at end of bio
+[ ] 295. /verify-link with code in middle of bio
+[ ] 296. /verify-link with multiple numbers in bio - correct code matched
+[ ] 297. /verify-link gist with multiple files - which file checked
+[ ] 298. /verify-link gist filename (e.g. bio.txt) if required
+[ ] 299. /verify-link when GitHub returns 404 for user
+[ ] 300. /verify-link when GitHub returns 403 (rate limit)
+[ ] 301. /verify-link when GitHub returns 500
+[ ] 302. /verify-link retry (if any) on transient failure
+[ ] 303. /verify-link timeout (if any) on GitHub request
+[ ] 304. /verify-link slash command visible
+[ ] 305. /verify-link parameter github_username required
+[ ] 306. /verify-link autocomplete (if any)
+[ ] 307. /verify-link and link with unicode username (if GitHub allows)
+[ ] 308. /verify-link idempotent when already verified
+[ ] 309. /verify-link storage transaction (no partial state)
+[ ] 310. /verify-link concurrent with same user (two devices) - one succeeds
+
+## 5. /verify, /status, /summary, /identity (Items 311-400)
+
+[ ] 311. /verify (no args) shows verification status
+[ ] 312. /verify when not linked - clear message
+[ ] 313. /verify when pending - shows pending and code instruction
+[ ] 314. /verify when verified - shows success
+[ ] 315. /verify response ephemeral
+[ ] 316. /status when not linked - message
+[ ] 317. /status when linked and verified - shows GitHub username
+[ ] 318. /status when pending - shows pending
+[ ] 319. /status ephemeral
+[ ] 320. /status shows correct github_user
+[ ] 321. /status after unlink - not linked
+[ ] 322. /summary when no contributions - message or empty table
+[ ] 323. /summary when has contributions - shows data
+[ ] 324. /summary period matches config period_days
+[ ] 325. /summary ephemeral
+[ ] 326. /summary only own data (not other users)
+[ ] 327. /summary after verify-link and run-once - has entries if activity
+[ ] 328. /summary score breakdown (if shown)
+[ ] 329. /summary rank (if shown)
+[ ] 330. /identity when not linked
+[ ] 331. /identity when linked - shows GitHub user
+[ ] 332. /identity ephemeral
+[ ] 333. /verify from different server (if bot in multiple) - correct guild data
+[ ] 334. /status from different server
+[ ] 335. /summary from different server
+[ ] 336. /identity from different server
+[ ] 337. /verify defer if slow
+[ ] 338. /status defer if slow
+[ ] 339. /summary defer if slow (may need run-once data)
+[ ] 340. /identity defer if slow
+[ ] 341. /summary when storage has no scores - graceful
+[ ] 342. /summary when storage has scores for other user only - empty for self
+[ ] 343. /summary formatting (table or list) readable
+[ ] 344. /summary very long list - truncated or paginated
+[ ] 345. /status no sensitive data in non-ephemeral
+[ ] 346. /verify no sensitive data
+[ ] 347. /identity no sensitive data
+[ ] 348. /summary no other users' data
+[ ] 349. /status audit (if any) - read-only no audit or documented
+[ ] 350. /summary audit (if any)
+[ ] 351. /identity audit (if any)
+[ ] 352. /verify when verified_max_age_days set and link old - show warning or still verified
+[ ] 353. /status when verified_max_age_days set
+[ ] 354. /summary weights displayed or not (documented)
+[ ] 355. /summary contribution types (issues, PRs, comments) shown
+[ ] 356. /summary total score shown
+[ ] 357. /summary period start/end shown
+[ ] 358. /identity discord_user_id not exposed to other users
+[ ] 359. /verify command visible to all
+[ ] 360. /status command visible to all
+[ ] 361. /summary command visible to all
+[ ] 362. /identity command visible to all
+[ ] 363. /verify error on storage read failure
+[ ] 364. /status error on storage read failure
+[ ] 365. /summary error on storage read failure
+[ ] 366. /identity error on storage read failure
+[ ] 367. /summary when run-once never run - empty or message
+[ ] 368. /summary scores from last run-once
+[ ] 369. /summary multiple runs - latest data
+[ ] 370. /identity get_identity_status used
+[ ] 371. /status get_identity_status or equivalent
+[ ] 372. /verify duplicate calls - same result
+[ ] 373. /status duplicate calls - same result
+[ ] 374. /summary duplicate calls - same result
+[ ] 375. /identity duplicate calls - same result
+[ ] 376. /verify from user with role and without - same (no role check)
+[ ] 377. /status from mentor vs non-mentor - same
+[ ] 378. /summary from mentor vs non-mentor - same (own data)
+[ ] 379. /identity from mentor vs non-mentor - same
+[ ] 380. /verify response time acceptable
+[ ] 381. /status response time acceptable
+[ ] 382. /summary response time acceptable (may load more data)
+[ ] 383. /identity response time acceptable
+[ ] 384. /verify slash option description
+[ ] 385. /status slash option description (if any options)
+[ ] 386. /summary slash option description
+[ ] 387. /identity slash option description
+[ ] 388. /verify in thread (if supported)
+[ ] 389. /status in thread
+[ ] 390. /summary in thread
+[ ] 391. /identity in thread
+[ ] 392. /verify DM (if bot in DMs)
+[ ] 393. /status DM
+[ ] 394. /summary DM
+[ ] 395. /identity DM
+[ ] 396. /summary empty state message
+[ ] 397. /status empty state (not linked) message
+[ ] 398. /verify empty state (not linked) message
+[ ] 399. /identity empty state message
+[ ] 400. All four commands work after bot restart
+
+## 6. /unlink (Items 401-460)
+
+[ ] 401. /unlink when verified - succeeds and clears link
+[ ] 402. /unlink when not linked - error message
+[ ] 403. /unlink when pending - clears pending claim
+[ ] 404. /unlink response ephemeral
+[ ] 405. /unlink within cooldown (if set) - blocked with message
+[ ] 406. /unlink after cooldown - allowed
+[ ] 407. /unlink cooldown_hours 0 - no cooldown
+[ ] 408. /unlink audit event appended
+[ ] 409. /unlink after unlink /status shows not linked
+[ ] 410. /unlink after unlink /identity shows not linked
+[ ] 411. /unlink after unlink can /link again
+[ ] 412. /unlink storage row updated (unlinked_at or removed)
+[ ] 413. /unlink list_verified_identity_mappings no longer includes user
+[ ] 414. /unlink run-once no longer scores this Discord user (no GitHub link)
+[ ] 415. /unlink notifications no longer sent to this user
+[ ] 416. /unlink assign-issue cannot assign to this user (no link)
+[ ] 417. /unlink request-issue - user not eligible (no link)
+[ ] 418. /unlink duplicate call - idempotent or error
+[ ] 419. /unlink from mobile
+[ ] 420. /unlink from web
+[ ] 421. /unlink defer if slow
+[ ] 422. /unlink when storage write fails - error
+[ ] 423. /unlink no crash when Discord reply fails
+[ ] 424. /unlink message clear (success)
+[ ] 425. /unlink message clear (not linked)
+[ ] 426. /unlink message clear (cooldown)
+[ ] 427. /unlink export-audit shows unlink event
+[ ] 428. /unlink visible to all
+[ ] 429. /unlink no role check
+[ ] 430. /unlink concurrent with verify-link - documented behavior
+[ ] 431. /unlink then link same GitHub - works
+[ ] 432. /unlink then link different GitHub - works
+[ ] 433. /unlink identity_links row state (verified=0, unlinked_at set or row removed)
+[ ] 434. /unlink snapshots no longer include this identity (next run)
+[ ] 435. /unlink cooldown from first unlink time
+[ ] 436. /unlink cooldown message shows when can unlink again (if implemented)
+[ ] 437. /unlink no PII in logs
+[ ] 438. /unlink response time acceptable
+[ ] 439. /unlink in thread
+[ ] 440. /unlink DM
+[ ] 441. /unlink slash command description
+[ ] 442. /unlink no options (or documented)
+[ ] 443. /unlink from user who had issue assigned - assignment on GitHub unchanged
+[ ] 444. /unlink from user who had pending issue request - request state (documented)
+[ ] 445. /unlink from user with roles from run-once - roles not removed by unlink (run-once removes)
+[ ] 446. /unlink storage transaction
+[ ] 447. /unlink concurrent two unlinks same user - one succeeds
+[ ] 448. /unlink then status - not linked
+[ ] 449. /unlink then summary - no data or zeros
+[ ] 450. /unlink summary still shows old scores until next run-once (if scores kept)
+[ ] 451. /unlink identity_mappings in config - unlink still works (Discord-initiated)
+[ ] 452. /unlink CLI unlink (if exists) vs Discord unlink - same cooldown or documented
+[ ] 453. /unlink when bot has no write permission - error or no-op
+[ ] 454. /unlink audit event has discord_user_id
+[ ] 455. /unlink audit event has github_user (before unlink)
+[ ] 456. /unlink audit event timestamp
+[ ] 457. /unlink double unlink - second error
+[ ] 458. /unlink unlink then verify-link (same user) - need new link
+[ ] 459. /unlink role removal (if any) documented
+[ ] 460. /unlink data_dir cleanup (if any) - no orphan files
+
+## 7. /pr-info (Items 461-540)
+
+[ ] 461. /pr-info with valid PR URL returns embed
+[ ] 462. /pr-info with invalid URL shows error
+[ ] 463. /pr-info with issue URL (not PR) shows error
+[ ] 464. /pr-info with repo URL (no number) shows error
+[ ] 465. /pr-info with non-existent PR shows error
+[ ] 466. /pr-info with private repo (no access) shows error
+[ ] 467. /pr-info response ephemeral or public (documented)
+[ ] 468. /pr-info embed has title
+[ ] 469. /pr-info embed has PR number
+[ ] 470. /pr-info embed has author
+[ ] 471. /pr-info embed has repo
+[ ] 472. /pr-info embed has link
+[ ] 473. /pr-info embed has review state (approvals, changes requested)
+[ ] 474. /pr-info embed has CI status (if fetched)
+[ ] 475. /pr-info embed has mergeable state (if available)
+[ ] 476. /pr-info embed has mentor signal (waiting on contributor/reviewer)
+[ ] 477. /pr-info with PR from different org - works if token has access
+[ ] 478. /pr-info with PR from same org - works
+[ ] 479. /pr-info defer used (GitHub + possibly CI)
+[ ] 480. /pr-info timeout on GitHub - error message
+[ ] 481. /pr-info when GitHub rate limited - error or retry
+[ ] 482. /pr-info URL with trailing slash
+[ ] 483. /pr-info URL without trailing slash
+[ ] 484. /pr-info URL with query params - ignored or error
+[ ] 485. /pr-info URL with anchor - ignored or error
+[ ] 486. /pr-info parse_pr_url extracts owner, repo, number
+[ ] 487. /pr-info fetch_pr_context returns data
+[ ] 488. /pr-info build_pr_embed used
+[ ] 489. /pr-info discord_mention (if linked) in embed
+[ ] 490. /pr-info no mention when not linked
+[ ] 491. /pr-info closed PR - still shows info
+[ ] 492. /pr-info merged PR - shows merged state
+[ ] 493. /pr-info draft PR - shows draft
+[ ] 494. /pr-info PR with no reviews - review state empty or "No reviews"
+[ ] 495. /pr-info PR with approvals - count correct
+[ ] 496. /pr-info PR with changes requested - count correct
+[ ] 497. /pr-info PR with mixed reviews - state correct
+[ ] 498. /pr-info very long PR title - truncated in embed
+[ ] 499. /pr-info very long PR body - not full body in embed (or summary)
+[ ] 500. /pr-info embed color consistent
+[ ] 501. /pr-info embed timestamp (if any)
+[ ] 502. /pr-info embed field limits (1024 chars per field)
+[ ] 503. /pr-info from mentor vs non-mentor - same
+[ ] 504. /pr-info visible to all
+[ ] 505. /pr-info duplicate call same URL - same result
+[ ] 506. /pr-info different PRs - correct data each
+[ ] 507. /pr-info when Discord embed fails - error
+[ ] 508. /pr-info no token leak in error
+[ ] 509. /pr-info rate limit (many pr-info in short time)
+[ ] 510. /pr-info from mobile
+[ ] 511. /pr-info from web
+[ ] 512. /pr-info in thread
+[ ] 513. /pr-info slash option pr_url required
+[ ] 514. /pr-info option description
+[ ] 515. /pr-info empty string - error
+[ ] 516. /pr-info whitespace only - error
+[ ] 517. /pr-info URL with typo (httpx://) - error
+[ ] 518. /pr-info URL with wrong domain (not github.com) - error or documented
+[ ] 519. /pr-info GitHub Enterprise URL (if supported)
+[ ] 520. /pr-info PR number 1
+[ ] 521. /pr-info PR number very large
+[ ] 522. /pr-info repo with hyphen
+[ ] 523. /pr-info org with hyphen
+[ ] 524. /pr-info reviews from same user (latest state)
+[ ] 525. /pr-info last commit time (if shown)
+[ ] 526. /pr-info CI status failing - shown
+[ ] 527. /pr-info CI status pending - shown
+[ ] 528. /pr-info CI status success - shown
+[ ] 529. /pr-info no CI - shown as unknown or N/A
+[ ] 530. /pr-info mergeable null - shown
+[ ] 531. /pr-info mergeable true - shown
+[ ] 532. /pr-info mergeable false - shown
+[ ] 533. /pr-info response time acceptable
+[ ] 534. /pr-info no audit event (read-only) or documented
+[ ] 535. /pr-info storage not written (read-only)
+[ ] 536. /pr-info token scope (read repo, read pull requests)
+[ ] 537. /pr-info 404 from GitHub - user-friendly error
+[ ] 538. /pr-info 403 from GitHub - user-friendly error
+[ ] 539. /pr-info 500 from GitHub - user-friendly error
+[ ] 540. /pr-info concurrent same PR - both succeed
+
+## 8. /assign-issue (Mentor) (Items 541-620)
+
+[ ] 541. /assign-issue as mentor with valid issue URL shows confirmation embed
+[ ] 542. /assign-issue as non-mentor shows permission denied
+[ ] 543. /assign-issue with invalid URL shows error
+[ ] 544. /assign-issue with issue (not PR) URL - works
+[ ] 545. /assign-issue confirmation embed has issue title, repo, number
+[ ] 546. /assign-issue confirmation embed has Assign to (user) option
+[ ] 547. /assign-issue Confirm button assigns on GitHub
+[ ] 548. /assign-issue Cancel button dismisses
+[ ] 549. /assign-issue defer used
+[ ] 550. /assign-issue after confirm - success message (ephemeral)
+[ ] 551. /assign-issue after confirm - issue on GitHub has assignee
+[ ] 552. /assign-issue after confirm - notification sent to assignee (if enabled)
+[ ] 553. /assign-issue assignee must be verified (link) - resolve Discord to GitHub
+[ ] 554. /assign-issue assignee not verified - error or no option
+[ ] 555. /assign-issue issue already assigned - shows current assignee, Replace option (if implemented)
+[ ] 556. /assign-issue Replace assignee - unassigns old, assigns new
+[ ] 557. /assign-issue Replace then notification to new assignee
+[ ] 558. /assign-issue when GitHub write disabled (dry-run) - no assign, message
+[ ] 559. /assign-issue when Discord write disabled - no DM
+[ ] 560. /assign-issue audit event on confirm
+[ ] 561. /assign-issue audit event has actor, issue, new_assignee
+[ ] 562. /assign-issue verification retry (3 attempts) on eventual consistency
+[ ] 563. /assign-issue verification failure - soft success message (repo settings, org member)
+[ ] 564. /assign-issue assignee not org member - GitHub may not show assignee, message clear
+[ ] 565. /assign-issue repo restrict assignees - message clear
+[ ] 566. /assign-issue timeout on GitHub - error
+[ ] 567. /assign-issue 404 issue - error
+[ ] 568. /assign-issue 403 repo - error
+[ ] 569. /assign-issue button timeout (view timeout) - buttons disabled
+[ ] 570. /assign-issue same user assigns twice - idempotent
+[ ] 571. /assign-issue embed update after confirm (title/color)
+[ ] 572. /assign-issue visible only to mentor (or all but only mentor can complete)
+[ ] 573. /assign-issue issue_url required
+[ ] 574. /assign-issue assignee selection (dropdown or button) shows linked users
+[ ] 575. /assign-issue no self-assign restriction (if any)
+[ ] 576. /assign-issue from mobile
+[ ] 577. /assign-issue from web
+[ ] 578. /assign-issue concurrent two mentors same issue - one wins
+[ ] 579. /assign-issue closed issue - error or block
+[ ] 580. /assign-issue issue from different org - error if no access
+[ ] 581. /assign-issue notification message format (issue assigned)
+[ ] 582. /assign-issue notification DM received by assignee
+[ ] 583. /assign-issue notification dedupe (same issue same assignee)
+[ ] 584. /assign-issue notification config disabled - no DM
+[ ] 585. /assign-issue notification config issue_assignment false - no DM
+[ ] 586. /assign-issue resolve_discord_to_github used for assignee
+[ ] 587. /assign-issue fetch_issue_context for issue details
+[ ] 588. /assign-issue build_assignment_confirmation_embed
+[ ] 589. /assign-issue policy.allow_github_mutations checked
+[ ] 590. /assign-issue policy.discord_write_allowed for DM
+[ ] 591. /assign-issue replace flow unassign_issue then assign_issue
+[ ] 592. /assign-issue rollback on assign failure when replace (re-assign old)
+[ ] 593. /assign-issue log warning on rollback failure
+[ ] 594. /assign-issue no token in logs
+[ ] 595. /assign-issue ephemeral success/error
+[ ] 596. /assign-issue original message update (embed) after confirm
+[ ] 597. /assign-issue view removed or disabled after confirm
+[ ] 598. /assign-issue multiple issues (sequential) - each works
+[ ] 599. /assign-issue assignee GitHub username case (stored vs API)
+[ ] 600. /assign-issue assignee with hyphen in username
+[ ] 601. /assign-issue very long issue title in embed - truncated
+[ ] 602. /assign-issue issue with no labels
+[ ] 603. /assign-issue issue with many labels
+[ ] 604. /assign-issue rate limit GitHub (many assigns) - 403 handling
+[ ] 605. /assign-issue slash command description
+[ ] 606. /assign-issue guild-only (not in DMs) or documented
+[ ] 607. /assign-issue CheckFailure handler - friendly message
+[ ] 608. /assign-issue on_app_command_error for CheckFailure
+[ ] 609. /assign-issue mentor_check uses issue_assignees from config
+[ ] 610. /assign-issue multiple issue_assignees roles - any one allows
+[ ] 611. /assign-issue role name case (Discord role case)
+[ ] 612. /assign-issue role not on server - mentor_check fails
+[ ] 613. /assign-issue new member with Mentor role - can assign
+[ ] 614. /assign-issue Mentor role removed - next assign fails
+[ ] 615. /assign-issue audit export shows issue_assigned_from_discord
+[ ] 616. /assign-issue notification_sent audit (if any)
+[ ] 617. /assign-issue state.db not corrupted after assign
+[ ] 618. /assign-issue run-once after assign - does not overwrite (skip already assigned)
+[ ] 619. /assign-issue sync after assign - does not overwrite assignee
+[ ] 620. /assign-issue assign then unlink assignee - issue still assigned on GitHub
+
+## 9. /request-issue (Items 621-690)
+
+[ ] 621. /request-issue with valid issue URL as verified user - creates request
+[ ] 622. /request-issue as unverified user - error (must link first)
+[ ] 623. /request-issue with invalid URL - error
+[ ] 624. /request-issue with PR URL - error
+[ ] 625. /request-issue response ephemeral
+[ ] 626. /request-issue request stored (issue_requests table or equivalent)
+[ ] 627. /request-issue same user same issue again - duplicate rejected or idempotent
+[ ] 628. /request-issue different issues - multiple requests
+[ ] 629. /request-issue issue from repo not in config - error or allowed
+[ ] 630. /request-issue issue closed - error or allowed
+[ ] 631. /request-issue issue already assigned to self - message
+[ ] 632. /request-issue issue already assigned to other - request still created (mentor can replace)
+[ ] 633. /request-issue eligible_roles empty - any verified can request
+[ ] 634. /request-issue eligible_roles set - only those roles can request (or message)
+[ ] 635. /request-issue defer used
+[ ] 636. /request-issue fetch_issue_context for issue
+[ ] 637. /request-issue audit event (if any)
+[ ] 638. /request-issue 404 issue - error
+[ ] 639. /request-issue private repo - error
+[ ] 640. /request-issue success message clear
+[ ] 641. /request-issue visible to all (verified get success, unverified error)
+[ ] 642. /request-issue from mobile
+[ ] 643. /request-issue from web
+[ ] 644. /request-issue in thread
+[ ] 645. /request-issue issue_url required
+[ ] 646. /request-issue slash description
+[ ] 647. /request-issue request appears in /issue-requests (mentor)
+[ ] 648. /request-issue request has discord_user_id, github_user, repo, issue_number
+[ ] 649. /request-issue request status pending
+[ ] 650. /request-issue create_issue_request or equivalent storage
+[ ] 651. /request-issue get_merged_pr_count for eligibility (if shown)
+[ ] 652. /request-issue eligibility verdict in mentor view (eligible/not)
+[ ] 653. /request-issue rate limit (many requests) - no crash
+[ ] 654. /request-issue duplicate same issue - one request
+[ ] 655. /request-issue trim URL
+[ ] 656. /request-issue URL with query params
+[ ] 657. /request-issue empty string - error
+[ ] 658. /request-issue whitespace - error
+[ ] 659. /request-issue no PII in logs
+[ ] 660. /request-issue response time
+[ ] 661. /request-issue storage transaction
+[ ] 662. /request-issue concurrent same user same issue
+[ ] 663. /request-issue then mentor approve - see issue_requests flow
+[ ] 664. /request-issue then mentor reject - request status rejected
+[ ] 665. /request-issue then mentor replace - request approved, assignee replaced
+[ ] 666. /request-issue list_pending_issue_requests includes new request
+[ ] 667. /request-issue group_pending_requests_by_repo (mentor view)
+[ ] 668. /request-issue build_mentor_request_embed (mentor view)
+[ ] 669. /request-issue compute_eligibility (merged count, roles)
+[ ] 670. /request-issue period_days for merged count
+[ ] 671. /request-issue issue_request_eligible_roles check
+[ ] 672. /request-issue eligible but low activity - verdict shown
+[ ] 673. /request-issue not eligible - reason shown to mentor
+[ ] 674. /request-issue request_id unique
+[ ] 675. /request-issue created_at set
+[ ] 676. /request-issue snapshot issue_requests.json includes pending
+[ ] 677. /request-issue export-audit (if issue_request events)
+[ ] 678. /request-issue guild-only
+[ ] 679. /request-issue no role check (any verified)
+[ ] 680. /request-issue error on storage failure
+[ ] 681. /request-issue error on GitHub fetch failure
+[ ] 682. /request-issue message "request received" or similar
+[ ] 683. /request-issue mention /issue-requests for mentor (optional)
+[ ] 684. /request-issue max pending per user (if any)
+[ ] 685. /request-issue max pending per repo (if any)
+[ ] 686. /request-issue cancel or withdraw (if implemented)
+[ ] 687. /request-issue issue deleted on GitHub after request - mentor view handles
+[ ] 688. /request-issue issue closed after request - mentor can reject
+[ ] 689. /request-issue multiple users same issue - multiple requests
+[ ] 690. /request-issue same user different issues - multiple requests
+
+## 10. /issue-requests (Mentor) (Items 691-760)
+
+[ ] 691. /issue-requests as mentor shows repo list or "no pending"
+[ ] 692. /issue-requests as non-mentor shows permission denied
+[ ] 693. /issue-requests with no pending - message
+[ ] 694. /issue-requests with pending - select menu or list
+[ ] 695. /issue-requests select repo shows requests for that repo
+[ ] 696. /issue-requests embed has issue title, number, repo
+[ ] 697. /issue-requests embed has contributor (Discord mention, GitHub)
+[ ] 698. /issue-requests embed has eligibility verdict
+[ ] 699. /issue-requests Approve & Assign button - assigns and DM contributor
+[ ] 700. /issue-requests Replace Existing Assignee button - unassigns old, assigns new, DM
+[ ] 701. /issue-requests Reject Request button - rejects, DM contributor
+[ ] 702. /issue-requests Cancel/Back button - back to repo list
+[ ] 703. /issue-requests DM contributor on approve - message format
+[ ] 704. /issue-requests DM contributor on replace - message format
+[ ] 705. /issue-requests DM contributor on reject - message format
+[ ] 706. /issue-requests update_issue_request_status(approved/rejected)
+[ ] 707. /issue-requests audit event on approve
+[ ] 708. /issue-requests audit event on reject
+[ ] 709. /issue-requests audit event on replace
+[ ] 710. /issue-requests embed update after action (title/color)
+[ ] 711. /issue-requests view disabled after action
+[ ] 712. /issue-requests revalidate_and_assign - refetch issue, check closed
+[ ] 713. /issue-requests issue closed - error, request cancelled
+[ ] 714. /issue-requests request no longer pending - error (e.g. another mentor acted)
+[ ] 715. /issue-requests policy.allow_github_mutations - dry-run no assign
+[ ] 716. /issue-requests rollback on assign failure (replace flow)
+[ ] 717. /issue-requests fetch_issue_context for issue title in DM
+[ ] 718. /issue-requests defer used
+[ ] 719. /issue-requests visible only to mentor (check)
+[ ] 720. /issue-requests build_mentor_request_embed fields
+[ ] 721. /issue-requests get_merged_pr_count_and_last_time
+[ ] 722. /issue-requests compute_eligibility
+[ ] 723. /issue-requests eligible display
+[ ] 724. /issue-requests not eligible display
+[ ] 725. /issue-requests low activity display
+[ ] 726. /issue-requests required roles display
+[ ] 727. /issue-requests Discord roles of contributor
+[ ] 728. /issue-requests identity verified check
+[ ] 729. /issue-requests current assignees on issue
+[ ] 730. /issue-requests issue age
+[ ] 731. /issue-requests labels
+[ ] 732. /issue-requests Replace when no assignee - error
+[ ] 733. /issue-requests Approve when already assigned to requester - success (idempotent)
+[ ] 734. /issue-requests notification to assignee on approve (if enabled)
+[ ] 735. /issue-requests notification to assignee on replace (if enabled)
+[ ] 736. /issue-requests no notification on reject
+[ ] 737. /issue-requests from mobile
+[ ] 738. /issue-requests from web
+[ ] 739. /issue-requests timeout (view) - buttons disabled
+[ ] 740. /issue-requests multiple repos - select correct repo
+[ ] 741. /issue-requests multiple requests same repo - all shown
+[ ] 742. /issue-requests pagination (if many requests)
+[ ] 743. /issue-requests request_id in storage
+[ ] 744. /issue-requests get_issue_request
+[ ] 745. /issue-requests snapshot issue_requests after approve (pending removed)
+[ ] 746. /issue-requests export-audit issue_request_approved
+[ ] 747. /issue-requests export-audit issue_request_rejected
+[ ] 748. /issue-requests export-audit issue_request_reassigned
+[ ] 749. /issue-requests CheckFailure handler
+[ ] 750. /issue-requests mentor_check
+[ ] 751. /issue-requests slash description
+[ ] 752. /issue-requests no options (or documented)
+[ ] 753. /issue-requests guild-only
+[ ] 754. /issue-requests response time
+[ ] 755. /issue-requests concurrent two mentors same request - one wins
+[ ] 756. /issue-requests embed color green on approve
+[ ] 757. /issue-requests embed color red on reject
+[ ] 758. /issue-requests message edit after action (embed update)
+[ ] 759. /issue-requests DM send_dm used
+[ ] 760. /issue-requests DM failure - log, request still updated
+
+## 11. /sync (Mentor) (Items 761-830)
+
+[ ] 761. /sync as mentor runs run_once
+[ ] 762. /sync as non-mentor shows permission denied
+[ ] 763. /sync defer used (long-running)
+[ ] 764. /sync success message "Sync complete" or similar
+[ ] 765. /sync ephemeral
+[ ] 766. /sync orchestrator.run_once() called
+[ ] 767. /sync ingests GitHub contributions
+[ ] 768. /sync updates scores
+[ ] 769. /sync sends notifications for new events (if enabled)
+[ ] 770. /sync does not overwrite existing issue assignees (skip already assigned)
+[ ] 771. /sync plans issue assignments only for unassigned issues
+[ ] 772. /sync plans review requests (if review_roles)
+[ ] 773. /sync applies GitHub plans (if mode active)
+[ ] 774. /sync applies Discord roles (if mode active)
+[ ] 775. /sync writes snapshots (if enabled)
+[ ] 776. /sync dry-run - no GitHub/Discord writes, reports only
+[ ] 777. /sync observer - same as dry-run (documented)
+[ ] 778. /sync active - applies plans
+[ ] 779. /sync error during run_once - error message to user
+[ ] 780. /sync timeout (Discord 3s followup) - sync continues in background or documented
+[ ] 781. /sync notification pr_reviewed CHANGES_REQUESTED - DM to PR author
+[ ] 782. /sync notification pr_reviewed APPROVED - DM to PR author
+[ ] 783. /sync notification pr_merged - DM to author
+[ ] 784. /sync notification issue_assigned - DM to assignee
+[ ] 785. /sync notification only for verified users
+[ ] 786. /sync notification dedupe (same event not sent twice)
+[ ] 787. /sync notification dedupe key includes review_id for pr_reviewed
+[ ] 788. /sync pr_reviewed events ingested (submitted_at >= cursor)
+[ ] 789. /sync cursor updated after ingest
+[ ] 790. /sync list_open_issues includes assignees (skip assigned)
+[ ] 791. /sync list_open_pull_requests
+[ ] 792. /sync _send_notifications_for_new_events
+[ ] 793. /sync logging "Processing pr_reviewed event" (if any)
+[ ] 794. /sync logging "Sent GitHub notifications" (if any)
+[ ] 795. /sync from mobile
+[ ] 796. /sync from web
+[ ] 797. /sync visible only to mentor
+[ ] 798. /sync CheckFailure handler
+[ ] 799. /sync mentor_check
+[ ] 800. /sync slash description
+[ ] 801. /sync no options
+[ ] 802. /sync guild-only
+[ ] 803. /sync concurrent two syncs - no corruption (or documented)
+[ ] 804. /sync snapshot run_id unique
+[ ] 805. /sync snapshot directory timestamped
+[ ] 806. /sync snapshot files written (meta, identities, scores, etc.)
+[ ] 807. /sync snapshot failure non-blocking (run_once completes)
+[ ] 808. /sync report audit.md/json (if dry-run)
+[ ] 809. /sync storage init_schema (if needed)
+[ ] 810. /sync record_contributions
+[ ] 811. /sync upsert_scores
+[ ] 812. /sync set_cursor
+[ ] 813. /sync get_cursor
+[ ] 814. /sync list_contributions(since)
+[ ] 815. /sync plan_issue_assignments (issues without assignees)
+[ ] 816. /sync plan_review_requests
+[ ] 817. /sync apply_github_plans (if active)
+[ ] 818. /sync apply Discord role plans (if active)
+[ ] 819. /sync policy.mode respected
+[ ] 820. /sync policy.github_write_allowed
+[ ] 821. /sync policy.discord_write_allowed
+[ ] 822. /sync config.discord.notifications
+[ ] 823. /sync config.snapshots
+[ ] 824. /sync config.assignments.issue_assignees (for plan)
+[ ] 825. /sync config.assignments.review_roles
+[ ] 826. /sync config.scoring.period_days
+[ ] 827. /sync config.scoring.weights
+[ ] 828. /sync role_to_github from list_verified_identity_mappings + member roles
+[ ] 829. /sync scores from get_scores or computed
+[ ] 830. /sync no crash on empty org (no repos)
+
+## 12. On-Message PR Preview (Items 831-870)
+
+[ ] 831. Message with PR URL in pr_preview_channels triggers preview
+[ ] 832. Message with PR URL in other channel - no preview
+[ ] 833. pr_preview_channels empty - no preview anywhere
+[ ] 834. PR URL regex or parse matches github.com/owner/repo/pull/N
+[ ] 835. PR URL with /pulls/ - match or not (documented)
+[ ] 836. Message with multiple PR URLs - multiple embeds or first only
+[ ] 837. Message with issue URL - no PR preview
+[ ] 838. Message with repo URL - no preview
+[ ] 839. Bot message - ignore (no self-trigger)
+[ ] 840. Message content intent required (config)
+[ ] 841. build_pr_embed used for embed
+[ ] 842. fetch_pr_context for PR data
+[ ] 843. Embed has title, author, repo, link
+[ ] 844. Embed has review state
+[ ] 845. Embed has CI status
+[ ] 846. Discord mention for PR author if linked
+[ ] 847. No mention if not linked
+[ ] 848. Channel send (not ephemeral) - whole channel sees
+[ ] 849. Defer or no (message can take time)
+[ ] 850. Private repo - error or no preview
+[ ] 851. 404 PR - error or no preview
+[ ] 852. Rate limit (many PR URLs in channel) - no spam
+[ ] 853. Message edit (if supported) - no duplicate preview
+[ ] 854. Message delete - no action
+[ ] 855. Thread message - preview in thread or parent (documented)
+[ ] 856. pr_preview_channels list multiple - each works
+[ ] 857. Channel name case (Discord channel name)
+[ ] 858. on_message not triggered by slash command
+[ ] 859. on_message bot ignores own messages
+[ ] 860. on_message parse_pr_url extracts owner, repo, number
+[ ] 861. on_message fetch_pr_context
+[ ] 862. on_message get_discord_mention (resolve GitHub to Discord)
+[ ] 863. on_message embed field length limits
+[ ] 864. on_message long PR title truncated
+[ ] 865. on_message error on fetch - no crash, optional error reply
+[ ] 866. on_message permissions (read message content)
+[ ] 867. on_message response time (async)
+[ ] 868. on_message no token in reply
+[ ] 869. on_message audit (if any) - optional
+[ ] 870. on_message concurrent messages - no race
+
+## 13. Notifications (Items 871-920)
+
+[ ] 871. send_notification_for_event when config.enabled false - no send
+[ ] 872. send_notification_for_event when config disabled - return False
+[ ] 873. pr_reviewed APPROVED - target_github_user = pr_author
+[ ] 874. pr_reviewed CHANGES_REQUESTED - target_github_user = pr_author
+[ ] 875. pr_reviewed COMMENT - no notification
+[ ] 876. pr_reviewed DISMISSED - no notification
+[ ] 877. issue_assigned - target = event.github_user (assignee)
+[ ] 878. pr_merged - target = event.github_user (author)
+[ ] 879. pr_review_requested - target = event.github_user
+[ ] 880. target_github_user missing (e.g. pr_author) - skip, log warning
+[ ] 881. _resolve_github_to_discord - verified only
+[ ] 882. Unverified target - no DM, log warning
+[ ] 883. _build_dedupe_key for pr_reviewed includes review_id and state
+[ ] 884. _was_notification_sent - dedupe
+[ ] 885. _mark_notification_sent after send
+[ ] 886. _send_discord_notification DM when channel_id null
+[ ] 887. _send_discord_notification channel when channel_id set
+[ ] 888. policy.discord_write_allowed false - no send (dry-run)
+[ ] 889. _build_notification_message issue_assigned format
+[ ] 890. _build_notification_message pr_changes_requested format
+[ ] 891. _build_notification_message pr_approved format
+[ ] 892. _build_notification_message pr_merged format
+[ ] 893. _build_notification_message pr_review_requested format
+[ ] 894. config.pr_review_result false - no pr_approved/pr_changes_requested
+[ ] 895. config.issue_assignment false - no issue_assigned
+[ ] 896. config.pr_merged false - no pr_merged
+[ ] 897. config.pr_review_requested false - no pr_review_requested
+[ ] 898. DM failure - log, return False, no crash
+[ ] 899. Channel post failure - log, return False
+[ ] 900. _audit_notification (if implemented)
+[ ] 901. list_recent_notifications (storage) for snapshot
+[ ] 902. mark_notification_sent stores dedupe_key
+[ ] 903. was_notification_sent checks storage
+[ ] 904. Notification message has link to issue/PR
+[ ] 905. Notification message has repo
+[ ] 906. Notification message has reviewer (for changes requested)
+[ ] 907. Notification message length (Discord limit 2000)
+[ ] 908. Notification no @everyone or @here
+[ ] 909. Notification embed (if any) - optional
+[ ] 910. Notification to same user multiple events - each deduped
+[ ] 911. pr_reviewed same PR different review (approve then changes) - two notifications (different review_id)
+[ ] 912. event.payload pr_author set (from ingest)
+[ ] 913. event.payload pr_number set
+[ ] 914. event.payload state set for pr_reviewed
+[ ] 915. event.payload review_id set for pr_reviewed
+[ ] 916. _build_dedupe_key issue_assigned
+[ ] 917. _build_dedupe_key pr_merged
+[ ] 918. _build_dedupe_key normal (no review_id) for non-pr_reviewed
+[ ] 919. send_notification_for_event returns True when sent
+[ ] 920. send_notification_for_event returns False when skipped
+
+## 14. Permissions & Roles (Items 921-950)
+
+[ ] 921. mentor_check returns True when user has any issue_assignees role
+[ ] 922. mentor_check returns False when user has no issue_assignees role
+[ ] 923. mentor_check uses discord.Member.roles or equivalent
+[ ] 924. mentor_check guild.get_member or interaction.user.roles
+[ ] 925. issue_assignees multiple roles - any one grants access
+[ ] 926. Role name exact match (case-sensitive or not per Discord)
+[ ] 927. on_app_command_error CheckFailure - friendly "Permission denied" message
+[ ] 928. on_app_command_error other errors - generic or re-raise
+[ ] 929. /assign-issue permission denied message mentions role names
+[ ] 930. /issue-requests permission denied message
+[ ] 931. /sync permission denied message
+[ ] 932. Non-mentor cannot see mentor-only commands (or can see but get error on use - documented)
+[ ] 933. Bot role position above roles it assigns (Discord constraint)
+[ ] 934. Bot permission Manage Roles for role updates (run-once)
+[ ] 935. Bot permission View Channels
+[ ] 936. Bot permission Send Messages (for channel)
+[ ] 937. Bot permission Send Messages in DMs (for notifications)
+[ ] 938. Bot permission Read Message Content (for PR preview)
+[ ] 939. github.permissions.write false - no assign_issue, no write_file
+[ ] 940. discord.permissions.write false - no role update, no DM (or documented)
+[ ] 941. runtime.mode dry-run - no writes
+[ ] 942. runtime.mode active - writes allowed
+[ ] 943. Policy allow_github_mutations
+[ ] 944. Policy discord_write_allowed
+[ ] 945. Role mapping min_score - user with score >= gets role
+[ ] 946. Role mapping - user below min_score does not get role
+[ ] 947. merge_role_rules.enabled - merge-based role assignment
+[ ] 948. merge_role_rules.rules min_merged_prs - ascending order
+[ ] 949. issue_request_eligible_roles - only those roles eligible for request
+[ ] 950. review_roles - only those get review assignment plans
+
+## 15. CLI (Items 951-1000)
+
+[ ] 951. python -m ghdcbot --config <path> run-once - runs orchestrator
+[ ] 952. python -m ghdcbot --config <path> bot - runs Discord bot
+[ ] 953. python -m ghdcbot --config <path> link --discord-user-id X githubuser - creates claim
+[ ] 954. python -m ghdcbot --config <path> verify-link --discord-user-id X githubuser - verifies
+[ ] 955. python -m ghdcbot --config <path> unlink --discord-user-id X - unlinks
+[ ] 956. python -m ghdcbot --config <path> identity status --discord-user-id X - prints status
+[ ] 957. python -m ghdcbot --config <path> export-audit - exports to stdout (JSON)
+[ ] 958. python -m ghdcbot --config <path> export-audit --format csv
+[ ] 959. python -m ghdcbot --config <path> export-audit --format md
+[ ] 960. python -m ghdcbot --config <path> export-audit --output file.json
+[ ] 961. python -m ghdcbot --config <path> export-audit --user githubuser
+[ ] 962. python -m ghdcbot --config <path> export-audit --event-type identity_verified
+[ ] 963. python -m ghdcbot --config <path> export-audit --from <ISO> --to <ISO>
+[ ] 964. run-once loads config and runs once then exits
+[ ] 965. run-once with dry-run - no writes
+[ ] 966. run-once with active - applies plans
+[ ] 967. run-once creates reports in data_dir/reports (if dry-run)
+[ ] 968. run-once writes snapshots (if enabled)
+[ ] 969. link CLI without verify-link - claim stays pending
+[ ] 970. link CLI then verify-link CLI - verified
+[ ] 971. identity status prints github_user and status
+[ ] 972. identity status when not linked - prints not_linked or -
+[ ] 973. unlink CLI respects cooldown (if same config as Discord)
+[ ] 974. export-audit filter_audit_events by user
+[ ] 975. export-audit filter by event_type
+[ ] 976. export-audit filter by from_time, to_time
+[ ] 977. export-audit invalid --from format - error
+[ ] 978. export-audit invalid --to format - error
+[ ] 979. export-audit --output writes file
+[ ] 980. export-audit no storage list_audit_events - fallback file read
+[ ] 981. CLI --config missing - error
+[ ] 982. CLI unknown command - error
+[ ] 983. CLI link without --discord-user-id - error
+[ ] 984. CLI verify-link without --discord-user-id - error
+[ ] 985. CLI identity without status subcommand - error (if required)
+[ ] 986. CLI identity status without --discord-user-id - error
+[ ] 987. run-once close adapters (github, discord, storage) - no leak
+[ ] 988. bot command does not return (runs until kill)
+[ ] 989. run-once returns exit 0 on success
+[ ] 990. run-once returns non-zero on exception
+[ ] 991. load_config with env expansion (e.g. ${GITHUB_TOKEN})
+[ ] 992. build_orchestrator same config path - same behavior
+[ ] 993. export-audit empty events - empty array or []
+[ ] 994. export-audit format_csv headers
+[ ] 995. export-audit format_markdown structure
+[ ] 996. identity status max_age_days (verified_max_age_days) - status reflects
+[ ] 997. CLI logging to stderr or stdout (documented)
+[ ] 998. run-once logging level from config
+[ ] 999. bot command imports bot.run_bot or main
+[ ] 1000. All CLI subcommands documented in --help
+
+## 16. GitHub Adapter, Storage, Snapshots, Scoring, Errors, Security (Items 1001-1060)
+
+[ ] 1001. GitHub list_open_issues returns issues with assignees field
+[ ] 1002. GitHub list_open_issues pagination (per_page 100)
+[ ] 1003. GitHub list_open_issues excludes pull requests (pull_request in issue)
+[ ] 1004. GitHub assign_issue POST assignees - 200/201 success
+[ ] 1005. GitHub assign_issue logs requested_assignee and actual_assignees_from_github
+[ ] 1006. GitHub unassign_issue (issue request replace flow)
+[ ] 1007. GitHub write_file for snapshots - create and update (SHA)
+[ ] 1008. GitHub _pull_request_reviews yields pr_reviewed events with pr_author in payload
+[ ] 1009. GitHub _pull_request_reviews submitted_at >= since filter
+[ ] 1010. Storage init_schema creates all tables (contributions, scores, cursors, identity_links, etc.)
+[ ] 1011. Storage record_contributions append-only
+[ ] 1012. Storage get_cursor/set_cursor
+[ ] 1013. Storage list_verified_identity_mappings returns verified only
+[ ] 1014. Storage get_identity_status(discord_user_id)
+[ ] 1015. Storage create_identity_claim, verify_identity_link
+[ ] 1016. Storage was_notification_sent, mark_notification_sent
+[ ] 1017. Storage list_audit_events (or file fallback)
+[ ] 1018. Storage append_audit_event
+[ ] 1019. Storage issue_requests create, update status, get, list pending
+[ ] 1020. Snapshots write_snapshots_to_github after run_once
+[ ] 1021. Snapshots directory snapshots/YYYY-MM-DDTHH-MM-SS-runid
+[ ] 1022. Snapshots meta.json, identities.json, scores.json, contributors.json, roles.json, issue_requests.json, notifications.json
+[ ] 1023. Snapshots schema_version in each file
+[ ] 1024. Snapshots data array in each file
+[ ] 1025. Snapshots non-blocking (failure logged, run_once continues)
+[ ] 1026. Scoring period_days used for score period
+[ ] 1027. Scoring weights applied (issue_opened, pr_opened, pr_reviewed, comment)
+[ ] 1028. Scoring list_contribution_summaries or equivalent
+[ ] 1029. Scoring upsert_scores
+[ ] 1030. Planning plan_issue_assignments skips issues with assignees
+[ ] 1031. Planning _plan_issue_assignments skips issues with assignees
+[ ] 1032. Error handling ConfigError on invalid config
+[ ] 1033. Error handling AdapterError on adapter failure
+[ ] 1034. Error handling 404 from GitHub - user-friendly message
+[ ] 1035. Error handling 403 rate limit - log, no crash
+[ ] 1036. Error handling Discord 5xx - retry or message
+[ ] 1037. No token or secret in log output
+[ ] 1038. No token in error message to user
+[ ] 1039. No Discord user ID or GitHub username in public logs (or redacted)
+[ ] 1040. SQL injection - parameterized queries (storage)
+[ ] 1041. Path traversal - config paths and data_dir validated
+[ ] 1042. YAML load - no unsafe load (use safe_load)
+[ ] 1043. HTTPS for api_base (or documented for Enterprise)
+[ ] 1044. Token from env not logged
+[ ] 1045. Guild ID not sensitive but not logged in excess
+[ ] 1046. Audit events do not contain tokens
+[ ] 1047. Snapshot content does not contain tokens
+[ ] 1048. Export-audit output does not contain tokens
+[ ] 1049. Defer used for long-running slash commands (avoid "application did not respond")
+[ ] 1050. All slash commands respond within 3s (defer) or complete quickly
+[ ] 1051. Bot restart does not lose state (state.db persistent)
+[ ] 1052. Two bots same config same guild - documented behavior (conflict or ok)
+[ ] 1053. Empty org (no repos) - run-once no crash
+[ ] 1054. Org with 100+ repos - pagination or limit (documented)
+[ ] 1055. Issue with 100+ labels - no truncation crash
+[ ] 1056. PR with 100+ reviews - pagination
+[ ] 1057. Very long issue title (1000 chars) - truncated in embed
+[ ] 1058. Unicode in GitHub username - stored and displayed correctly
+[ ] 1059. Unicode in issue title - embed correct
+[ ] 1060. All tests in tests/ pass (pytest)
+
+---
+Total: 1060 audit test points. Check off each [ ] as you complete manual testing.

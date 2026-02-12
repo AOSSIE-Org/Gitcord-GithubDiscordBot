@@ -34,6 +34,10 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
         queue = deque(eligible)
         plans: list[AssignmentPlan] = []
         for issue in issues:
+            # Skip issues that already have assignees (don't overwrite existing assignments)
+            assignees = issue.get("assignees", [])
+            if assignees:
+                continue
             assignee = queue[0]
             queue.rotate(-1)
             plans.append(

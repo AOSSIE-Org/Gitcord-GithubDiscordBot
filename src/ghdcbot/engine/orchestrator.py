@@ -252,12 +252,31 @@ def _send_notifications_for_new_events(
     
     logger = logging.getLogger("Notifications")
     sent_count = 0
+    pr_reviewed_count = 0
     for event in contributions:
         if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged"}:
+            if event.event_type == "pr_reviewed":
+                pr_reviewed_count += 1
+                logger.info(
+                    "Processing pr_reviewed event for notification",
+                    extra={
+                        "reviewer": event.github_user,
+                        "repo": event.repo,
+                        "pr_number": event.payload.get("pr_number"),
+                        "review_id": event.payload.get("review_id"),
+                        "state": event.payload.get("state"),
+                        "pr_author": event.payload.get("pr_author"),
+                    },
+                )
             if send_notification_for_event(event, storage, discord_writer, policy, config, github_org):
                 sent_count += 1
     if sent_count > 0:
-        logger.info("Sent GitHub notifications", extra={"count": sent_count})
+        logger.info("Sent GitHub notifications", extra={"count": sent_count, "pr_reviewed_events": pr_reviewed_count})
+    elif pr_reviewed_count > 0:
+        logger.warning(
+            "Found pr_reviewed events but no notifications were sent",
+            extra={"pr_reviewed_count": pr_reviewed_count},
+        )
 
 
 def build_role_to_github_map(

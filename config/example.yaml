@@ -51,8 +51,9 @@ role_mappings:
 assignments:
   review_roles:
     - "Maintainer"
+  # Discord role(s) that can use /assign-issue, /sync, and /issue-requests (e.g. "Mentor")
   issue_assignees:
-    - "Contributor"
+    - "Mentor"
   # Optional: roles required for a contributor to be "eligible" for issue assignment (empty = any verified user)
   issue_request_eligible_roles: []
 

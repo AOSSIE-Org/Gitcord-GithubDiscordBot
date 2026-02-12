@@ -272,6 +272,10 @@ def _plan_issue_assignments(
 
     plans: list[GitHubAssignmentPlan] = []
     for idx, issue in enumerate(sorted(issues, key=_stable_issue_key)):
+        # Skip issues that already have assignees (don't overwrite existing assignments)
+        assignees = issue.get("assignees", [])
+        if assignees:
+            continue
         assignee = candidates[idx % len(candidates)]
         plans.append(
             GitHubAssignmentPlan(

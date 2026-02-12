@@ -537,6 +537,49 @@ def run_bot(config_path: str) -> None:
             )
             
             if success:
+                # Verify assignment on GitHub (re-fetch issue and check assignees)
+                # Retry a few times to handle GitHub replication lag
+                import asyncio
+                verified = False
+                assignee_logins_seen: list[str] = []
+                for attempt in range(3):
+                    await asyncio.sleep(1.0 + attempt * 0.5)  # 1s, 1.5s, 2s
+                    try:
+                        updated = fetch_issue_context(
+                            self.github_adapter, self.owner, self.repo, self.issue_number
+                        )
+                        if updated and updated.get("assignees"):
+                            assignee_logins_seen = [
+                                (a.get("login") or "").lower()
+                                for a in updated["assignees"]
+                                if isinstance(a, dict)
+                            ]
+                            if (self.new_assignee_github or "").lower() in assignee_logins_seen:
+                                verified = True
+                                break
+                        else:
+                            assignee_logins_seen = []
+                    except Exception:
+                        assignee_logins_seen = []
+                if not verified:
+                    logger.warning(
+                        "Assignment verification failed after retries: expected_assignee=%s assignees_on_issue=%s",
+                        self.new_assignee_github,
+                        assignee_logins_seen,
+                        extra={
+                            "owner": self.owner,
+                            "repo": self.repo,
+                            "issue_number": self.issue_number,
+                        },
+                    )
+                    # GitHub returned 201 so we treat as success; notify user to check repo if assignee missing
+                    await interaction.followup.send(
+                        "✅ Assignment was sent to GitHub. "
+                        "If the assignee does not appear on the issue, they may need to be a **member of the organization**, or the repo may restrict who can be assigned (Settings → General → Issues → Allow specified users to be assigned).",
+                        ephemeral=True,
+                    )
+                    # Fall through to log audit, send DM, and update embed
+                
                 # Log audit event
                 if self.storage and hasattr(self.storage, "append_audit_event"):
                     self.storage.append_audit_event({
@@ -575,10 +618,11 @@ def run_bot(config_path: str) -> None:
                             self.github_org,
                         )
                 
-                await interaction.followup.send(
-                    "✅ Issue assigned successfully!",
-                    ephemeral=True,
-                )
+                if verified:
+                    await interaction.followup.send(
+                        "✅ Issue assigned successfully!",
+                        ephemeral=True,
+                    )
                 
                 # Update original message
                 if hasattr(self, "message") and self.message:
@@ -683,6 +727,46 @@ def run_bot(config_path: str) -> None:
                 )
                 return
             if unassign_success and assign_success:
+                # Verify new assignee appears on GitHub (retry for replication lag)
+                import asyncio
+                verified = False
+                assignee_logins_seen_repl: list[str] = []
+                for attempt in range(3):
+                    await asyncio.sleep(1.0 + attempt * 0.5)
+                    try:
+                        updated = fetch_issue_context(
+                            self.github_adapter, self.owner, self.repo, self.issue_number
+                        )
+                        if updated and updated.get("assignees"):
+                            assignee_logins_seen_repl = [
+                                (a.get("login") or "").lower()
+                                for a in updated["assignees"]
+                                if isinstance(a, dict)
+                            ]
+                            if (self.new_assignee_github or "").lower() in assignee_logins_seen_repl:
+                                verified = True
+                                break
+                        else:
+                            assignee_logins_seen_repl = []
+                    except Exception:
+                        assignee_logins_seen_repl = []
+                if not verified:
+                    logger.warning(
+                        "Reassignment verification failed after retries: expected_assignee=%s assignees_on_issue=%s",
+                        self.new_assignee_github,
+                        assignee_logins_seen_repl,
+                        extra={
+                            "owner": self.owner,
+                            "repo": self.repo,
+                            "issue_number": self.issue_number,
+                        },
+                    )
+                    await interaction.followup.send(
+                        "✅ Reassignment was sent to GitHub. "
+                        "If the assignee does not appear on the issue, they may need to be a **member of the organization**, or the repo may restrict who can be assigned (Settings → General → Issues → Allow specified users to be assigned).",
+                        ephemeral=True,
+                    )
+                
                 # Log audit event
                 if self.storage and hasattr(self.storage, "append_audit_event"):
                     self.storage.append_audit_event({
@@ -721,10 +805,11 @@ def run_bot(config_path: str) -> None:
                             self.github_org,
                         )
                 
-                await interaction.followup.send(
-                    "🔁 Issue reassigned successfully!",
-                    ephemeral=True,
-                )
+                if verified:
+                    await interaction.followup.send(
+                        "🔁 Issue reassigned successfully!",
+                        ephemeral=True,
+                    )
                 
                 # Update original message
                 if hasattr(self, "message") and self.message:
@@ -769,11 +854,24 @@ def run_bot(config_path: str) -> None:
                 except Exception:
                     pass
 
+    # Create a check function for mentor-only commands
+    def mentor_check(interaction: discord.Interaction) -> bool:
+        """Check if user has mentor role."""
+        mentor_roles = getattr(config, "assignments", None)
+        if not mentor_roles:
+            return False
+        issue_assignee_roles = getattr(mentor_roles, "issue_assignees", [])
+        if not issue_assignee_roles:
+            return False
+        user_roles = [role.name for role in interaction.user.roles]
+        return any(role in issue_assignee_roles for role in user_roles)
+
     @tree.command(
         name="assign-issue",
         description="Assign a GitHub issue to a Discord user (mentor-only, requires confirmation)",
         guild=discord.Object(id=guild_id),
     )
+    @app_commands.check(mentor_check)
     @app_commands.describe(
         issue_url="GitHub issue URL (e.g., https://github.com/owner/repo/issues/123)",
         assignee="Discord user to assign the issue to"
@@ -784,18 +882,6 @@ def run_bot(config_path: str) -> None:
         assignee: discord.Member,
     ) -> None:
         await interaction.response.defer(ephemeral=False)
-        
-        # Check mentor role
-        mentor_roles = getattr(config, "assignments", None)
-        if mentor_roles:
-            issue_assignee_roles = getattr(mentor_roles, "issue_assignees", [])
-            user_roles = [role.name for role in interaction.user.roles]
-            if not any(role in issue_assignee_roles for role in user_roles):
-                await interaction.followup.send(
-                    f"❌ Permission denied. Only mentors with roles {', '.join(issue_assignee_roles)} can assign issues.",
-                    ephemeral=True,
-                )
-                return
         
         # Parse issue URL
         parsed = parse_issue_url(issue_url)
@@ -837,6 +923,16 @@ def run_bot(config_path: str) -> None:
         # Resolve Discord user to GitHub username
         assignee_discord_id = str(assignee.id)
         assignee_github = resolve_discord_to_github(storage, assignee_discord_id)
+        
+        # Log resolution for debugging
+        logger.info(
+            "Resolved Discord user to GitHub",
+            extra={
+                "discord_user_id": assignee_discord_id,
+                "discord_username": assignee.display_name,
+                "resolved_github": assignee_github,
+            },
+        )
         
         if not assignee_github:
             await interaction.followup.send(
@@ -1173,8 +1269,16 @@ def run_bot(config_path: str) -> None:
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 })
+            # Fetch issue to get title for better notification
+            issue = fetch_issue_context(self.github_adapter, self.owner, self.repo, self.issue_number)
+            issue_title = issue.get("title", "Untitled")[:100] if issue else "Untitled"
             self._dm_contributor(
-                f"✅ Your request to be assigned to {self.owner}/{self.repo}#{self.issue_number} was approved. You’re assigned!"
+                f"📌 **Issue Assignment Approved!**\n\n"
+                f"Great news! Your request has been approved and you've been assigned to:\n"
+                f"**#{self.issue_number} – {issue_title}**\n\n"
+                f"**Repository:** `{self.owner}/{self.repo}`\n"
+                f"**Link:** https://github.com/{self.owner}/{self.repo}/issues/{self.issue_number}\n\n"
+                f"💡 You're now responsible for this issue. Good luck!"
             )
             await interaction.followup.send("✅ Request approved and issue assigned.", ephemeral=True)
             if hasattr(self, "message") and self.message:
@@ -1205,8 +1309,17 @@ def run_bot(config_path: str) -> None:
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 })
+            # Fetch issue to get title for better notification
+            issue = fetch_issue_context(self.github_adapter, self.owner, self.repo, self.issue_number)
+            issue_title = issue.get("title", "Untitled")[:100] if issue else "Untitled"
             self._dm_contributor(
-                f"✅ Your request for {self.owner}/{self.repo}#{self.issue_number} was approved. You’re now assigned (previous assignee was replaced)."
+                f"📌 **Issue Assignment Approved!**\n\n"
+                f"Your request has been approved and you've been assigned to:\n"
+                f"**#{self.issue_number} – {issue_title}**\n\n"
+                f"**Repository:** `{self.owner}/{self.repo}`\n"
+                f"**Link:** https://github.com/{self.owner}/{self.repo}/issues/{self.issue_number}\n\n"
+                f"ℹ️ Note: The previous assignee was replaced.\n\n"
+                f"💡 You're now responsible for this issue. Good luck!"
             )
             await interaction.followup.send("🔁 Replaced assignee and assigned contributor.", ephemeral=True)
             if hasattr(self, "message") and self.message:
@@ -1320,17 +1433,9 @@ def run_bot(config_path: str) -> None:
         description="List pending issue assignment requests (mentor-only); pick a repo first.",
         guild=discord.Object(id=guild_id),
     )
+    @app_commands.check(mentor_check)
     async def issue_requests_cmd(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=False)
-        mentor_roles = getattr(config, "assignments", None)
-        issue_assignee_roles = getattr(mentor_roles, "issue_assignees", []) if mentor_roles else []
-        user_roles = [r.name for r in interaction.user.roles]
-        if not any(r in issue_assignee_roles for r in user_roles):
-            await interaction.followup.send(
-                f"❌ Only mentors ({', '.join(issue_assignee_roles) or 'configure issue_assignees'}) can review requests.",
-                ephemeral=True,
-            )
-            return
         pending = getattr(storage, "list_pending_issue_requests", None)
         if not callable(pending):
             await interaction.followup.send("❌ Request list unavailable.", ephemeral=True)
@@ -1433,21 +1538,10 @@ def run_bot(config_path: str) -> None:
         description="Sync GitHub events and send notifications (mentor-only)",
         guild=discord.Object(id=guild_id),
     )
+    @app_commands.check(mentor_check)
     async def sync_cmd(interaction: discord.Interaction) -> None:
         """Manually trigger run-once to sync GitHub events and send notifications."""
         await interaction.response.defer(ephemeral=True)
-        
-        # Check mentor role
-        mentor_roles = getattr(config, "assignments", None)
-        if mentor_roles:
-            issue_assignee_roles = getattr(mentor_roles, "issue_assignees", [])
-            user_roles = [role.name for role in interaction.user.roles]
-            if not any(role in issue_assignee_roles for role in user_roles):
-                await interaction.followup.send(
-                    f"❌ Permission denied. Only mentors with roles {', '.join(issue_assignee_roles)} can sync.",
-                    ephemeral=True,
-                )
-                return
         
         try:
             # Build orchestrator and run once
@@ -1500,6 +1594,24 @@ def run_bot(config_path: str) -> None:
                 f"❌ Sync failed: {exc}",
                 ephemeral=True,
             )
+
+    @tree.error
+    async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Handle app command errors, including check failures."""
+        if isinstance(error, app_commands.CheckFailure):
+            mentor_roles = getattr(config, "assignments", None)
+            issue_assignee_roles = getattr(mentor_roles, "issue_assignees", []) if mentor_roles else []
+            await interaction.response.send_message(
+                f"❌ Permission denied. Only mentors with roles {', '.join(issue_assignee_roles) or 'configure issue_assignees'} can use this command.",
+                ephemeral=True,
+            )
+        else:
+            logger.exception("App command error", exc_info=error)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ An error occurred while processing your command.",
+                    ephemeral=True,
+                )
 
     @client.event
     async def on_ready() -> None:
