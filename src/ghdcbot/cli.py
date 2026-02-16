@@ -81,6 +81,7 @@ def main() -> None:
     identity_sub = identity_p.add_subparsers(dest="identity_command", required=True)
     identity_status_p = identity_sub.add_parser("status", help="Show linked GitHub account and verification status")
     identity_status_p.add_argument("--discord-user-id", required=True, help="Discord user ID (numeric)")
+    identity_sub.add_parser("list", help="List all verified contributors (Discord ID ↔ GitHub username)")
     sub.add_parser("bot", help="Run Discord bot with /link and /verify-link slash commands")
     export_p = sub.add_parser("export-audit", help="Export append-only audit events (JSON, CSV, or Markdown)")
     export_p.add_argument("--format", choices=("json", "csv", "md"), default="json", help="Output format")
@@ -172,31 +173,47 @@ def main() -> None:
                 data_dir=config.runtime.data_dir,
             )
             storage_adapter.init_schema()
-            get_status = getattr(storage_adapter, "get_identity_status", None)
-            if args.identity_command != "status" or not callable(get_status):
-                logging.getLogger("CLI").error("identity status is not available")
-                raise SystemExit(1)
-            max_age_days = None
-            if config.identity is not None:
-                max_age_days = getattr(config.identity, "verified_max_age_days", None)
-            status = get_status(args.discord_user_id, max_age_days=max_age_days)
-            github_user = status.get("github_user") or "-"
-            st = status.get("status") or "not_linked"
-            if st == "verified":
-                status_label = "Verified"
-            elif st == "verified_stale":
-                status_label = "Verified (Stale)"
-            elif st == "pending":
-                status_label = "Pending"
+            if args.identity_command == "list":
+                list_verified = getattr(storage_adapter, "list_verified_identity_mappings", None)
+                if not callable(list_verified):
+                    logging.getLogger("CLI").error("identity list is not available for this storage")
+                    raise SystemExit(1)
+                mappings = list_verified()
+                if not mappings:
+                    print("No verified contributors yet.")
+                else:
+                    print(f"Verified contributors ({len(mappings)}):")
+                    for m in mappings:
+                        print(f"  Discord: {m.discord_user_id}  ↔  GitHub: {m.github_user}")
+            elif args.identity_command == "status":
+                get_status = getattr(storage_adapter, "get_identity_status", None)
+                if not callable(get_status):
+                    logging.getLogger("CLI").error("identity status is not available")
+                    raise SystemExit(1)
+                max_age_days = None
+                if config.identity is not None:
+                    max_age_days = getattr(config.identity, "verified_max_age_days", None)
+                status = get_status(args.discord_user_id, max_age_days=max_age_days)
+                github_user = status.get("github_user") or "-"
+                st = status.get("status") or "not_linked"
+                if st == "verified":
+                    status_label = "Verified"
+                elif st == "verified_stale":
+                    status_label = "Verified (Stale)"
+                elif st == "pending":
+                    status_label = "Pending"
+                else:
+                    status_label = "Not linked"
+                verified_at = status.get("verified_at") or "-"
+                print(f"Discord user: {args.discord_user_id}")
+                print(f"GitHub user: {github_user}")
+                print(f"Status: {status_label}")
+                print(f"Verified at: {verified_at}")
+                if status.get("is_stale"):
+                    print("Warning: Identity verification is stale. Use verify-link to refresh it.")
             else:
-                status_label = "Not linked"
-            verified_at = status.get("verified_at") or "-"
-            print(f"Discord user: {args.discord_user_id}")
-            print(f"GitHub user: {github_user}")
-            print(f"Status: {status_label}")
-            print(f"Verified at: {verified_at}")
-            if status.get("is_stale"):
-                print("Warning: Identity verification is stale. Use verify-link to refresh it.")
+                logging.getLogger("CLI").error("Unknown identity command: %s", args.identity_command)
+                raise SystemExit(1)
         elif args.command == "unlink":
             config = load_config(args.config)
             configure_logging(config.runtime.log_level)
