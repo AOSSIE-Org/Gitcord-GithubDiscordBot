@@ -244,4 +244,4 @@ Thanks a lot for spending your time helping Gitcord grow. Keep rocking 🥂
 
 [![Contributors](https://contrib.rocks/image?repo=AOSSIE-Org/Gitcord-GithubDiscordBot)](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/graphs/contributors)
 
-© 2025 AOSSIE
+© 2026 AOSSIE
