@@ -4,7 +4,7 @@
 <!-- Organization Logo -->
 <div align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
   <img alt="AOSSIE" src="public/aossie-logo.svg" width="175">
-  <img src="public/todo-project-logo.svg" width="175" />
+  <img alt="Gitcord" src="public/gitcord-logo.svg" width="175" />
 </div>
 
 &nbsp;
@@ -61,6 +61,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 - **Audit‑first workflow**: JSON + Markdown reports before any writes.
 - **Deterministic planning**: identical inputs produce identical plans.
 - **Permission‑aware IO**: readers degrade safely on missing permissions.
+- **Discord Bot**: Interactive slash commands for identity linking, issue management, and contribution tracking.
 
 ---
 
@@ -169,14 +170,46 @@ Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
 <data_dir>/reports/audit.md
 ```
 
-#### 5. Testing in Discord
+#### 5. Run Discord Bot
 
-1. **Invite the bot** to your Discord server using a URL with scopes `bot` and permissions `Manage Roles`, and optionally `View Channels` / `Read Message History` if you use them. The bot must be in the server to read members and roles (and to apply role changes).
-2. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
-3. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
+Start the Discord bot with slash commands:
+
+```bash
+./.venv/bin/python -m ghdcbot.cli --config config/your-config.yaml bot
+```
+
+**Bot Invitation:** Invite the bot with scopes `bot` and `applications.commands`, plus permissions `Manage Roles`, `View Channels`, and `Read Message History`.
+
+#### 6. Testing in Discord
+
+1. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
+2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
    - `runtime.mode: "active"`
    - `discord.permissions.write: true`
    Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
+
+---
+
+## 🤖 Discord Bot Commands
+
+### Identity Linking
+- `/link` - Link your Discord account to GitHub (creates verification code)
+- `/verify-link` - Verify your GitHub link after adding code to bio/gist
+- `/verify` - Check your verification status
+- `/status` - Show verification state, activity window, and roles
+- `/unlink` - Unlink your GitHub identity
+
+### Contribution & Metrics
+- `/summary` - Show your contribution metrics (7 and 30 days)
+- `/pr-info` - Show PR context preview (repository, reviews, CI status)
+
+### Issue Management
+- `/request-issue` - Request to be assigned to a GitHub issue
+- `/assign-issue` - Assign issue to Discord user (mentor-only)
+- `/issue-requests` - Review pending issue requests (mentor-only)
+- `/sync` - Manually sync GitHub events and notifications (mentor-only)
+
+**Note:** Commands marked "mentor-only" require roles configured in `assignments.issue_assignees`. The bot also auto-detects PR URLs in configured channels and shows PR previews.
 
 ---
 
