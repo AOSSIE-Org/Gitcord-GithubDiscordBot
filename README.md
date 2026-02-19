@@ -191,13 +191,9 @@ Edit config: Set `github.org`, `discord.guild_id`, and `snapshots.repo_path`
 ./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml run-once
 ```
 
-Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
-```text
-<data_dir>/reports/audit.json
-<data_dir>/reports/audit.md
-```
+This generates audit reports without making changes. Review `data/my-org/reports/audit.md`.
 
-#### 5. Run Discord Bot
+**8. Run Discord Bot**
 
 Start the Discord bot with slash commands:
 
