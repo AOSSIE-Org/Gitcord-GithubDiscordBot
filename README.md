@@ -201,7 +201,7 @@ This generates audit reports without making changes. Review `data/my-org/reports
 
 Wait 30 seconds for commands to sync.
 
-#### 6. Testing in Discord
+**9. Enable Active Mode** (After Testing)
 
 1. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
 2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
