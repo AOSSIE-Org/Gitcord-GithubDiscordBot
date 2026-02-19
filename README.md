@@ -87,6 +87,8 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 1. [Main Repository](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
 2. [Installation Guide](INSTALLATION.md) - Complete setup instructions
 3. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
+2. [Installation Guide](INSTALLATION.md) - Complete setup instructions
+3. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
 
 ---
 
