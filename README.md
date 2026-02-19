@@ -126,11 +126,35 @@ Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 
 ## 🍀 Getting Started
 
-### Prerequisites
-- Python 3.11+
-- GitHub and Discord tokens with read permissions
+> **📖 New to Gitcord?** For complete step-by-step setup instructions including Discord bot creation and GitHub token setup, see **[INSTALLATION.md](INSTALLATION.md)**.
 
-### Installation
+### Prerequisites
+
+Before installing Gitcord, you need:
+
+- ✅ **Python 3.11+** installed
+- ✅ **GitHub Organization** access
+- ✅ **Discord Server** with admin permissions
+- ✅ **GitHub Personal Access Token** (fine-grained PAT) - [How to create](INSTALLATION.md#step-1-create-github-token-pat)
+- ✅ **Discord Bot Token** - [How to create](INSTALLATION.md#step-2-create-discord-bot)
+
+### Quick Setup Overview
+
+**1. Create GitHub Token** ([Detailed Guide](INSTALLATION.md#step-1-create-github-token-pat))
+- Go to GitHub → Settings → Developer Settings → Fine-grained tokens
+- Permissions: Contents (Read & Write), Issues (Read & Write), Pull requests (Read & Write)
+
+**2. Create Discord Bot** ([Detailed Guide](INSTALLATION.md#step-2-create-discord-bot))
+- Go to [Discord Developer Portal](https://discord.com/developers/applications)
+- Create Application → Add Bot → Enable **Server Members Intent**
+
+**3. Invite Bot to Server** ([Detailed Guide](INSTALLATION.md#step-3-invite-bot-to-discord-server))
+- OAuth2 → URL Generator
+- Scopes: `bot`, `applications.commands`
+- Permissions: `Manage Roles`, `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`
+- ⚠️ **Never** use Administrator permission
+
+**4. Install Gitcord**
 
 #### 1. Clone the Repository
 
@@ -148,17 +172,22 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -e .
 ```
 
-#### 3. Configure Environment Variables
+**5. Configure Environment Variables**
 
-Create a `.env` file in the root directory (you can copy `.env.example`):
+Create a `.env` file (copy from `.env.example`):
 
 ```env
-GITHUB_TOKEN=your_github_token
-DISCORD_TOKEN=your_discord_token
+GITHUB_TOKEN=your_github_token_here
+DISCORD_TOKEN=your_discord_bot_token_here
 ```
 
-Notes:
-- Tokens must have read permissions for the org/repo and Discord server.
+**6. Create Configuration File**
+
+Copy and edit: `cp config/example.yaml config/my-org-config.yaml`
+
+Edit config: Set `github.org`, `discord.guild_id`, and `snapshots.repo_path`
+
+**7. Test Run (Dry-Run Mode)**
 
 #### 4. Configure and Run (Safe Dry‑Run)
 
