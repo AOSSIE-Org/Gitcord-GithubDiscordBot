@@ -188,9 +188,7 @@ Edit config: Set `github.org`, `discord.guild_id`, and `snapshots.repo_path`
 **7. Test Run (Dry-Run Mode)**
 
 ```bash
-cp config/example.yaml /tmp/ghdcbot-config.yaml
-# Use the venv python explicitly to avoid alias/PATH issues
-./.venv/bin/python -m ghdcbot.cli --config /tmp/ghdcbot-config.yaml run-once
+./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml run-once
 ```
 
 Expected output files (see `data_dir` in `/tmp/ghdcbot-config.yaml`):
