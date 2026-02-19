@@ -36,7 +36,12 @@ from ghdcbot.engine.issue_request_flow import (
     get_merged_pr_count_and_last_time,
     group_pending_requests_by_repo,
 )
-from ghdcbot.engine.notifications import send_notification_for_event
+from ghdcbot.engine.notifications import (
+    _build_dedupe_key,
+    _mark_notification_sent,
+    send_notification_for_event,
+)
+from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -1280,6 +1285,57 @@ def run_bot(config_path: str) -> None:
                 f"**Link:** https://github.com/{self.owner}/{self.repo}/issues/{self.issue_number}\n\n"
                 f"💡 You're now responsible for this issue. Good luck!"
             )
+            
+            # Mark notification as sent to prevent duplicate when /sync runs
+            try:
+                mentor_github = resolve_discord_to_github(self.storage, str(interaction.user.id))
+                payload = {
+                    "issue_number": self.issue_number,
+                    "title": issue_title,
+                    "state": issue.get("state", "open") if issue else "open",
+                    "labels": [label.get("name") for label in issue.get("labels", [])] if issue else [],
+                }
+                if mentor_github:
+                    payload["assigned_by"] = mentor_github
+                
+                event = ContributionEvent(
+                    github_user=self.requester_github,
+                    event_type="issue_assigned",
+                    repo=self.repo,
+                    created_at=datetime.now(timezone.utc),
+                    payload=payload,
+                )
+                
+                dedupe_key = _build_dedupe_key(event, self.requester_github)
+                _mark_notification_sent(
+                    self.storage,
+                    dedupe_key,
+                    event,
+                    self.requester_discord_id,
+                    None,  # channel_id=None for DM
+                    self.requester_github,
+                )
+                logger.debug(
+                    "Marked issue assignment notification as sent to prevent duplicate",
+                    extra={
+                        "dedupe_key": dedupe_key,
+                        "issue_number": self.issue_number,
+                        "repo": self.repo,
+                        "assignee": self.requester_github,
+                    },
+                )
+            except Exception as e:
+                # Log error but don't fail the approval flow
+                logger.warning(
+                    "Failed to mark notification as sent (may result in duplicate notification)",
+                    exc_info=e,
+                    extra={
+                        "issue_number": self.issue_number,
+                        "repo": self.repo,
+                        "assignee": self.requester_github,
+                    },
+                )
+            
             await interaction.followup.send("✅ Request approved and issue assigned.", ephemeral=True)
             if hasattr(self, "message") and self.message:
                 try:
@@ -1321,6 +1377,57 @@ def run_bot(config_path: str) -> None:
                 f"ℹ️ Note: The previous assignee was replaced.\n\n"
                 f"💡 You're now responsible for this issue. Good luck!"
             )
+            
+            # Mark notification as sent to prevent duplicate when /sync runs
+            try:
+                mentor_github = resolve_discord_to_github(self.storage, str(interaction.user.id))
+                payload = {
+                    "issue_number": self.issue_number,
+                    "title": issue_title,
+                    "state": issue.get("state", "open") if issue else "open",
+                    "labels": [label.get("name") for label in issue.get("labels", [])] if issue else [],
+                }
+                if mentor_github:
+                    payload["assigned_by"] = mentor_github
+                
+                event = ContributionEvent(
+                    github_user=self.requester_github,
+                    event_type="issue_assigned",
+                    repo=self.repo,
+                    created_at=datetime.now(timezone.utc),
+                    payload=payload,
+                )
+                
+                dedupe_key = _build_dedupe_key(event, self.requester_github)
+                _mark_notification_sent(
+                    self.storage,
+                    dedupe_key,
+                    event,
+                    self.requester_discord_id,
+                    None,  # channel_id=None for DM
+                    self.requester_github,
+                )
+                logger.debug(
+                    "Marked issue assignment notification as sent to prevent duplicate (replacement)",
+                    extra={
+                        "dedupe_key": dedupe_key,
+                        "issue_number": self.issue_number,
+                        "repo": self.repo,
+                        "assignee": self.requester_github,
+                    },
+                )
+            except Exception as e:
+                # Log error but don't fail the approval flow
+                logger.warning(
+                    "Failed to mark notification as sent (may result in duplicate notification)",
+                    exc_info=e,
+                    extra={
+                        "issue_number": self.issue_number,
+                        "repo": self.repo,
+                        "assignee": self.requester_github,
+                    },
+                )
+            
             await interaction.followup.send("🔁 Replaced assignee and assigned contributor.", ephemeral=True)
             if hasattr(self, "message") and self.message:
                 try:
@@ -1435,7 +1542,7 @@ def run_bot(config_path: str) -> None:
     )
     @app_commands.check(mentor_check)
     async def issue_requests_cmd(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer(ephemeral=True)
         pending = getattr(storage, "list_pending_issue_requests", None)
         if not callable(pending):
             await interaction.followup.send("❌ Request list unavailable.", ephemeral=True)
@@ -1464,7 +1571,7 @@ def run_bot(config_path: str) -> None:
         await interaction.followup.send(
             embed=discord.Embed.from_dict(embed_dict),
             view=view,
-            ephemeral=False,
+            ephemeral=True,
         )
 
     @client.event
@@ -1599,19 +1706,46 @@ def run_bot(config_path: str) -> None:
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
         if isinstance(error, app_commands.CheckFailure):
-            mentor_roles = getattr(config, "assignments", None)
-            issue_assignee_roles = getattr(mentor_roles, "issue_assignees", []) if mentor_roles else []
-            await interaction.response.send_message(
-                f"❌ Permission denied. Only mentors with roles {', '.join(issue_assignee_roles) or 'configure issue_assignees'} can use this command.",
-                ephemeral=True,
-            )
+            try:
+                mentor_roles = getattr(config, "assignments", None)
+                issue_assignee_roles = getattr(mentor_roles, "issue_assignees", []) if mentor_roles else []
+                role_list = ', '.join(issue_assignee_roles) if issue_assignee_roles else 'configure issue_assignees'
+                error_message = f"❌ Permission denied. Only mentors with roles **{role_list}** can use this command."
+                
+                logger.info(
+                    "Check failure for user %s (%s) on command %s. Required roles: %s",
+                    interaction.user.name,
+                    interaction.user.id,
+                    interaction.command.name if interaction.command else "unknown",
+                    role_list,
+                )
+                
+                # Check if response is already sent (shouldn't happen for check failures, but be safe)
+                if interaction.response.is_done():
+                    await interaction.followup.send(error_message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(error_message, ephemeral=True)
+            except Exception as e:
+                logger.exception("Failed to send permission denied message", exc_info=e)
+                # Try one more time with a simple message
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(
+                            "❌ Permission denied. Only mentors can use this command.",
+                            ephemeral=True,
+                        )
+                except Exception:
+                    logger.error("Could not send any error message to user")
         else:
             logger.exception("App command error", exc_info=error)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ An error occurred while processing your command.",
-                    ephemeral=True,
-                )
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ An error occurred while processing your command.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                logger.error("Could not send error message to user")
 
     @client.event
     async def on_ready() -> None:
