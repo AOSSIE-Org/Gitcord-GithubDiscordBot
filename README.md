@@ -189,8 +189,6 @@ Edit config: Set `github.org`, `discord.guild_id`, and `snapshots.repo_path`
 
 **7. Test Run (Dry-Run Mode)**
 
-#### 4. Configure and Run (Safe Dry‑Run)
-
 ```bash
 cp config/example.yaml /tmp/ghdcbot-config.yaml
 # Use the venv python explicitly to avoid alias/PATH issues
