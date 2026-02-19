@@ -195,13 +195,11 @@ This generates audit reports without making changes. Review `data/my-org/reports
 
 **8. Run Discord Bot**
 
-Start the Discord bot with slash commands:
-
 ```bash
-./.venv/bin/python -m ghdcbot.cli --config config/your-config.yaml bot
+./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml bot
 ```
 
-**Bot Invitation:** Invite the bot with scopes `bot` and `applications.commands`, plus permissions `Manage Roles`, `View Channels`, and `Read Message History`.
+Wait 30 seconds for commands to sync.
 
 #### 6. Testing in Discord
 
