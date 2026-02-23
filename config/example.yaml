@@ -61,6 +61,11 @@ assignments:
 # identity:
 #   unlink_cooldown_hours: 24
 
+# Optional: when a contributor has a PR merged in a repo, grant them the corresponding Discord role
+# (repo name -> Discord role name). Roles are add-only and never auto-removed.
+repo_contributor_roles:
+  castro: "castro"
+
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"
     discord_user_id: "YOUR_DISCORD_USER_ID"

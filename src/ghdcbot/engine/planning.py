@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from ghdcbot.config.models import IdentityMapping, MergeRoleRuleConfig, MergeRoleRulesConfig, RoleMappingConfig
@@ -9,6 +9,32 @@ from ghdcbot.core.interfaces import Storage
 from ghdcbot.core.models import DiscordRolePlan, GitHubAssignmentPlan, Score
 
 logger = logging.getLogger("Planning")
+
+# Epoch for "all-time" contribution lookup (repo-contributor roles: any merged PR in stored history)
+REPO_CONTRIBUTOR_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def repos_with_merged_pr_per_user(
+    storage: Storage,
+    identity_mappings: Iterable[IdentityMapping],
+) -> dict[str, set[str]]:
+    """Return, for each verified GitHub user, the set of repo names where they have at least one merged PR.
+    Uses all stored contributions (all-time) so that Contributor-X is persistent once earned.
+    GitHub usernames are matched case-insensitively (API may return different casing than identity).
+    """
+    identity_list = list(identity_mappings)
+    # Canonical name (from identity) by lowercase, so we key result by same name as mapping.github_user
+    github_lower_to_canonical = {m.github_user.strip().lower(): m.github_user for m in identity_list}
+    events = storage.list_contributions(REPO_CONTRIBUTOR_EPOCH)
+    result: dict[str, set[str]] = {}
+    for event in events:
+        if event.event_type != "pr_merged" or not event.github_user:
+            continue
+        key_lower = event.github_user.strip().lower()
+        canonical = github_lower_to_canonical.get(key_lower)
+        if canonical is not None:
+            result.setdefault(canonical, set()).add(event.repo)
+    return result
 
 
 def count_merged_prs_per_user(
@@ -104,11 +130,13 @@ def plan_discord_roles(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
     merge_role_rules: MergeRoleRulesConfig | None = None,
+    repo_contributor_roles: dict[str, str] | None = None,
 ) -> list[DiscordRolePlan]:
     """Compute Discord role add/remove plans from scores and role thresholds.
     
     If merge_role_rules is enabled, also considers merge-based roles.
-    Final role per user is max(score_based_role, merge_based_role).
+    If repo_contributor_roles is set, adds roles per repo where user has a merged PR (all-time).
+    Final role per user = score_based | merge_based | repo_contributor_based.
     """
     score_lookup = {score.github_user: score.points for score in scores}
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
@@ -132,10 +160,16 @@ def plan_discord_roles(
         merged_pr_counts = count_merged_prs_per_user(
             storage, identity_list, period_start, period_end
         )
+
+    # Compute repos-with-merged-PR per user (if repo-contributor roles are enabled)
+    repos_per_user: dict[str, set[str]] = {}
+    if repo_contributor_roles and storage is not None:
+        repos_per_user = repos_with_merged_pr_per_user(storage, identity_list)
     
     # Compute score-based desired roles
     score_based_roles: dict[str, set[str]] = {}
     merge_based_roles: dict[str, set[str]] = {}
+    repo_based_roles: dict[str, set[str]] = {}
     
     for mapping in sorted(identity_list, key=lambda m: m.discord_user_id):
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
@@ -167,21 +201,42 @@ def plan_discord_roles(
             merge_based_roles[mapping.discord_user_id] = merge_desired
         else:
             merge_based_roles[mapping.discord_user_id] = set()
+
+        # Repo-contributor roles (if enabled): role per repo where user has at least one merged PR
+        repo_contributor_desired: set[str] = set()
+        if repo_contributor_roles:
+            user_repos = repos_per_user.get(mapping.github_user, set())
+            for repo_name, role_name in repo_contributor_roles.items():
+                if repo_name in user_repos:
+                    repo_contributor_desired.add(role_name)
+        repo_based_roles[mapping.discord_user_id] = repo_contributor_desired
         
-        # Final desired roles = max(score_based, merge_based)
-        # For each role, if either system wants it, include it
-        final_desired_roles = score_based_roles[mapping.discord_user_id] | merge_based_roles[mapping.discord_user_id]
+        # Final desired roles = score | merge | repo-contributor
+        final_desired_roles = (
+            score_based_roles[mapping.discord_user_id]
+            | merge_based_roles[mapping.discord_user_id]
+            | repo_based_roles[mapping.discord_user_id]
+        )
         
         # Determine decision reason for each role
         for role in sorted(final_desired_roles - current_roles):
             # Determine which system granted this role
             score_granted = role in score_based_roles[mapping.discord_user_id]
             merge_granted = role in merge_based_roles[mapping.discord_user_id]
+            repo_granted = role in repo_based_roles[mapping.discord_user_id]
             
-            if score_granted and merge_granted:
+            if score_granted and merge_granted and repo_granted:
+                decision_reason = "score_role_rules,merge_role_rules,repo_contributor_roles"
+            elif score_granted and merge_granted:
                 decision_reason = "score_role_rules,merge_role_rules"
+            elif score_granted and repo_granted:
+                decision_reason = "score_role_rules,repo_contributor_roles"
+            elif merge_granted and repo_granted:
+                decision_reason = "merge_role_rules,repo_contributor_roles"
             elif merge_granted:
                 decision_reason = "merge_role_rules"
+            elif repo_granted:
+                decision_reason = "repo_contributor_roles"
             else:
                 decision_reason = "score_role_rules"
             
@@ -208,19 +263,38 @@ def plan_discord_roles(
                     if rule.discord_role == role
                 )
             
+            if repo_granted and repo_contributor_roles:
+                # Which repo(s) granted this role (may be multiple repos mapping to same role)
+                granting_repos = [
+                    r for r, ro in repo_contributor_roles.items()
+                    if ro == role and r in repos_per_user.get(mapping.github_user, set())
+                ]
+                source["repo"] = granting_repos[0] if len(granting_repos) == 1 else granting_repos
+            
+            # Reason string for audit/report
+            if repo_granted:
+                repo_str = source.get("repo", "?")
+                repo_display = repo_str if isinstance(repo_str, str) else ", ".join(repo_str)
+                reason = f"Merged PR in repo {repo_display} grants role {role}"
+            elif merge_granted:
+                reason = f"Merged PR count {merged_pr_counts.get(mapping.github_user, 0)} meets threshold for {role}"
+            else:
+                reason = f"Score {points} meets threshold for {role}"
+            
             plans.append(
                 DiscordRolePlan(
                     discord_user_id=mapping.discord_user_id,
                     role=role,
                     action="add",
-                    reason=f"Score {points} meets threshold for {role}" if score_granted else f"Merged PR count {merged_count} meets threshold for {role}",
+                    reason=reason,
                     source=source,
                 )
             )
         
-        # Remove roles only if score-based says so, and never remove merge-granted roles
+        # Remove roles only if score-based says so; never remove merge-granted or repo-contributor roles
         merge_granted_roles = merge_based_roles.get(mapping.discord_user_id, set())
-        removal_candidates = (current_roles & managed_roles) - score_desired - merge_granted_roles
+        repo_granted_roles = repo_based_roles.get(mapping.discord_user_id, set())
+        removal_candidates = (current_roles & managed_roles) - score_desired - merge_granted_roles - repo_granted_roles
         for role in sorted(removal_candidates):
             plans.append(
                 DiscordRolePlan(
