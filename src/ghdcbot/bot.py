@@ -61,6 +61,12 @@ def run_bot(config_path: str) -> None:
         config_path,
         config.runtime.data_dir,
     )
+    repo_contributor_roles = getattr(config, "repo_contributor_roles", None) or {}
+    if repo_contributor_roles:
+        logger.info(
+            "repo_contributor_roles enabled: %s (use this same config for /sync to assign these roles)",
+            list(repo_contributor_roles.keys()),
+        )
 
     storage = build_adapter(
         config.runtime.storage_adapter,
@@ -1072,7 +1078,7 @@ def run_bot(config_path: str) -> None:
             await self._on_repo_chosen(interaction, interaction.data["values"][0])
 
         async def _on_repo_chosen(self, interaction: discord.Interaction, repo_value: str) -> None:
-            await interaction.response.defer(ephemeral=False)
+            await interaction.response.defer(ephemeral=True)
             parts = repo_value.split("/", 1)
             if len(parts) != 2:
                 await interaction.followup.send("Invalid repository selection.", ephemeral=True)
@@ -1098,12 +1104,14 @@ def run_bot(config_path: str) -> None:
             mentor_roles = getattr(self.config, "assignments", None)
             eligible_roles_config = getattr(mentor_roles, "issue_request_eligible_roles", []) if mentor_roles else []
             member_roles_map = self.discord_reader.list_member_roles()
-            channel = interaction.channel
 
-            async def send_repo_list_back(ch: Any) -> None:
+            async def send_repo_list_back(interaction_or_channel: Any) -> None:
                 pending = self.storage.list_pending_issue_requests()
                 if not pending:
-                    await ch.send("No pending issue requests.")
+                    if isinstance(interaction_or_channel, discord.Interaction):
+                        await interaction_or_channel.followup.send("No pending issue requests.", ephemeral=True)
+                    else:
+                        await interaction_or_channel.send("No pending issue requests.")
                     return
                 rl = group_pending_requests_by_repo(pending)
                 now = datetime.now(timezone.utc)
@@ -1112,7 +1120,10 @@ def run_bot(config_path: str) -> None:
                     pending, rl, self.storage, self.github_adapter, self.config,
                     self.discord_reader, self.policy,
                 )
-                await ch.send(embed=emb, view=v)
+                if isinstance(interaction_or_channel, discord.Interaction):
+                    await interaction_or_channel.followup.send(embed=emb, view=v, ephemeral=True)
+                else:
+                    await interaction_or_channel.send(embed=emb, view=v)
 
             for req in repo_requests:
                 issue = fetch_issue_context(
@@ -1154,11 +1165,16 @@ def run_bot(config_path: str) -> None:
                     discord_sender=self.discord_reader,
                     back_callback=send_repo_list_back,
                 )
-                msg = await channel.send(embed=discord.Embed.from_dict(embed_dict), view=view)
+                # Send as ephemeral followup so only mentor can see it
+                msg = await interaction.followup.send(
+                    embed=discord.Embed.from_dict(embed_dict),
+                    view=view,
+                    ephemeral=True,
+                )
                 view.message = msg
             await interaction.followup.send(
                 f"Showing **{len(repo_requests)}** request(s) for **{repo_value}** above.",
-                ephemeral=False,
+                ephemeral=True,
             )
 
     class IssueRequestReviewView(discord.ui.View):
@@ -1202,8 +1218,8 @@ def run_bot(config_path: str) -> None:
 
         async def _back_to_repo_list(self, interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
-            if self.back_callback and interaction.channel:
-                await self.back_callback(interaction.channel)
+            if self.back_callback:
+                await self.back_callback(interaction)
             await interaction.followup.send("Returned to repo list.", ephemeral=True)
 
         def _dm_contributor(self, content: str) -> bool:

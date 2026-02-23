@@ -108,6 +108,7 @@ class Orchestrator:
             # Generate audit reports before any mutations are attempted.
             try:
                 merge_role_rules = getattr(self.config, "merge_role_rules", None)
+                repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
                 discord_plans = plan_discord_roles(
                     member_roles,
                     scores,
@@ -117,6 +118,7 @@ class Orchestrator:
                     period_start=period_start,
                     period_end=period_end,
                     merge_role_rules=merge_role_rules,
+                    repo_contributor_roles=repo_contributor_roles,
                 )
                 github_plans = _to_github_assignment_plans(issue_plans, review_plans)
                 # Pass difficulty_weights if available (optional parameter, backward compatible)
@@ -187,6 +189,7 @@ class Orchestrator:
 
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy, self.config.github.org)
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
+        repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
         apply_discord_roles(
             self.discord_writer,
             member_roles,
@@ -198,6 +201,7 @@ class Orchestrator:
             period_start=period_start,
             period_end=period_end,
             merge_role_rules=merge_role_rules,
+            repo_contributor_roles=repo_contributor_roles,
         )
         
         # Write GitHub snapshots (additive, non-blocking)
@@ -340,13 +344,14 @@ def apply_discord_roles(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
     merge_role_rules: MergeRoleRulesConfig | None = None,
+    repo_contributor_roles: dict[str, str] | None = None,
 ) -> None:
     logger = logging.getLogger("DiscordMutations")
     if not policy.allow_discord_mutations:
         logger.info("Discord mutations disabled", extra={"mode": policy.mode.value})
         return
 
-    from ghdcbot.engine.planning import count_merged_prs_per_user
+    from ghdcbot.engine.planning import count_merged_prs_per_user, repos_with_merged_pr_per_user
 
     score_lookup = {score.github_user: score.points for score in scores}
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
@@ -365,6 +370,11 @@ def apply_discord_roles(
         merged_pr_counts = count_merged_prs_per_user(
             storage, identity_mappings, period_start, period_end
         )
+
+    # Get repos-with-merged-PR per user if repo-contributor roles are enabled
+    repos_per_user: dict[str, set[str]] = {}
+    if repo_contributor_roles and storage is not None:
+        repos_per_user = repos_with_merged_pr_per_user(storage, identity_mappings)
 
     for mapping in identity_mappings:
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
@@ -393,13 +403,32 @@ def apply_discord_roles(
             ]
             # Highest eligible role is the last one (rules sorted by threshold ascending)
             merge_desired = {eligible_merge_roles[-1]} if eligible_merge_roles else set()
+
+        # Repo-contributor desired roles (if enabled)
+        repo_contributor_desired: set[str] = set()
+        if repo_contributor_roles:
+            user_repos = repos_per_user.get(mapping.github_user, set())
+            for repo_name, role_name in repo_contributor_roles.items():
+                if repo_name in user_repos:
+                    repo_contributor_desired.add(role_name)
         
-        # Final desired roles = max(score_based, merge_based)
-        desired_roles = score_desired | merge_desired
+        # Final desired roles = score | merge | repo-contributor
+        desired_roles = score_desired | merge_desired | repo_contributor_desired
         
         # Track newly added roles for congratulatory messages
         newly_added_roles = sorted(desired_roles - current_roles)
-        
+        if newly_added_roles and repo_contributor_desired:
+            for r in newly_added_roles:
+                if r in repo_contributor_desired:
+                    logger.info(
+                        "Repo-contributor role to add",
+                        extra={
+                            "discord_user_id": mapping.discord_user_id,
+                            "github_user": mapping.github_user,
+                            "role": r,
+                        },
+                    )
+                    break
         for role in newly_added_roles:
             discord_writer.add_role(mapping.discord_user_id, role)
             # Send congratulatory message for newly assigned roles
@@ -409,8 +438,8 @@ def apply_discord_roles(
                 role_name=role,
                 policy=policy,
             )
-        # Remove roles that are no longer desired (preserve merge-based roles)
-        roles_to_remove = (current_roles & managed_roles) - (score_desired | merge_desired)
+        # Remove roles only when score-based says so; never remove merge-based or repo-contributor roles
+        roles_to_remove = (current_roles & managed_roles) - desired_roles
         for role in sorted(roles_to_remove):
             discord_writer.remove_role(mapping.discord_user_id, role)
 

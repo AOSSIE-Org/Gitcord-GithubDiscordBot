@@ -95,9 +95,15 @@ class DiscordApiAdapter:
         """Assign a role to a guild member. Calls Discord API unless request fails."""
         role_id = self._resolve_role_id(role_name)
         if role_id is None:
+            roles, ok = self._list_roles()
+            role_names = [r.get("name") for r in roles if r.get("name")] if ok else []
             self._logger.warning(
-                "Discord role not found; cannot add",
-                extra={"user_id": discord_user_id, "role": role_name},
+                "Discord role not found; cannot add (check name and hierarchy)",
+                extra={
+                    "user_id": discord_user_id,
+                    "role_requested": role_name,
+                    "guild_role_names": role_names[:30],
+                },
             )
             return
         path = f"/guilds/{self._guild_id}/members/{discord_user_id}/roles/{role_id}"
@@ -115,12 +121,17 @@ class DiscordApiAdapter:
                 extra={"user_id": discord_user_id, "role": role_name},
             )
         else:
+            try:
+                body = response.text[:500] if response.text else ""
+            except Exception:
+                body = ""
             self._logger.warning(
-                "Discord add role failed",
+                "Discord add role failed (check bot role is above target role and has Manage Roles)",
                 extra={
                     "user_id": discord_user_id,
                     "role": role_name,
                     "status_code": response.status_code,
+                    "response": body,
                 },
             )
 
@@ -233,12 +244,14 @@ class DiscordApiAdapter:
             return False
 
     def _resolve_role_id(self, role_name: str) -> str | None:
-        """Resolve role name to Discord role ID. Returns None if not found."""
+        """Resolve role name to Discord role ID (case-insensitive). Returns None if not found."""
         roles, ok = self._list_roles()
         if not ok:
             return None
+        role_name_lower = (role_name or "").strip().lower()
         for role in roles:
-            if role.get("name") == role_name:
+            rname = role.get("name") or ""
+            if rname.strip().lower() == role_name_lower:
                 return role["id"]
         return None
 

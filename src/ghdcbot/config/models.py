@@ -199,6 +199,19 @@ class BotConfig(BaseModel):
     merge_role_rules: MergeRoleRulesConfig | None = None
     # Optional: GitHub snapshot storage
     snapshots: SnapshotConfig | None = None
+    # Optional: repo name -> Discord role for "Contributor-X" (PR merged in repo X grants role)
+    repo_contributor_roles: dict[str, str] | None = None
+
+    @field_validator("repo_contributor_roles")
+    @classmethod
+    def validate_repo_contributor_roles(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is not None:
+            for repo, role in value.items():
+                if not (repo and repo.strip()):
+                    raise ValueError("repo_contributor_roles: repo names must be non-empty")
+                if not (role and str(role).strip()):
+                    raise ValueError("repo_contributor_roles: discord_role must be non-empty")
+        return value
 
     @field_validator("role_mappings")
     @classmethod
