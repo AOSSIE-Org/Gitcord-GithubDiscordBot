@@ -115,7 +115,7 @@ TODO: Complete applicable items based on your project type
    - [ ] API keys and rate limits are properly managed.
 
 ---
-
+Make sure you have teh correct token set in your environment.
 ## 🔗 Repository Links
 
 TODO: Update with your repository structure
