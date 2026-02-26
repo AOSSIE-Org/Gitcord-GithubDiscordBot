@@ -60,13 +60,13 @@ class GitHubRestAdapter:
 
     def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
         """Assign a GitHub issue to a user.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
             issue_number: Issue number
             assignee: GitHub username to assign
-        
+
         Returns:
             True if assignment succeeded, False otherwise.
         """
@@ -93,7 +93,7 @@ class GitHubRestAdapter:
                 extra={"path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", "error": str(exc)},
             )
             return False
-        
+
         rate_limit = _parse_rate_limit(response.headers)
         if rate_limit.remaining is not None and rate_limit.remaining <= 1:
             self._logger.warning(
@@ -104,7 +104,7 @@ class GitHubRestAdapter:
                     "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
                 },
             )
-        
+
         if response.status_code in {200, 201}:
             # Log GitHub's response to see what assignees were actually set
             try:
@@ -149,13 +149,13 @@ class GitHubRestAdapter:
 
     def unassign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
         """Unassign a GitHub issue from a user.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
             issue_number: Issue number
             assignee: GitHub username to unassign
-        
+
         Returns:
             True if unassignment succeeded, False otherwise.
         """
@@ -170,7 +170,7 @@ class GitHubRestAdapter:
                 extra={"path": f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", "error": str(exc)},
             )
             return False
-        
+
         rate_limit = _parse_rate_limit(response.headers)
         if rate_limit.remaining is not None and rate_limit.remaining <= 1:
             self._logger.warning(
@@ -181,7 +181,7 @@ class GitHubRestAdapter:
                     "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
                 },
             )
-        
+
         if response.status_code in {200, 201}:
             self._logger.info(
                 "Issue unassigned successfully",
@@ -209,7 +209,7 @@ class GitHubRestAdapter:
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.
-        
+
         Returns PR dict or None if not found/accessible.
         """
         response = self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", params={})
@@ -219,7 +219,7 @@ class GitHubRestAdapter:
 
     def get_pull_request_reviews(self, owner: str, repo: str, pr_number: int) -> list[dict]:
         """Fetch reviews for a pull request.
-        
+
         Returns list of review dicts (empty list on error).
         """
         reviews = []
@@ -227,9 +227,22 @@ class GitHubRestAdapter:
             reviews.extend(page)
         return reviews
 
+    def get_pull_request_review_comments(self, owner: str, repo: str, pr_number: int) -> list[dict]:
+        """Fetch inline review comments for a pull request.
+
+        Returns list of comment dicts (each has user.login, created_at, id, body, etc.).
+        Empty list on error.
+        """
+        comments: list[dict] = []
+        for page in self._paginate(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", params={"per_page": 100}
+        ):
+            comments.extend(page)
+        return comments
+
     def get_pull_request_check_runs(self, owner: str, repo: str, head_sha: str) -> list[dict]:
         """Fetch check runs for a commit (used for CI status).
-        
+
         Returns list of check run dicts (empty list on error).
         Note: Requires 'checks:read' permission for private repos.
         """
@@ -248,7 +261,7 @@ class GitHubRestAdapter:
 
     def get_issue(self, owner: str, repo: str, issue_number: int) -> dict | None:
         """Fetch a single issue by number.
-        
+
         Returns issue dict or None if not found/accessible.
         Note: GitHub API uses /issues/{number} for both issues and PRs.
         """
@@ -261,9 +274,9 @@ class GitHubRestAdapter:
         self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None
     ) -> bool:
         """Write a file to GitHub repo using Contents API.
-        
+
         Creates or updates a file in the repository. Uses the default branch if branch is not specified.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
@@ -271,12 +284,12 @@ class GitHubRestAdapter:
             content: File content (will be base64 encoded)
             commit_message: Commit message
             branch: Branch name (default: main or master)
-        
+
         Returns:
             True if successful, False otherwise.
         """
         import base64
-        
+
         try:
             # Get default branch if not specified
             if not branch:
@@ -285,7 +298,7 @@ class GitHubRestAdapter:
                     branch = repo_info.json().get("default_branch", "main")
                 else:
                     branch = "main"
-            
+
             # Check if file exists to get SHA for update
             file_sha = None
             try:
@@ -299,11 +312,11 @@ class GitHubRestAdapter:
             except Exception:
                 # File doesn't exist yet, will create new
                 pass
-            
+
             # Prepare content (base64 encode)
             content_bytes = content.encode("utf-8")
             content_b64 = base64.b64encode(content_bytes).decode("ascii")
-            
+
             # Create/update file
             payload = {
                 "message": commit_message,
@@ -312,7 +325,7 @@ class GitHubRestAdapter:
             }
             if file_sha:
                 payload["sha"] = file_sha
-            
+
             # Use _client directly for PUT with JSON body
             try:
                 response = self._client.put(
@@ -325,7 +338,7 @@ class GitHubRestAdapter:
                     extra={"path": f"/repos/{owner}/{repo}/contents/{file_path}", "error": str(exc)},
                 )
                 return False
-            
+
             if response and response.status_code in {200, 201}:
                 self._logger.info(
                     "File written to GitHub",
@@ -575,7 +588,7 @@ class GitHubRestAdapter:
         self, owner: str, repo: str, issue_numbers: list[int]
     ) -> list[str]:
         """Fetch labels from linked issues and return difficulty labels only.
-        
+
         Returns list of difficulty label names (case-normalized) found in any linked issue.
         If an issue doesn't exist or API call fails, it's silently skipped.
         """
@@ -652,7 +665,7 @@ class GitHubRestAdapter:
         self, owner: str, repo: str, issue_numbers: Sequence[int], since: datetime
     ) -> tuple[list[ContributionEvent], dict[int, list[dict]]]:
         """Ingest issue comments and return both events and raw comments for reuse.
-        
+
         Returns:
             Tuple of (comment_events, comments_by_number) where comments_by_number
             maps issue_number -> list of comment dicts.
@@ -673,7 +686,7 @@ class GitHubRestAdapter:
             ):
                 comments_list.extend(page)
             comments_by_number[issue_number] = comments_list
-            
+
             for comment in comments_list:
                 created_at = _parse_iso8601(comment.get("created_at"))
                 if not created_at or created_at < since:
@@ -708,7 +721,7 @@ class GitHubRestAdapter:
         self, owner: str, repo: str, pr_numbers: Sequence[int], since: datetime
     ) -> tuple[list[ContributionEvent], dict[int, list[dict]]]:
         """Ingest PR comments and return both events and raw comments for reuse.
-        
+
         Returns:
             Tuple of (comment_events, comments_by_number) where comments_by_number
             maps pr_number -> list of comment dicts.
@@ -740,7 +753,7 @@ class GitHubRestAdapter:
                             seen.add(key)
                             comments_list.append(comment)
             comments_by_number[pr_number] = comments_list
-            
+
             for comment in comments_list:
                 created_at = _parse_iso8601(comment.get("created_at"))
                 if not created_at or created_at < since:
@@ -783,17 +796,17 @@ class GitHubRestAdapter:
         pr_authors: dict[int, str] | None = None,
     ) -> Iterable[ContributionEvent]:
         """Emit helpful_comment events for non-author comments on issues and PRs.
-        
+
         A comment is "helpful" if:
         - It's on an issue/PR
         - The commenter is not the issue/PR author
         - It's not a bot comment
-        
+
         Bonus is capped per PR/issue (max 5 helpful comments count for bonus).
-        
+
         issue_authors and pr_authors should be precomputed by callers (e.g. from
         _collect_issue_events / _collect_pull_request_events) to avoid N+1 API calls.
-        
+
         issue_comments_by_number and pr_comments_by_number should contain pre-fetched
         comment iterables to avoid duplicate API pagination.
         """
@@ -830,7 +843,7 @@ class GitHubRestAdapter:
                         )
                     )
                     helpful_count += 1
-        
+
         # Process PR comments
         for pr_number, comments in pr_comments_by_number.items():
             helpful_count = 0
@@ -860,7 +873,7 @@ class GitHubRestAdapter:
                         )
                     )
                     helpful_count += 1
-        
+
         return helpful_events
 
     def _issue_events(
@@ -961,7 +974,8 @@ class GitHubRestAdapter:
         params = {"state": "open", "per_page": 100}
         for page in self._paginate(f"/repos/{owner}/{repo_name}/pulls", params=params):
             for pr in page:
-                yield {"repo": repo["name"], "number": pr["number"]}
+                author = (pr.get("user") or {}).get("login") if pr.get("user") else None
+                yield {"repo": repo["name"], "number": pr["number"], "author": author}
 
     def _paginate(self, path: str, params: dict) -> Iterator[list]:
         page = 1
@@ -1128,15 +1142,15 @@ def _is_bot_user(user: dict) -> bool:
 
 def _extract_linked_issue_numbers(pr_body: str) -> list[int]:
     """Extract issue numbers from PR body that are explicitly closed/fixed/resolved.
-    
+
     Only matches closing-keyword patterns: closes #123, fixes #456, resolves #789.
     Does not match bare #number references to avoid unrelated issue lookups.
     Returns list of unique issue numbers (integers).
     """
     if not pr_body:
         return []
-    # Only match explicit closing keywords + #number (not bare #number)
-    pattern = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)"
+    # Only match explicit closing keywords + #number (optional backticks around #num)
+    pattern = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+`?#(\d+)`?"
     issue_numbers = set()
     for match in re.finditer(pattern, pr_body, re.IGNORECASE):
         try:
@@ -1148,14 +1162,14 @@ def _extract_linked_issue_numbers(pr_body: str) -> list[int]:
 
 def _detect_reverted_pr(pr: dict, owner: str, repo: str, client: httpx.Client) -> int | None:
     """Detect if a PR reverts another PR.
-    
+
     Checks PR title/body and commit messages for revert patterns.
     Returns the PR number being reverted, or None if not a revert.
     """
     pr_title = (pr.get("title") or "").lower()
     pr_body = (pr.get("body") or "").lower()
     combined_text = f"{pr_title} {pr_body}"
-    
+
     # Match: revert #123, reverts #123, rollback #123, etc.
     revert_patterns = [
         r"(?:revert|reverts|reverted|rollback|rollbacks|rollbacked)\s+#(\d+)",
@@ -1167,7 +1181,7 @@ def _detect_reverted_pr(pr: dict, owner: str, repo: str, client: httpx.Client) -
                 return int(match.group(1))
             except (ValueError, IndexError):
                 continue
-    
+
     # Also check commit messages (if PR has commits)
     pr_number = pr.get("number")
     if pr_number:
@@ -1207,7 +1221,7 @@ def _detect_reverted_pr(pr: dict, owner: str, repo: str, client: httpx.Client) -
 
 def _check_pr_ci_status(pr: dict, owner: str, repo: str, client: httpx.Client) -> bool:
     """Check if PR was merged with failing CI status.
-    
+
     Returns True if merged_at exists and CI checks failed at merge time.
     Uses GitHub Checks API to check status.
     """
@@ -1215,7 +1229,7 @@ def _check_pr_ci_status(pr: dict, owner: str, repo: str, client: httpx.Client) -
     merge_sha = pr.get("merge_commit_sha")
     if not merged_at or not merge_sha:
         return False
-    
+
     try:
         # Check check runs for the merge commit
         response = client.get(

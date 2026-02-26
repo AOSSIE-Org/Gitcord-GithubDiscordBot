@@ -33,6 +33,17 @@ discord:
   # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
   # Example: ["mentor-chat", "review-queue"]
   pr_preview_channels: []
+  # Optional: verified-only GitHub → Discord notifications (issue assigned, PR review, merged, etc.)
+  # notifications:
+  #   enabled: true
+  #   issue_assignment: true
+  #   pr_review_requested: true
+  #   pr_review_result: true
+  #   pr_merged: true
+  #   coderabbit_reminders: false
+  #   coderabbit_reminder_after_hours: 48
+  #   coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]
+  #   channel_id: null  # null = DM; set to channel ID to post there
 
 scoring:
   period_days: 30

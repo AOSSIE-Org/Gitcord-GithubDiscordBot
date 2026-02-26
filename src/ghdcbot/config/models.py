@@ -61,9 +61,18 @@ class NotificationConfig(BaseModel):
     pr_review_requested: bool = True
     pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
     pr_merged: bool = True
-    coderabbit_reminders: bool = False  # Unresolved CodeRabbit comments after X days
+    coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
+    coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
+    coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
+
+    @field_validator("coderabbit_reminder_after_hours")
+    @classmethod
+    def validate_coderabbit_reminder_hours(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("coderabbit_reminder_after_hours must be positive")
+        return value
 
 
 class DiscordConfig(BaseModel):
