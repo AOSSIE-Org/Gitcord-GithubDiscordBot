@@ -17,7 +17,7 @@ from ghdcbot.core.interfaces import (
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
-from ghdcbot.engine.notifications import send_notification_for_event
+from ghdcbot.engine.notifications import run_coderabbit_reminders, send_notification_for_event
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.scoring import WeightedScoreStrategy
@@ -98,6 +98,23 @@ class Orchestrator:
                 notification_config,
                 self.config.github.org,
             )
+            # CodeRabbit reminders: one reminder per PR for verified contributors (opt-in, non-blocking)
+            if getattr(notification_config, "coderabbit_reminders", False):
+                try:
+                    run_coderabbit_reminders(
+                        self.github_reader,
+                        self.storage,
+                        self.discord_writer,
+                        policy,
+                        notification_config,
+                        self.config.github.org,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "CodeRabbit reminders failed (non-blocking)",
+                        exc_info=True,
+                        extra={"error": str(exc)},
+                    )
 
         if not issues and not prs and not contributions:
             logging.getLogger("Planning").info(

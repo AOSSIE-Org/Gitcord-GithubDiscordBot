@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ghdcbot.config.models import NotificationConfig
@@ -338,3 +338,110 @@ def _send_discord_notification(
                 return False
     
     return False
+
+
+def run_coderabbit_reminders(
+    github_reader: Any,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+) -> None:
+    """For open PRs by verified contributors, remind them if CodeRabbit left review comments older than configured hours.
+
+    Sends at most one reminder per (repo, PR, Discord user); deduplication is stored in notifications_sent.
+    No-op if coderabbit_reminders is disabled or GitHub adapter does not support review comments.
+    """
+    if not getattr(config, "coderabbit_reminders", False):
+        return
+    after_hours = getattr(config, "coderabbit_reminder_after_hours", 48) or 48
+    bot_logins: list[str] = getattr(config, "coderabbit_bot_logins", None) or [
+        "coderabbitai",
+        "coderabbitai[bot]",
+    ]
+    bot_logins_lower = [x.strip().lower() for x in bot_logins if x]
+    if not bot_logins_lower:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=after_hours)
+    get_comments = getattr(github_reader, "get_pull_request_review_comments", None)
+    if not callable(get_comments):
+        logger.debug("CodeRabbit reminders: GitHub adapter has no get_pull_request_review_comments")
+        return
+    sent_count = 0
+    for pr in github_reader.list_open_pull_requests():
+        repo = pr.get("repo")
+        pr_number = pr.get("number")
+        author = pr.get("author")
+        if not repo or pr_number is None or not author:
+            continue
+        discord_user_id = _resolve_github_to_discord(storage, author)
+        if not discord_user_id:
+            continue
+        try:
+            comments = get_comments(github_org, repo, pr_number)
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch PR review comments for CodeRabbit check",
+                extra={"repo": repo, "pr_number": pr_number, "error": str(exc)},
+            )
+            continue
+        old_bot_comments = [
+            c for c in comments if _is_coderabbit_comment(c, bot_logins_lower, cutoff)
+        ]
+        if not old_bot_comments:
+            continue
+        dedupe_key = f"coderabbit_reminder:{repo}:{pr_number}:{discord_user_id}"
+        if _was_notification_sent(storage, dedupe_key):
+            continue
+        message = _build_coderabbit_reminder_message(github_org, repo, pr_number, after_hours)
+        sent = _send_discord_notification(
+            discord_writer, discord_user_id, message, config.channel_id, policy
+        )
+        if sent:
+            event = ContributionEvent(
+                github_user=author,
+                event_type="coderabbit_reminder",
+                repo=repo,
+                created_at=datetime.now(timezone.utc),
+                payload={"pr_number": pr_number},
+            )
+            _mark_notification_sent(
+                storage, dedupe_key, event, discord_user_id, config.channel_id, author
+            )
+            sent_count += 1
+            logger.info(
+                "Sent CodeRabbit reminder",
+                extra={"repo": repo, "pr_number": pr_number, "github_user": author},
+            )
+    if sent_count > 0:
+        logger.info("CodeRabbit reminders sent", extra={"count": sent_count})
+
+
+def _is_coderabbit_comment(comment: dict, bot_logins_lower: list[str], cutoff: datetime) -> bool:
+    """True if comment is from a configured bot login and was created before cutoff."""
+    user = comment.get("user") or {}
+    login = (user.get("login") or "").strip().lower()
+    if not login or login not in bot_logins_lower:
+        return False
+    created_at = comment.get("created_at")
+    if not created_at:
+        return False
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt <= cutoff
+    except (ValueError, TypeError):
+        return False
+
+
+def _build_coderabbit_reminder_message(
+    github_org: str, repo: str, pr_number: int, after_hours: int
+) -> str:
+    url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
+    return (
+        f"📋 **CodeRabbit reminder**\n\n"
+        f"You have CodeRabbit review comments on **{repo}#{pr_number}** that are over **{after_hours} hours** old.\n\n"
+        f"Please address them when you can:\n{url}"
+    )

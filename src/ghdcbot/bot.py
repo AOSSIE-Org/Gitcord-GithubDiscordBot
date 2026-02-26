@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -188,15 +189,32 @@ def run_bot(config_path: str) -> None:
         discord_user_id = str(interaction.user.id)
         get_links = getattr(storage, "get_identity_links_for_discord_user", None)
         if callable(get_links):
-            links = get_links(discord_user_id)
+            try:
+                links = await asyncio.to_thread(get_links, discord_user_id)
+            except Exception as e:
+                logger.exception("verify: get_identity_links failed")
+                await interaction.followup.send(
+                    "Could not load link status. Please try again.",
+                    ephemeral=True,
+                )
+                return
         else:
             links = []
             verified = getattr(storage, "list_verified_identity_mappings", None)
             if callable(verified):
-                for m in verified():
-                    if m.discord_user_id == discord_user_id:
-                        links.append({"github_user": m.github_user, "verified": 1})
-                        break
+                try:
+                    mappings = await asyncio.to_thread(lambda: list(verified()))
+                    for m in mappings:
+                        if m.discord_user_id == discord_user_id:
+                            links.append({"github_user": m.github_user, "verified": 1})
+                            break
+                except Exception as e:
+                    logger.exception("verify: list_verified failed")
+                    await interaction.followup.send(
+                        "Could not load link status. Please try again.",
+                        ephemeral=True,
+                    )
+                    return
         if not links:
             await interaction.followup.send(
                 "Not linked. Use `/link` to start.",
@@ -207,15 +225,20 @@ def run_bot(config_path: str) -> None:
         pending = [r for r in links if int(r.get("verified") or 0) == 0]
         if verified_row:
             msg = f"Linked to GitHub: **{verified_row.get('github_user', '?')}**."
-            # Check for stale status
+            # Check for stale status (run in thread to avoid blocking event loop)
             get_status = getattr(storage, "get_identity_status", None)
             if callable(get_status):
                 max_age_days = None
                 if getattr(config, "identity", None) is not None:
                     max_age_days = getattr(config.identity, "verified_max_age_days", None)
-                status = get_status(discord_user_id, max_age_days=max_age_days)
-                if status.get("is_stale"):
-                    msg += "\n\n⚠️ **Warning:** Your identity verification is stale. Use `/verify-link` to refresh it."
+                try:
+                    status = await asyncio.to_thread(
+                        get_status, discord_user_id, max_age_days=max_age_days
+                    )
+                    if status.get("is_stale"):
+                        msg += "\n\n⚠️ **Warning:** Your identity verification is stale. Use `/verify-link` to refresh it."
+                except Exception:
+                    pass  # keep message without stale warning
             await interaction.followup.send(msg, ephemeral=True)
         elif pending:
             p = pending[0]
