@@ -4,7 +4,7 @@
 <!-- Organization Logo -->
 <div align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
   <img alt="AOSSIE" src="public/aossie-logo.svg" width="175">
-  <img alt="Gitcord" src="public/gitcord-logo.svg" width="175" />
+  <img alt="Gitcord" src="public/gitcord.svg" width="175" />
 </div>
 
 &nbsp;
@@ -58,6 +58,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 ## 💻 Tech Stack
 
 ### Backend
+
 - Python 3.11+
 - SQLite (local state)
 - Pydantic + PyYAML
@@ -87,6 +88,7 @@ Read -> Plan -> Report -> Apply
 ```
 
 Core boundaries:
+
 - Readers are read‑only (GitHub/Discord ingestion).
 - Planners are pure, deterministic logic.
 - Writers are thin executors gated by `MutationPolicy`.
@@ -129,14 +131,17 @@ Before installing Gitcord, you need:
 ### Quick Setup Overview
 
 **1. Create GitHub Token** ([Detailed Guide](INSTALLATION.md#step-1-create-github-token-pat))
+
 - Go to GitHub → Settings → Developer Settings → Fine-grained tokens
 - Permissions: Contents (Read & Write), Issues (Read & Write), Pull requests (Read & Write)
 
 **2. Create Discord Bot** ([Detailed Guide](INSTALLATION.md#step-2-create-discord-bot))
+
 - Go to [Discord Developer Portal](https://discord.com/developers/applications)
 - Create Application → Add Bot → Enable **Server Members Intent**
 
 **3. Invite Bot to Server** ([Detailed Guide](INSTALLATION.md#step-3-invite-bot-to-discord-server))
+
 - OAuth2 → URL Generator
 - Scopes: `bot`, `applications.commands`
 - Permissions: `Manage Roles`, `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`
@@ -197,13 +202,14 @@ Wait 30 seconds for commands to sync.
 2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
    - `runtime.mode: "active"`
    - `discord.permissions.write: true`
-   Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
+     Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
 
 ---
 
 ## 🤖 Discord Bot Commands
 
 ### Identity Linking
+
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
 - `/verify` - Check your verification status
@@ -211,10 +217,12 @@ Wait 30 seconds for commands to sync.
 - `/unlink` - Unlink your GitHub identity
 
 ### Contribution & Metrics
+
 - `/summary` - Show your contribution metrics (7 and 30 days)
 - `/pr-info` - Show PR context preview (repository, reviews, CI status)
 
 ### Issue Management
+
 - `/request-issue` - Request to be assigned to a GitHub issue
 - `/assign-issue` - Assign issue to Discord user (mentor-only)
 - `/issue-requests` - Review pending issue requests (mentor-only)
