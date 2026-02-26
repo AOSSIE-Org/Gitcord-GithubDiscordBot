@@ -4,7 +4,7 @@
 <!-- Organization Logo -->
 <div align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
   <img alt="AOSSIE" src="public/aossie-logo.svg" width="175">
-  <img alt="Gitcord" src="public/gitcord.png" width="175" />
+  <img alt="Gitcord" src="public/gitcord.svg" width="175" />  <!-- Gitcord logo (Discord + GitHub fusion) -->
 </div>
 
 &nbsp;
