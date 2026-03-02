@@ -1,0 +1,34 @@
+# Dependencies and local state (never copy into image)
+.venv
+venv
+env
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Git and IDE
+.git
+.gitignore
+.cursor
+*.swp
+*.swo
+
+# Local data and secrets (mount at runtime instead)
+data/
+*.db
+.env
+.env.*
+!.env.example
+
+# Docs and dev artifacts (optional: keep repo small)
+*.log
+bot.log
+bot_output.log
+
+# Test and CI (not needed in production image)
+tests/
+.pre-commit-config.yaml
+htmlcov
+.coverage

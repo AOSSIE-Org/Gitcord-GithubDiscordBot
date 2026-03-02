@@ -78,6 +78,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 1. [Main Repository](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
 2. [Installation Guide](INSTALLATION.md) - Complete setup instructions
 3. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
+4. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
 
 ---
 
@@ -122,13 +123,29 @@ Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 
 Before installing Gitcord, you need:
 
-- ✅ **Python 3.11+** installed
 - ✅ **GitHub Organization** access
 - ✅ **Discord Server** with admin permissions
 - ✅ **GitHub Personal Access Token** (fine-grained PAT) - [How to create](INSTALLATION.md#step-1-create-github-token-pat)
 - ✅ **Discord Bot Token** - [How to create](INSTALLATION.md#step-2-create-discord-bot)
 
-### Quick Setup Overview
+### Quick Start with Docker (recommended for mentors)
+
+If you have Docker installed, you can skip Python setup and run Gitcord in one go:
+
+```bash
+git clone https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot.git
+cd Gitcord-GithubDiscordBot
+cp .env.example .env          # Add your GITHUB_TOKEN and DISCORD_TOKEN
+cp config/docker-example.yaml config/config.yaml   # Set github.org and discord.guild_id
+docker compose up -d
+```
+
+The Discord bot stays running; SQLite data and reports persist in a Docker volume. To run a one-off sync (e.g. dry-run):  
+`docker compose run --rm bot --config /app/config/config.yaml run-once`
+
+See **[docs/DOCKER.md](docs/DOCKER.md)** for details, pitfalls, and audit-first workflow.
+
+### Quick Setup Overview (local Python install)
 
 **1. Create GitHub Token** ([Detailed Guide](INSTALLATION.md#step-1-create-github-token-pat))
 

@@ -1,0 +1,19 @@
+# Gitcord - Docker Compose for mentor-friendly deployment.
+# Usage: copy .env and config, then run: docker compose up -d
+# Data (SQLite, reports, identity links) persists in named volume gitcord_data.
+
+services:
+  bot:
+    build: .
+    image: gitcord:latest
+    env_file: .env
+    volumes:
+      # Mount config so you can edit YAML without rebuilding (use data_dir: /data in config).
+      - ./config:/app/config:ro
+      # Persist SQLite state, reports, and audit logs between restarts.
+      - gitcord_data:/data
+    command: ["--config", "/app/config/config.yaml", "bot"]
+    restart: unless-stopped
+
+volumes:
+  gitcord_data:
