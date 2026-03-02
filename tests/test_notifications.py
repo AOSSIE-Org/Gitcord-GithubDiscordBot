@@ -88,7 +88,8 @@ def test_build_notification_message_issue_assigned() -> None:
     assert "#123" in msg
     assert "Fix bug" in msg
     assert "test-org/test-repo" in msg
-    assert "by mentor" in msg
+    assert "mentor" in msg
+    assert "Assigned" in msg
 
 
 def test_build_notification_message_pr_approved() -> None:
@@ -128,7 +129,7 @@ def test_build_notification_message_pr_changes_requested() -> None:
     assert "Changes Requested" in msg
     assert "#789" in msg
     assert "reviewer" in msg
-    assert "needs updates" in msg
+    assert "needs some updates" in msg
 
 
 def test_build_notification_message_pr_merged() -> None:
@@ -143,7 +144,7 @@ def test_build_notification_message_pr_merged() -> None:
     msg = _build_notification_message(event, "pr_merged", "test-org", "contributor")
     assert "PR Merged" in msg
     assert "#999" in msg
-    assert "Great work" in msg
+    assert "Thank you for your contribution" in msg
 
 
 def test_send_notification_unverified_user() -> None:

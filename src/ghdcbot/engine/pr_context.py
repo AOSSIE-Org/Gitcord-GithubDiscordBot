@@ -127,7 +127,7 @@ def determine_mentor_signal(
     merged = pr.get("merged", False)
     
     if state != "open" or draft or merged:
-        if merged:
+        if merged or state == "merged":
             return "Merged"
         elif state == "closed":
             return "Closed"
