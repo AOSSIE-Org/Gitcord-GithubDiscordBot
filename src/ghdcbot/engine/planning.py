@@ -190,10 +190,13 @@ def plan_discord_roles(
             and merge_role_rules.rules
         ):
             merged_count = merged_pr_counts.get(mapping.github_user, 0)
+            sorted_merge_rules = sorted(
+                merge_role_rules.rules, key=lambda rule: rule.min_merged_prs
+            )
             # Find highest eligible role (deterministic: last in sorted rules)
             eligible_merge_roles = [
                 rule.discord_role
-                for rule in merge_role_rules.rules
+                for rule in sorted_merge_rules
                 if merged_count >= rule.min_merged_prs
             ]
             # Highest eligible role is the last one (rules sorted by threshold ascending)
