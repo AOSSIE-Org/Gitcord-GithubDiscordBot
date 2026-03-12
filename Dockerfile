@@ -15,9 +15,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN apt-get update \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -e . \
+RUN pip install --no-cache-dir -e . \
     && useradd --create-home --shell /bin/bash appuser \
     && chown -R appuser:appuser /app \
     && mkdir -p /data && chown appuser:appuser /data
