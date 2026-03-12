@@ -16,19 +16,19 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -e . \
     && useradd --create-home --shell /bin/bash appuser \
     && chown -R appuser:appuser /app \
     && mkdir -p /data && chown appuser:appuser /data
 
-# Config and entrypoint (entrypoint runs as root to chown /data, then gosu to appuser).
+# Config (copied as root; chown so appuser can read).
 COPY config/ ./config/
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN chown -R appuser:appuser /app
+
+# Steady state: run as non-root. /data ownership for volumes is handled by init in compose.
+USER appuser
 
 # Default: run Discord bot. Override with run-once or other commands.
 # Example: docker compose run --rm bot --config /app/config/config.yaml run-once
-ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["--config", "/app/config/config.yaml", "bot"]
+CMD ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]
