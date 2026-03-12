@@ -42,11 +42,13 @@ class Orchestrator:
 
         identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
 
-        cursor = self.storage.get_cursor("github") or period_start
-        contributions = list(self.github_reader.list_contributions(cursor))
+        prior_cursor = self.storage.get_cursor("github") or period_start
+        contributions = list(self.github_reader.list_contributions(prior_cursor))
         stored = self.storage.record_contributions(contributions)
-        last_seen = max((event.created_at for event in contributions), default=period_end)
-        self.storage.set_cursor("github", last_seen)
+        if contributions:
+            new_cursor = max(event.created_at for event in contributions)
+            if new_cursor > prior_cursor:
+                self.storage.set_cursor("github", new_cursor)
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         quality_adjustments = None
