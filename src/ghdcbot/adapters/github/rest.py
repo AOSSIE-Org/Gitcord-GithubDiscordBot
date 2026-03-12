@@ -202,9 +202,39 @@ class GitHubRestAdapter:
             return False
 
     def request_review(self, repo: str, pr_number: int, reviewer: str) -> None:
+        """Request a review on a pull request from the given reviewer (GitHub login)."""
+        owner = self._org
         self._logger.info(
-            "GitHub review request stub",
-            extra={"repo": repo, "pr_number": pr_number, "reviewer": reviewer},
+            "Requesting PR review",
+            extra={"owner": owner, "repo": repo, "pr_number": pr_number, "reviewer": reviewer},
+        )
+        path = f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers"
+        payload = {"reviewers": [reviewer]}
+        try:
+            response = self._client.post(path, json=payload)
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub review request failed (network)",
+                extra={"path": path, "error": str(exc)},
+            )
+            return
+        if response.status_code in {200, 201}:
+            self._logger.info(
+                "PR review requested successfully",
+                extra={"owner": owner, "repo": repo, "pr_number": pr_number, "reviewer": reviewer},
+            )
+            return
+        error_body = (response.text or "")[:500]
+        self._logger.warning(
+            "GitHub review request failed (API)",
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "pr_number": pr_number,
+                "reviewer": reviewer,
+                "status_code": response.status_code,
+                "error_response": error_body,
+            },
         )
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
