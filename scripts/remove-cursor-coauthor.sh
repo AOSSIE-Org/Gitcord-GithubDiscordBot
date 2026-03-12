@@ -6,7 +6,17 @@ set -e
 cd "$(git rev-parse --show-toplevel)"
 
 echo "=== Backup: creating backup-main branch (current state) ==="
-git branch backup-main 2>/dev/null || true
+if git rev-parse --verify backup-main >/dev/null 2>&1; then
+  echo "WARNING: backup-main already exists. Delete it first or rename if you want a fresh backup."
+  exit 1
+fi
+git branch backup-main
+
+# Optionally backup all branches:
+echo "=== Creating backup refs for all branches ==="
+for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/); do
+  git branch "backup-$branch" "$branch" 2>/dev/null || true
+done
 
 echo "=== Rewriting all commit messages to remove Cursor co-author line ==="
 git filter-branch -f --msg-filter 'sed "/^Co-authored-by: Cursor <cursoragent@cursor.com>$/d"' -- --all
