@@ -106,7 +106,7 @@ Gitcord-GithubDiscordBot/
 | **State lost after restart** | `data_dir` pointed at a non-persistent path. | Use `data_dir: "/data"` and the provided `docker-compose` volume; do not override `/data` with a host path unless you intend to. |
 | **Bot doesn’t respond / "application did not respond"** | Same as non-Docker: slow storage or missing intents. | Ensure Server Members Intent is enabled; check logs with `docker compose logs -f`. |
 | **Permission errors on `/data`** | Container user cannot write. | Dockerfile already runs as `appuser`; the volume is writable by the container. If you use a host bind mount for `data`, ensure the host dir is writable (e.g. `chown` to the same UID as `appuser`). |
-| **Running both bot and run-once** | Need two invocations. | Bot: `docker compose up -d`. Run-once: `docker compose run --rm bot ghdcbot --config /app/config/config.yaml run-once`. |
+| **Running both bot and run-once** | Need two invocations. | Bot: `docker compose up -d`. Run-once: `docker compose run --rm bot --config /app/config/config.yaml run-once`. |
 
 ---
 
