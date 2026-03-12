@@ -269,7 +269,16 @@ def _send_notifications_for_new_events(
     github_org: str,
 ) -> None:
     """Send Discord notifications for notification-worthy events (verified users only)."""
-    from ghdcbot.engine.notifications import send_notification_for_event
+def _send_notifications_for_new_events(
+    contributions: list[ContributionEvent],
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: Any,
+    github_org: str,
+) -> None:
+    """Send Discord notifications for notification-worthy events (verified users only)."""
+    logger = logging.getLogger("Notifications")
     
     logger = logging.getLogger("Notifications")
     sent_count = 0
