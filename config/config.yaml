@@ -1,0 +1,75 @@
+# Docker config for shubham-orld (from shubh-olrd). Tokens from .env; data_dir must be /data.
+runtime:
+  mode: "active"
+  log_level: "INFO"
+  data_dir: "./data"
+  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
+  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
+  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+
+github:
+  org: "shubham-orld"
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+  permissions:
+    read: true
+    write: true
+  user_fallback: false
+
+discord:
+  guild_id: "1376527316041072722"
+  token: "${DISCORD_TOKEN}"
+  permissions:
+    read: true
+    write: true
+  notifications:
+    enabled: true
+    issue_assignment: true
+    pr_review_requested: true
+    pr_review_result: true
+    pr_merged: true
+    coderabbit_reminders: true
+    coderabbit_reminder_after_hours: 1
+    channel_id: null
+
+scoring:
+  period_days: 30
+  weights:
+    issue_opened: 3
+    pr_opened: 5
+    pr_reviewed: 2
+    comment: 1
+
+role_mappings:
+  - discord_role: "Contributor"
+    min_score: 10
+  - discord_role: "Maintainer"
+    min_score: 40
+
+repo_contributor_roles:
+  castro: "Contributor-castro"
+  jisto: "Contributor-jisto"
+  pista: "Contributor-pista"
+
+merge_role_rules:
+  enabled: true
+  rules:
+    - discord_role: "apprentice"
+      min_merged_prs: 1
+    - discord_role: "testing_role"
+      min_merged_prs: 2
+
+assignments:
+  review_roles:
+    - "Maintainer"
+  issue_assignees:
+    - "Mentor"
+
+identity_mappings:
+  - github_user: "YOUR_GITHUB_USERNAME"
+    discord_user_id: "YOUR_DISCORD_USER_ID"
+
+snapshots:
+  enabled: true
+  repo_path: "shubham-orld/gitcord-data"
+  branch: "main"

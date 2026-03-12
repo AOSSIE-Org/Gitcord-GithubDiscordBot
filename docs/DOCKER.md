@@ -43,7 +43,7 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 ```bash
 docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
-(Do not pass `ghdcbot` — the image entrypoint is already `ghdcbot`.)
+(Do not pass `ghdcbot` — the image default command is `ghdcbot`.)
 
 ---
 
@@ -79,9 +79,8 @@ Gitcord-GithubDiscordBot/
 | `PYTHONDONTWRITEBYTECODE=1` | Avoids writing `.pyc` in the image; cleaner and slightly faster. |
 | `PYTHONUNBUFFERED=1` | Logs show up immediately in `docker compose logs`. |
 | Copy `pyproject.toml` + `src/` then `pip install -e .` | Dependency layer is cached; only code/setup changes trigger reinstall. |
-| `useradd appuser` / `USER appuser` | Process does not run as root. |
-| `ENTRYPOINT ["ghdcbot"]` | All invocations use the same binary; override with `run-once`, `bot`, etc. |
-| `CMD ["--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; overridden by `docker-compose` `command` or `docker run ... run-once`. |
+| `useradd appuser` / `USER appuser` | Process runs as non-root; no gosu/entrypoint at runtime. |
+| `CMD ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; override with `docker compose run ... run-once` etc. |
 
 ---
 
@@ -89,6 +88,7 @@ Gitcord-GithubDiscordBot/
 
 | Section | Purpose |
 |--------|--------|
+| `init_data` service | Runs once as root to `chown` the volume to `appuser` so the bot (non-root) can write; then exits. Bot starts after it completes. |
 | `env_file: .env` | Loads `GITHUB_TOKEN` and `DISCORD_TOKEN`; config YAML uses `${GITHUB_TOKEN}` etc. |
 | `./config:/app/config:ro` | Host config dir mounted read-only; edit YAML on host without rebuilding. |
 | `gitcord_data:/data` | Named volume for SQLite and reports; survives `docker compose down`. |
