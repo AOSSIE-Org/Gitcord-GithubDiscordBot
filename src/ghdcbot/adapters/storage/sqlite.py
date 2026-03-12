@@ -66,6 +66,35 @@ class SqliteStorage:
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     raise
+            # Case-insensitive github_user: normalized column for uniqueness and lookups.
+            try:
+                conn.execute("ALTER TABLE identity_links ADD COLUMN github_user_normalized TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+            conn.execute(
+                "UPDATE identity_links SET github_user_normalized = lower(github_user) WHERE github_user_normalized IS NULL"
+            )
+            # De-duplicate: keep one row per (discord_user_id, github_user_normalized), prefer verified then newest.
+            conn.execute(
+                """
+                DELETE FROM identity_links
+                WHERE rowid IN (
+                    SELECT rowid FROM (
+                        SELECT rowid,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY discord_user_id, COALESCE(github_user_normalized, '')
+                                   ORDER BY verified DESC, created_at DESC
+                               ) AS rn
+                        FROM identity_links
+                    ) WHERE rn > 1
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_links_discord_github_norm "
+                "ON identity_links (discord_user_id, github_user_normalized)"
+            )
             # Issue requests: contributor requests for assignment, mentor reviews
             conn.executescript(
                 """
@@ -309,15 +338,16 @@ class SqliteStorage:
         """
         now = datetime.now(timezone.utc)
         expires_utc = _ensure_utc(expires_at)
+        gh_norm = github_user.strip().lower()
         with self._connect() as conn:
-            # Verified github_user owned by someone else -> reject
+            # Verified github_user (case-insensitive) owned by someone else -> reject
             row = conn.execute(
                 """
                 SELECT discord_user_id
                 FROM identity_links
-                WHERE github_user = ? AND verified = 1
+                WHERE github_user_normalized = ? AND verified = 1
                 """,
-                (github_user,),
+                (gh_norm,),
             ).fetchone()
             if row and row["discord_user_id"] != discord_user_id:
                 raise ValueError("github_user is already verified for another Discord user")
@@ -327,9 +357,9 @@ class SqliteStorage:
                 """
                 SELECT discord_user_id, expires_at
                 FROM identity_links
-                WHERE github_user = ? AND verified = 0 AND discord_user_id != ?
+                WHERE github_user_normalized = ? AND verified = 0 AND discord_user_id != ?
                 """,
-                (github_user, discord_user_id),
+                (gh_norm, discord_user_id),
             ).fetchall()
             for row in rows:
                 existing_expires = row["expires_at"]
@@ -341,20 +371,20 @@ class SqliteStorage:
             conn.execute(
                 """
                 DELETE FROM identity_links
-                WHERE github_user = ? AND verified = 0 AND (expires_at IS NULL OR expires_at <= ?)
+                WHERE github_user_normalized = ? AND verified = 0 AND (expires_at IS NULL OR expires_at <= ?)
                 """,
-                (github_user, now.isoformat()),
+                (gh_norm, now.isoformat()),
             )
 
             # Enforce one verified mapping per discord user (prevent accidental multi-link)
             # Exception: allow refresh if verified identity is stale
             row = conn.execute(
                 """
-                SELECT github_user, verified, verified_at
+                SELECT github_user, github_user_normalized, verified, verified_at
                 FROM identity_links
-                WHERE discord_user_id = ? AND github_user = ?
+                WHERE discord_user_id = ? AND github_user_normalized = ?
                 """,
-                (discord_user_id, github_user),
+                (discord_user_id, gh_norm),
             ).fetchone()
             if row and int(row["verified"] or 0) == 1:
                 # Check if stale
@@ -371,23 +401,24 @@ class SqliteStorage:
 
             row = conn.execute(
                 """
-                SELECT github_user
+                SELECT github_user_normalized
                 FROM identity_links
                 WHERE discord_user_id = ? AND verified = 1
                 """,
                 (discord_user_id,),
             ).fetchone()
-            if row and row["github_user"] != github_user:
+            if row and row["github_user_normalized"] != gh_norm:
                 raise ValueError("discord_user_id is already verified for another GitHub user")
 
             conn.execute(
                 """
                 INSERT INTO identity_links (
-                    discord_user_id, github_user, verified, verification_code, expires_at, created_at, verified_at
+                    discord_user_id, github_user, github_user_normalized, verified, verification_code, expires_at, created_at, verified_at
                 )
-                VALUES (?, ?, 0, ?, ?, ?, NULL)
-                ON CONFLICT(discord_user_id, github_user)
+                VALUES (?, ?, ?, 0, ?, ?, ?, NULL)
+                ON CONFLICT(discord_user_id, github_user_normalized)
                 DO UPDATE SET
+                    github_user = excluded.github_user,
                     verified = 0,
                     verification_code = excluded.verification_code,
                     expires_at = excluded.expires_at,
@@ -397,6 +428,7 @@ class SqliteStorage:
                 (
                     discord_user_id,
                     github_user,
+                    gh_norm,
                     verification_code,
                     expires_utc.isoformat(),
                     now.isoformat(),
@@ -405,20 +437,22 @@ class SqliteStorage:
 
     def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
         self.init_schema()
+        gh_norm = github_user.strip().lower()
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT discord_user_id, github_user, verified, verification_code,
                        expires_at, created_at, verified_at, unlinked_at
                 FROM identity_links
-                WHERE discord_user_id = ? AND github_user = ?
+                WHERE discord_user_id = ? AND github_user_normalized = ?
                 """,
-                (discord_user_id, github_user),
+                (discord_user_id, gh_norm),
             ).fetchone()
         return dict(row) if row else None
 
     def mark_identity_verified(self, discord_user_id: str, github_user: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        gh_norm = github_user.strip().lower()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -427,9 +461,9 @@ class SqliteStorage:
                     verified_at = ?,
                     verification_code = NULL,
                     expires_at = NULL
-                WHERE discord_user_id = ? AND github_user = ?
+                WHERE discord_user_id = ? AND github_user_normalized = ?
                 """,
-                (now, discord_user_id, github_user),
+                (now, discord_user_id, gh_norm),
             )
 
     def unlink_identity(
