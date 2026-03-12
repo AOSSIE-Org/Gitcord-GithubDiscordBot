@@ -194,15 +194,16 @@ class Orchestrator:
                             "report_dir": str(_activity_path.parent),
                         },
                     })
-                # Optional: post short summary to Discord if configured
-                activity_channel_id = getattr(
-                    self.config.discord, "activity_channel_id", None
-                )
-                if activity_channel_id and activity_md:
-                    send_msg = getattr(self.discord_writer, "send_message", None)
-                    if callable(send_msg):
-                        summary = activity_md[:1900] + ("..." if len(activity_md) > 1900 else "")
-                        send_msg(activity_channel_id, summary)
+                # Optional: post short summary to Discord if configured (only when mutations allowed)
+                if policy.allow_discord_mutations:
+                    activity_channel_id = getattr(
+                        self.config.discord, "activity_channel_id", None
+                    )
+                    if activity_channel_id and activity_md:
+                        send_msg = getattr(self.discord_writer, "send_message", None)
+                        if callable(send_msg):
+                            summary = activity_md[:1900] + ("..." if len(activity_md) > 1900 else "")
+                            send_msg(activity_channel_id, summary)
             except Exception as exc:
                 logger.exception("Failed to write audit reports", extra={"error": str(exc)})
 
