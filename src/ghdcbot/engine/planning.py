@@ -44,25 +44,27 @@ def count_merged_prs_per_user(
     period_end: datetime,
 ) -> dict[str, int]:
     """Count merged PRs per verified GitHub user for the given period.
-    
-    Returns a dictionary mapping github_user to merged PR count.
+
+    Returns a dictionary mapping github_user (canonical from identity) to merged PR count.
     Only counts events for verified users in identity_mappings.
+    Uses same case-insensitive normalization as repos_with_merged_pr_per_user.
     """
-    # Get all contributions since period_start
+    identity_list = list(identity_mappings)
+    github_lower_to_canonical = {m.github_user.strip().lower(): m.github_user for m in identity_list}
+    verified_lower = set(github_lower_to_canonical.keys())
+
     all_events = storage.list_contributions(period_start)
-    
-    # Filter to merged PRs in the period
-    verified_github_users = {mapping.github_user for mapping in identity_mappings}
     merged_pr_counts: dict[str, int] = {}
-    
+
     for event in all_events:
-        if (
-            event.event_type == "pr_merged"
-            and event.github_user in verified_github_users
-            and period_start <= event.created_at <= period_end
-        ):
-            merged_pr_counts[event.github_user] = merged_pr_counts.get(event.github_user, 0) + 1
-    
+        if event.event_type != "pr_merged" or not event.github_user:
+            continue
+        if period_start <= event.created_at <= period_end:
+            event_gh_lower = event.github_user.strip().lower()
+            if event_gh_lower in verified_lower:
+                canonical = github_lower_to_canonical[event_gh_lower]
+                merged_pr_counts[canonical] = merged_pr_counts.get(canonical, 0) + 1
+
     return merged_pr_counts
 
 
