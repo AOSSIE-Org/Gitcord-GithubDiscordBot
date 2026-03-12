@@ -27,7 +27,8 @@ def main() -> None:
         config.runtime.storage_adapter,
         data_dir=config.runtime.data_dir,
     )
-    storage.init_schema()
+    # Read-only diagnostic: do not call init_schema(); use existing DB only.
+    # If the DB is missing or wrong path, reads will fail with a clear error instead of creating an empty DB.
 
     repo_contributor_roles = getattr(config, "repo_contributor_roles", None) or {}
     if not repo_contributor_roles:
