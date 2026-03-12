@@ -37,6 +37,16 @@ def main() -> None:
     print("Config repo_contributor_roles:", repo_contributor_roles)
     print()
 
+    # Fail fast if storage adapter lacks identity-link and contribution APIs
+    required = ("list_verified_identity_mappings", "list_contributions")
+    missing = [m for m in required if not hasattr(storage, m) or not callable(getattr(storage, m, None))]
+    if missing:
+        print(
+            f"The configured storage adapter does not support identity mappings / contributions: "
+            f"missing or not callable: {missing}. Use a storage backend that provides these methods."
+        )
+        return
+
     # 1) Any pr_merged events for the configured repos?
     from datetime import datetime, timezone
     from ghdcbot.engine.planning import REPO_CONTRIBUTOR_EPOCH
