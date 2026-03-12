@@ -347,7 +347,7 @@ def apply_github_plans(
         # plan.repo is just the repo name, owner comes from config
         github_writer.assign_issue(github_org, plan.repo, plan.issue_number, plan.assignee)
     for plan in review_plans:
-        github_writer.request_review(github_org, plan.repo, plan.pr_number, plan.reviewer)
+        github_writer.request_review(plan.repo, plan.pr_number, plan.reviewer)
 
 
 def apply_discord_roles(
