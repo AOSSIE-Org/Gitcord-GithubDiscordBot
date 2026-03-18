@@ -72,7 +72,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 - [x] **Permission-limited operation**: safe under missing permissions.
 
 ---
-
+Make sure you have teh correct token set in your environment.
 ## 🔗 Repository Links
 
 1. [Main Repository](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
