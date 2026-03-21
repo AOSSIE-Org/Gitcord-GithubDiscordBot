@@ -257,6 +257,9 @@ Not applicable (CLI automation engine).
 
 ## 🙌 Contributing
 
+If you're new to open source, this project is a great place to start.  
+Feel free to explore the codebase, make improvements, and contribute.
+
 Thank you for considering contributing to this project! Contributions are highly appreciated and welcomed. To ensure smooth collaboration, please refer to our [Contribution Guidelines](./CONTRIBUTING.md).
 
 ---
@@ -274,9 +277,11 @@ See the [LICENSE](LICENSE) file for details.
 
 ---
 
+
 ## 💪 Thanks To All Contributors
 
 Thanks a lot for spending your time helping Gitcord grow. Keep rocking 🥂
+
 
 [![Contributors](https://contrib.rocks/image?repo=AOSSIE-Org/Gitcord-GithubDiscordBot)](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/graphs/contributors)
 
