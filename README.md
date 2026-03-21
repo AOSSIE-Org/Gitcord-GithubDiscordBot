@@ -282,10 +282,6 @@ See the [LICENSE](LICENSE) file for details.
 
 Thanks a lot for spending your time helping Gitcord grow. Keep rocking 🥂
 
-###  New to Open Source
-
-If you're just getting started, don't worry — this project is beginner-friendly.  
-Feel free to explore the code, ask questions, and make small improvements. Every contribution counts!
 
 [![Contributors](https://contrib.rocks/image?repo=AOSSIE-Org/Gitcord-GithubDiscordBot)](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/graphs/contributors)
 
