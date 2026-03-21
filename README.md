@@ -257,6 +257,9 @@ Not applicable (CLI automation engine).
 
 ## 🙌 Contributing
 
+If you're new to open source, this project is a great place to start.  
+Feel free to explore the codebase, make improvements, and contribute.
+
 Thank you for considering contributing to this project! Contributions are highly appreciated and welcomed. To ensure smooth collaboration, please refer to our [Contribution Guidelines](./CONTRIBUTING.md).
 
 ---
@@ -273,6 +276,7 @@ This project is licensed under the GNU General Public License v3.0.
 See the [LICENSE](LICENSE) file for details.
 
 ---
+
 
 ## 💪 Thanks To All Contributors
 
