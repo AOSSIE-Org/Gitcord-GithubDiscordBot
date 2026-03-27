@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 .venv/
+.venv*/
+.pydeps/
+.ci-venv/
 __pycache__/
 *.sqlite
 *.db
@@ -19,3 +22,6 @@ config/shubh-olrd.yaml
 test_snapshots_comprehensive.sh
 bot.log
 bot_output.log
+
+# Accidental npm artifacts (Python repo; no package.json)
+package-lock.json

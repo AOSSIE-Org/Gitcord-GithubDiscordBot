@@ -50,6 +50,15 @@ from ghdcbot.engine.pr_context import (
 )
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
+from ghdcbot.discord_command_permissions import (
+    format_slash_command_permission_denied,
+    slash_command_allowed,
+)
+
+# Slash command names used for permission checks (must match @tree.command name=...)
+SLASH_CMD_ASSIGN_ISSUE = "assign-issue"
+SLASH_CMD_ISSUE_REQUESTS = "issue-requests"
+SLASH_CMD_SYNC = "sync"
 
 
 def run_bot(config_path: str) -> None:
@@ -888,24 +897,20 @@ def run_bot(config_path: str) -> None:
                 except Exception:
                     pass
 
-    # Create a check function for mentor-only commands
-    def mentor_check(interaction: discord.Interaction) -> bool:
-        """Check if user has mentor role."""
-        mentor_roles = getattr(config, "assignments", None)
-        if not mentor_roles:
-            return False
-        issue_assignee_roles = getattr(mentor_roles, "issue_assignees", [])
-        if not issue_assignee_roles:
-            return False
-        user_roles = [role.name for role in interaction.user.roles]
-        return any(role in issue_assignee_roles for role in user_roles)
+    def command_permission_check(command_name: str):
+        """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
+
+        def check(interaction: discord.Interaction) -> bool:
+            return slash_command_allowed(interaction, config, command_name)
+
+        return check
 
     @tree.command(
         name="assign-issue",
         description="Assign a GitHub issue to a Discord user (mentor-only, requires confirmation)",
         guild=discord.Object(id=guild_id),
     )
-    @app_commands.check(mentor_check)
+    @app_commands.check(command_permission_check(SLASH_CMD_ASSIGN_ISSUE))
     @app_commands.describe(
         issue_url="GitHub issue URL (e.g., https://github.com/owner/repo/issues/123)",
         assignee="Discord user to assign the issue to"
@@ -1579,7 +1584,7 @@ def run_bot(config_path: str) -> None:
         description="List pending issue assignment requests (mentor-only); pick a repo first.",
         guild=discord.Object(id=guild_id),
     )
-    @app_commands.check(mentor_check)
+    @app_commands.check(command_permission_check(SLASH_CMD_ISSUE_REQUESTS))
     async def issue_requests_cmd(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         pending = getattr(storage, "list_pending_issue_requests", None)
@@ -1684,7 +1689,7 @@ def run_bot(config_path: str) -> None:
         description="Sync GitHub events and send notifications (mentor-only)",
         guild=discord.Object(id=guild_id),
     )
-    @app_commands.check(mentor_check)
+    @app_commands.check(command_permission_check(SLASH_CMD_SYNC))
     async def sync_cmd(interaction: discord.Interaction) -> None:
         """Manually trigger run-once to sync GitHub events and send notifications."""
         await interaction.response.defer(ephemeral=True)
@@ -1751,17 +1756,13 @@ def run_bot(config_path: str) -> None:
         """Handle app command errors, including check failures."""
         if isinstance(error, app_commands.CheckFailure):
             try:
-                mentor_roles = getattr(config, "assignments", None)
-                issue_assignee_roles = getattr(mentor_roles, "issue_assignees", []) if mentor_roles else []
-                role_list = ', '.join(issue_assignee_roles) if issue_assignee_roles else 'configure issue_assignees'
-                error_message = f"❌ Permission denied. Only mentors with roles **{role_list}** can use this command."
-                
+                cmd_name = interaction.command.name if interaction.command else "unknown"
+                error_message = format_slash_command_permission_denied(config, cmd_name)
                 logger.info(
-                    "Check failure for user %s (%s) on command %s. Required roles: %s",
+                    "Check failure for user %s (%s) on command %s.",
                     interaction.user.name,
                     interaction.user.id,
-                    interaction.command.name if interaction.command else "unknown",
-                    role_list,
+                    cmd_name,
                 )
                 
                 # Check if response is already sent (shouldn't happen for check failures, but be safe)

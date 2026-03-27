@@ -5,7 +5,7 @@
 runtime:
   mode: "active"
   log_level: "INFO"
-  data_dir: "./data/aussie"
+  data_dir: "/data"
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
@@ -21,6 +21,14 @@ github:
     read: true
     write: true
   user_fallback: false
+  # Repo allowlist: only these repositories are scanned (sync/run-once). Uses short repo names under the org (not "org/name").
+  # Omit this block entirely to include all org repos (slower on large orgs). mode "deny" excludes listed names instead.
+  repos:
+    mode: allow
+    names:
+      - "Gitcord-GithubDiscordBot"
+      # Add more repos as needed, e.g.:
+      # - "another-repo"
 
 discord:
   guild_id: "1022871757289422898"
@@ -28,6 +36,19 @@ discord:
   permissions:
     read: true
     write: true
+  # TESTING: set false in production — when true, any server member may use /assign-issue, /issue-requests, /sync.
+  unrestricted_slash_commands: true
+  # Per-command slash access (role_ids stable; role_names optional). Admins may use these when enabled below.
+  command_permissions:
+    assign-issue:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    issue-requests:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
   activity_channel_id: null
   pr_preview_channels: []
   # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
