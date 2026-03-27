@@ -72,15 +72,20 @@ class Orchestrator:
             scores = scoring.compute_scores(recent, period_end)
             self.storage.upsert_scores(scores)
             logger.info("Computed scores", extra={"count": len(scores)})
-        elif enable_discord_role_updates:
+        else:
             scores = list(self.storage.get_scores())
             logger.info(
-                "Scoring disabled; using persisted scores for role plans",
+                "Scoring disabled; using persisted scores",
                 extra={"count": len(scores)},
             )
-        else:
-            scores = []
-            logger.info("Scoring disabled by config (enable_scoring: false)")
+
+        suppress_score_based_roles = (not enable_scoring) and (len(scores) == 0)
+        effective_role_mappings = [] if suppress_score_based_roles else self.config.role_mappings
+        if suppress_score_based_roles:
+            logger.info(
+                "Scoring disabled with empty persisted scores; suppressing score-based role mapping "
+                "changes while keeping merge/repo role logic active."
+            )
 
         member_roles = self.discord_reader.list_member_roles()
         role_to_github = build_role_to_github_map(identity_mappings, member_roles)
@@ -145,7 +150,7 @@ class Orchestrator:
                     member_roles,
                     scores,
                     identity_mappings,
-                    self.config.role_mappings,
+                    effective_role_mappings,
                     storage=self.storage,
                     period_start=period_start,
                     period_end=period_end,
@@ -224,26 +229,19 @@ class Orchestrator:
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
         repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
         if enable_discord_role_updates:
-            if not enable_scoring and len(scores) == 0:
-                logger.info(
-                    "Skipping Discord role updates: scoring is disabled and persisted scores are empty; "
-                    "not applying score-based role changes to avoid stripping roles. "
-                    "Run with enable_scoring enabled once to populate scores, or keep role updates off."
-                )
-            else:
-                apply_discord_roles(
-                    self.discord_writer,
-                    member_roles,
-                    scores,
-                    identity_mappings,
-                    self.config.role_mappings,
-                    policy,
-                    storage=self.storage,
-                    period_start=period_start,
-                    period_end=period_end,
-                    merge_role_rules=merge_role_rules,
-                    repo_contributor_roles=repo_contributor_roles,
-                )
+            apply_discord_roles(
+                self.discord_writer,
+                member_roles,
+                scores,
+                identity_mappings,
+                effective_role_mappings,
+                policy,
+                storage=self.storage,
+                period_start=period_start,
+                period_end=period_end,
+                merge_role_rules=merge_role_rules,
+                repo_contributor_roles=repo_contributor_roles,
+            )
         else:
             logger.info("Discord role updates disabled by config (enable_discord_role_updates: false)")
         
