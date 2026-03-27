@@ -199,24 +199,29 @@ jobs:
               pull_number: prNumber
             });
             
-            const additions = pr.data.additions;
-            const deletions = pr.data.deletions;
+            const additions = pr.data.additions ?? 0;
+            const deletions = pr.data.deletions ?? 0;
             const totalChanges = additions + deletions;
             
             console.log(`PR has ${additions} additions and ${deletions} deletions (${totalChanges} total changes)`);
             
             // Determine size label based on total changes
             let sizeLabel = '';
-            if (totalChanges <= 10) {
+            if (Number.isFinite(totalChanges) && totalChanges <= 10) {
               sizeLabel = 'size/XS';
-            } else if (totalChanges <= 50) {
+            } else if (Number.isFinite(totalChanges) && totalChanges <= 50) {
               sizeLabel = 'size/S';
-            } else if (totalChanges <= 200) {
+            } else if (Number.isFinite(totalChanges) && totalChanges <= 200) {
               sizeLabel = 'size/M';
-            } else if (totalChanges <= 500) {
+            } else if (Number.isFinite(totalChanges) && totalChanges <= 500) {
               sizeLabel = 'size/L';
-            } else {
+            } else if (Number.isFinite(totalChanges)) {
               sizeLabel = 'size/XL';
+            }
+            
+            if (!sizeLabel) {
+              console.log('Skipping size label: could not compute change stats');
+              return;
             }
             
             console.log(`Applying size label: ${sizeLabel}`);
@@ -225,7 +230,8 @@ jobs:
             const currentLabels = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: prNumber
+              issue_number: prNumber,
+              per_page: 100
             });
             
             const sizeLabelsToRemove = currentLabels.data
@@ -233,12 +239,21 @@ jobs:
               .filter(name => name.startsWith('size/'));
             
             for (const label of sizeLabelsToRemove) {
-              await github.rest.issues.removeLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                name: label
-              });
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label
+                });
+              } catch (e) {
+                const status = e.status ?? e.response?.status;
+                if (status === 404) {
+                  console.log(`Label already absent, skipping remove: ${label}`);
+                } else {
+                  throw e;
+                }
+              }
             }
             
             // Apply the new size label
