@@ -51,23 +51,27 @@ class Orchestrator:
                 self.storage.set_cursor("github", new_cursor)
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
-        quality_adjustments = None
-        if getattr(self.config.scoring, "quality_adjustments", None) is not None:
-            qa = self.config.scoring.quality_adjustments
-            quality_adjustments = {
-                "penalties": qa.penalties,
-                "bonuses": qa.bonuses,
-            }
-        scoring = WeightedScoreStrategy(
-            weights=self.config.scoring.weights,
-            period_days=self.config.scoring.period_days,
-            difficulty_weights=getattr(self.config.scoring, "difficulty_weights", None),
-            quality_adjustments=quality_adjustments,
-        )
         recent = self.storage.list_contributions(period_start)
-        scores = scoring.compute_scores(recent, period_end)
-        self.storage.upsert_scores(scores)
-        logger.info("Computed scores", extra={"count": len(scores)})
+        if getattr(self.config.runtime, "enable_scoring", True):
+            quality_adjustments = None
+            if getattr(self.config.scoring, "quality_adjustments", None) is not None:
+                qa = self.config.scoring.quality_adjustments
+                quality_adjustments = {
+                    "penalties": qa.penalties,
+                    "bonuses": qa.bonuses,
+                }
+            scoring = WeightedScoreStrategy(
+                weights=self.config.scoring.weights,
+                period_days=self.config.scoring.period_days,
+                difficulty_weights=getattr(self.config.scoring, "difficulty_weights", None),
+                quality_adjustments=quality_adjustments,
+            )
+            scores = scoring.compute_scores(recent, period_end)
+            self.storage.upsert_scores(scores)
+            logger.info("Computed scores", extra={"count": len(scores)})
+        else:
+            scores = []
+            logger.info("Scoring disabled by config (enable_scoring: false)")
 
         member_roles = self.discord_reader.list_member_roles()
         role_to_github = build_role_to_github_map(identity_mappings, member_roles)
@@ -210,19 +214,22 @@ class Orchestrator:
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy, self.config.github.org)
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
         repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
-        apply_discord_roles(
-            self.discord_writer,
-            member_roles,
-            scores,
-            identity_mappings,
-            self.config.role_mappings,
-            policy,
-            storage=self.storage,
-            period_start=period_start,
-            period_end=period_end,
-            merge_role_rules=merge_role_rules,
-            repo_contributor_roles=repo_contributor_roles,
-        )
+        if getattr(self.config.runtime, "enable_discord_role_updates", True):
+            apply_discord_roles(
+                self.discord_writer,
+                member_roles,
+                scores,
+                identity_mappings,
+                self.config.role_mappings,
+                policy,
+                storage=self.storage,
+                period_start=period_start,
+                period_end=period_end,
+                merge_role_rules=merge_role_rules,
+                repo_contributor_roles=repo_contributor_roles,
+            )
+        else:
+            logger.info("Discord role updates disabled by config (enable_discord_role_updates: false)")
         
         # Write GitHub snapshots (additive, non-blocking)
         # This happens AFTER all processing completes successfully
