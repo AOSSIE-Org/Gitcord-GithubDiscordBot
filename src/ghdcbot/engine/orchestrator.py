@@ -223,20 +223,27 @@ class Orchestrator:
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy, self.config.github.org)
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
         repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
-        if getattr(self.config.runtime, "enable_discord_role_updates", True):
-            apply_discord_roles(
-                self.discord_writer,
-                member_roles,
-                scores,
-                identity_mappings,
-                self.config.role_mappings,
-                policy,
-                storage=self.storage,
-                period_start=period_start,
-                period_end=period_end,
-                merge_role_rules=merge_role_rules,
-                repo_contributor_roles=repo_contributor_roles,
-            )
+        if enable_discord_role_updates:
+            if not enable_scoring and len(scores) == 0:
+                logger.info(
+                    "Skipping Discord role updates: scoring is disabled and persisted scores are empty; "
+                    "not applying score-based role changes to avoid stripping roles. "
+                    "Run with enable_scoring enabled once to populate scores, or keep role updates off."
+                )
+            else:
+                apply_discord_roles(
+                    self.discord_writer,
+                    member_roles,
+                    scores,
+                    identity_mappings,
+                    self.config.role_mappings,
+                    policy,
+                    storage=self.storage,
+                    period_start=period_start,
+                    period_end=period_end,
+                    merge_role_rules=merge_role_rules,
+                    repo_contributor_roles=repo_contributor_roles,
+                )
         else:
             logger.info("Discord role updates disabled by config (enable_discord_role_updates: false)")
         
