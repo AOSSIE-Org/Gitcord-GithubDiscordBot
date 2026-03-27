@@ -36,6 +36,10 @@ class RuntimeConfig(BaseModel):
     github_adapter: str
     discord_adapter: str
     storage_adapter: str
+    # When false, skip score computation/upsert (ingestion and notifications still run).
+    enable_scoring: bool = True
+    # When false, skip applying Discord role add/remove (notifications unaffected).
+    enable_discord_role_updates: bool = True
 
     @field_validator("log_level")
     @classmethod

@@ -1726,14 +1726,19 @@ def run_bot(config_path: str) -> None:
             )
             
             await interaction.followup.send("🔄 Syncing GitHub events and sending notifications...", ephemeral=True)
-            
-            # Run orchestrator (this will ingest and send notifications)
-            orchestrator.run_once()
-            
+
+            # run_once() is synchronous and can take many minutes for large orgs; running it on the
+            # event loop blocks Discord heartbeats and delays other slash commands (they then hit
+            # "application did not respond"). Run it in a worker thread instead.
+            def _run_sync_and_close() -> None:
+                try:
+                    orchestrator.run_once()
+                finally:
+                    orchestrator.close()
+
+            await asyncio.to_thread(_run_sync_and_close)
+
             await interaction.followup.send("✅ Sync complete! Notifications sent for new GitHub events.", ephemeral=True)
-            
-            # Cleanup
-            orchestrator.close()
         except Exception as exc:
             logger.exception("Sync failed", exc_info=True)
             await interaction.followup.send(

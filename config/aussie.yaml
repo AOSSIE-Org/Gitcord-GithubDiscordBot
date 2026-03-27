@@ -3,12 +3,15 @@
 # For Docker: set data_dir to "/data" and use: docker compose run --rm bot --config /app/config/aussie.yaml bot
 
 runtime:
-  mode: "dry-run"
+  mode: "active"
   log_level: "INFO"
   data_dir: "./data/aussie"
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  # Notifications still run; these only skip score computation and Discord role add/remove.
+  enable_scoring: false
+  enable_discord_role_updates: false
 
 github:
   org: "AOSSIE-Org"
@@ -16,7 +19,7 @@ github:
   api_base: "https://api.github.com"
   permissions:
     read: true
-    write: false
+    write: true
   user_fallback: false
 
 discord:
@@ -24,9 +27,19 @@ discord:
   token: "${DISCORD_TOKEN}"
   permissions:
     read: true
-    write: false
+    write: true
   activity_channel_id: null
   pr_preview_channels: []
+  # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
+  notifications:
+    enabled: true
+    issue_assignment: true
+    pr_review_requested: true
+    pr_review_result: true
+    pr_merged: true
+    coderabbit_reminders: false
+    coderabbit_reminder_after_hours: 48
+    channel_id: null  # null = DM; set to a channel ID to post there instead
 
 scoring:
   period_days: 30
@@ -51,4 +64,3 @@ assignments:
 
 repo_contributor_roles: {}
 
-identity_mappings: []
