@@ -6,8 +6,8 @@ Thanks for your interest in improving Gitcord.
 
 1. Fork and clone the repository.
 2. Create and activate a virtual environment.
-3. Install project dependencies:
-   - `./.venv/bin/python -m pip install -e .`
+3. Install project dependencies (runtime + dev extras: `pytest`, `ruff`):
+   - `./.venv/bin/python -m pip install -e ".[dev]"`
 
 ## Development Workflow
 
