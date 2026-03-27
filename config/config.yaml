@@ -2,7 +2,7 @@
 runtime:
   mode: "active"
   log_level: "INFO"
-  data_dir: "./data"
+  data_dir: "/data"
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
