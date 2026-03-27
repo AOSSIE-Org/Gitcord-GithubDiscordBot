@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 .venv/
+.venv*/
+.pydeps/
+.ci-venv/
 __pycache__/
 *.sqlite
 *.db

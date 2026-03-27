@@ -33,6 +33,18 @@ discord:
   # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
   # Example: ["mentor-chat", "review-queue"]
   pr_preview_channels: []
+  # Who may run /assign-issue, /issue-requests, /sync (role_ids preferred; role_names optional).
+  # If you omit this block entirely, the bot uses assignments.issue_assignees (role names) for those commands.
+  command_permissions:
+    assign-issue:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    issue-requests:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
   # Optional: verified-only GitHub → Discord notifications (issue assigned, PR review, merged, etc.)
   # notifications:
   #   enabled: true
@@ -60,7 +72,7 @@ role_mappings:
 assignments:
   review_roles:
     - "Maintainer"
-  # Discord role(s) that can use /assign-issue, /sync, and /issue-requests (e.g. "Mentor")
+  # Fallback for slash-command access if discord.command_permissions is omitted; also used for org issue assignment planning.
   issue_assignees:
     - "Mentor"
   # Optional: roles required for a contributor to be "eligible" for issue assignment (empty = any verified user)
