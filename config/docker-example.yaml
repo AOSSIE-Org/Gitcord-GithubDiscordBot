@@ -30,10 +30,8 @@ discord:
 scoring:
   period_days: 30
   weights:
-    issue_opened: 3
-    pr_opened: 5
-    pr_reviewed: 2
-    comment: 1
+    # Base scoring currently uses merged PR events.
+    pr_merged: 5
 
 role_mappings:
   - discord_role: "Contributor"
