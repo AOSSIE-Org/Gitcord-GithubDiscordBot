@@ -52,7 +52,10 @@ class Orchestrator:
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         recent = self.storage.list_contributions(period_start)
-        if getattr(self.config.runtime, "enable_scoring", True):
+        enable_scoring = getattr(self.config.runtime, "enable_scoring", True)
+        enable_discord_role_updates = getattr(self.config.runtime, "enable_discord_role_updates", True)
+
+        if enable_scoring:
             quality_adjustments = None
             if getattr(self.config.scoring, "quality_adjustments", None) is not None:
                 qa = self.config.scoring.quality_adjustments
@@ -69,6 +72,12 @@ class Orchestrator:
             scores = scoring.compute_scores(recent, period_end)
             self.storage.upsert_scores(scores)
             logger.info("Computed scores", extra={"count": len(scores)})
+        elif enable_discord_role_updates:
+            scores = list(self.storage.get_scores())
+            logger.info(
+                "Scoring disabled; using persisted scores for role plans",
+                extra={"count": len(scores)},
+            )
         else:
             scores = []
             logger.info("Scoring disabled by config (enable_scoring: false)")
