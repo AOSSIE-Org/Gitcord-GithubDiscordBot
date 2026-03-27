@@ -24,6 +24,18 @@ discord:
   permissions:
     read: true
     write: false
+  # Who may run /assign-issue, /issue-requests, /sync (add role_ids from Discord for stable checks).
+  # Omit this block to fall back to assignments.issue_assignees for those commands.
+  command_permissions:
+    assign-issue:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    issue-requests:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
   activity_channel_id: null
   pr_preview_channels: []
 
@@ -42,6 +54,7 @@ role_mappings:
 assignments:
   review_roles:
     - "Maintainer"
+  # Fallback if discord.command_permissions is omitted; also used for org issue assignment planning.
   issue_assignees:
     - "Mentor"
   issue_request_eligible_roles: []

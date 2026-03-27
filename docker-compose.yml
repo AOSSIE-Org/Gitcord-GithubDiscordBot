@@ -23,7 +23,7 @@ services:
       - ./config:/app/config:ro
       # Persist SQLite state, reports, and audit logs between restarts.
       - gitcord_data:/data
-    command: ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]
+    command: ["ghdcbot", "--config", "/app/config/aussie.yaml", "bot"]
     restart: unless-stopped
 
 volumes:
