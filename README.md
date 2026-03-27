@@ -219,7 +219,7 @@ Wait 30 seconds for commands to sync.
 2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
    - `runtime.mode: "active"`
    - `discord.permissions.write: true`
-     Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
+    Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
 
 ---
 
@@ -257,7 +257,7 @@ Not applicable (CLI automation engine).
 
 ## 🙌 Contributing
 
-Thank you for considering contributing to this project! Contributions are highly appreciated and welcomed. To ensure smooth collaboration, please refer to our [Contribution Guidelines](./CONTRIBUTING.md).
+Thank you for considering contributing to this project! Contributions are highly appreciated and welcomed. To ensure smooth collaboration, please refer to our [Contribution Guidelines](CONTRIBUTING.md).
 
 ---
 
