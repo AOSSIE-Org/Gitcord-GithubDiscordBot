@@ -10,7 +10,7 @@ This guide explains how to safely validate Gitcord role automation in a Discord 
    - `discord.permissions.write: false`  
    With `enable_discord_role_updates: false`, `run-once` will not apply Discord role add/remove even if mode or permissions were mis-set.
 2. Run a sync:
-   - `./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml run-once`
+   - `python -m ghdcbot.cli --config config/my-org-config.yaml run-once`
 3. Review the generated report at `<data_dir>/reports/audit.md`.
 4. Verify planned role changes and identity mappings are correct.
 5. **Live phase (apply role updates):** Only after review, set:
