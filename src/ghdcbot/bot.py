@@ -1801,7 +1801,7 @@ def run_bot(config_path: str) -> None:
                 content="✅ Sync complete! Notifications sent for new GitHub events.",
             )
         except Exception as exc:
-            logger.exception("Sync failed", exc_info=True)
+            logger.exception("Sync failed")
             err_text = f"❌ Sync failed: {exc}"
             if status_msg is not None:
                 try:
