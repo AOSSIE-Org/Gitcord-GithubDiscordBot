@@ -1117,21 +1117,6 @@ def run_bot(config_path: str) -> None:
                 if r.get("owner") == owner and r.get("repo") == repo
             ]
             repo_requests.sort(key=lambda r: (_request_created_at(r), r.get("request_id", "")))
-            if hasattr(self.storage, "append_audit_event"):
-                self.storage.append_audit_event({
-                    "event_type": "issue_request_viewed_repo",
-                    "context": {
-                        "repo": repo_value,
-                        "mentor_discord_id": str(interaction.user.id),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                })
-            period_days = self.config.scoring.period_days
-            period_end = datetime.now(timezone.utc)
-            period_start = period_end - timedelta(days=period_days)
-            mentor_roles = getattr(self.config, "assignments", None)
-            eligible_roles_config = getattr(mentor_roles, "issue_request_eligible_roles", []) if mentor_roles else []
-            member_roles_map = self.discord_reader.list_member_roles()
 
             async def send_repo_list_back(interaction_or_channel: Any) -> None:
                 pending = self.storage.list_pending_issue_requests()
@@ -1153,33 +1138,78 @@ def run_bot(config_path: str) -> None:
                 else:
                     await interaction_or_channel.send(embed=emb, view=v)
 
-            for req in repo_requests:
-                issue = fetch_issue_context(
-                    self.github_adapter, req["owner"], req["repo"], req["issue_number"]
+            mentor_discord_id = str(interaction.user.id)
+
+            def _collect_mentor_review_rows() -> list[dict[str, Any]]:
+                if hasattr(self.storage, "append_audit_event"):
+                    self.storage.append_audit_event({
+                        "event_type": "issue_request_viewed_repo",
+                        "context": {
+                            "repo": repo_value,
+                            "mentor_discord_id": mentor_discord_id,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    })
+                period_days = self.config.scoring.period_days
+                period_end = datetime.now(timezone.utc)
+                period_start = period_end - timedelta(days=period_days)
+                mentor_roles = getattr(self.config, "assignments", None)
+                eligible_roles_config = (
+                    getattr(mentor_roles, "issue_request_eligible_roles", []) if mentor_roles else []
                 )
-                if not issue:
-                    continue
-                contributor_roles = member_roles_map.get(req["discord_user_id"], [])
-                merged_count, last_merged_at = get_merged_pr_count_and_last_time(
-                    self.storage, req["github_user"], period_start, period_end
+                member_roles_map = self.discord_reader.list_member_roles()
+                rows: list[dict[str, Any]] = []
+                for req in repo_requests:
+                    issue = fetch_issue_context(
+                        self.github_adapter, req["owner"], req["repo"], req["issue_number"]
+                    )
+                    if not issue:
+                        continue
+                    contributor_roles = member_roles_map.get(req["discord_user_id"], [])
+                    merged_count, last_merged_at = get_merged_pr_count_and_last_time(
+                        self.storage, req["github_user"], period_start, period_end
+                    )
+                    now = datetime.now(timezone.utc)
+                    verdict, reason = compute_eligibility(
+                        eligible_roles_config, contributor_roles, merged_count, last_merged_at, now
+                    )
+                    embed_dict = build_mentor_request_embed(
+                        request=req,
+                        issue=issue,
+                        contributor_discord_mention=f"<@{req['discord_user_id']}>",
+                        contributor_roles=contributor_roles,
+                        merged_count=merged_count,
+                        last_merged_at=last_merged_at,
+                        eligibility_verdict=verdict,
+                        eligibility_reason=reason,
+                        eligible_roles_config=eligible_roles_config,
+                        period_days=period_days,
+                        now=now,
+                    )
+                    assignees = issue.get("assignees") or []
+                    has_existing_assignee = any(
+                        isinstance(a, dict) and bool(a.get("login")) for a in assignees
+                    )
+                    rows.append({
+                        "req": req,
+                        "embed_dict": embed_dict,
+                        "has_existing_assignee": has_existing_assignee,
+                    })
+                return rows
+
+            try:
+                review_rows = await asyncio.to_thread(_collect_mentor_review_rows)
+            except Exception as exc:
+                logger.exception("issue-requests: failed after repo select")
+                await interaction.followup.send(
+                    f"❌ Failed to load issue request details: {exc}",
+                    ephemeral=True,
                 )
-                now = datetime.now(timezone.utc)
-                verdict, reason = compute_eligibility(
-                    eligible_roles_config, contributor_roles, merged_count, last_merged_at, now
-                )
-                embed_dict = build_mentor_request_embed(
-                    request=req,
-                    issue=issue,
-                    contributor_discord_mention=f"<@{req['discord_user_id']}>",
-                    contributor_roles=contributor_roles,
-                    merged_count=merged_count,
-                    last_merged_at=last_merged_at,
-                    eligibility_verdict=verdict,
-                    eligibility_reason=reason,
-                    eligible_roles_config=eligible_roles_config,
-                    period_days=period_days,
-                    now=now,
-                )
+                return
+
+            for row in review_rows:
+                req = row["req"]
+                embed_dict = row["embed_dict"]
                 view = IssueRequestReviewView(
                     request_id=req["request_id"],
                     owner=req["owner"],
@@ -1192,8 +1222,8 @@ def run_bot(config_path: str) -> None:
                     policy=self.policy,
                     discord_sender=self.discord_reader,
                     back_callback=send_repo_list_back,
+                    has_existing_assignee=row["has_existing_assignee"],
                 )
-                # Send as ephemeral followup so only mentor can see it
                 msg = await interaction.followup.send(
                     embed=discord.Embed.from_dict(embed_dict),
                     view=view,
@@ -1221,6 +1251,7 @@ def run_bot(config_path: str) -> None:
             policy: MutationPolicy,
             discord_sender: Any,
             back_callback: Any = None,
+            has_existing_assignee: bool = False,
             timeout: float = 300.0,
         ) -> None:
             super().__init__(timeout=timeout)
@@ -1235,6 +1266,9 @@ def run_bot(config_path: str) -> None:
             self.policy = policy
             self.discord_sender = discord_sender
             self.back_callback = back_callback
+            if not has_existing_assignee:
+                self.replace_assignee.disabled = True
+                self.replace_assignee.style = discord.ButtonStyle.secondary
             if back_callback:
                 back_btn = discord.ui.Button(
                     label="Back to Repo List",
@@ -1518,8 +1552,23 @@ def run_bot(config_path: str) -> None:
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="🚫")
         async def cancel_action(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send("No action taken.", ephemeral=True)
+            # Replace the card with plain text and remove components (same pattern as reject).
+            # Do not use only a zero-width placeholder or delete_after here: Discord often rejects "empty"
+            # MESSAGE_UPDATE payloads, and delete_original_response after UPDATE is unreliable
+            # for ephemeral follow-up messages.
+            try:
+                await interaction.response.edit_message(
+                    content="Cancelled — no changes made.",
+                    embed=None,
+                    view=None,
+                )
+            except Exception:
+                logger.warning("Could not edit message on cancel", exc_info=True)
+                try:
+                    await interaction.response.defer(ephemeral=True)
+                    await interaction.followup.send("Cancelled — no changes made.", ephemeral=True)
+                except Exception:
+                    logger.warning("Could not defer/followup on cancel", exc_info=True)
 
     @tree.command(
         name="request-issue",
@@ -1693,11 +1742,12 @@ def run_bot(config_path: str) -> None:
     async def sync_cmd(interaction: discord.Interaction) -> None:
         """Manually trigger run-once to sync GitHub events and send notifications."""
         await interaction.response.defer(ephemeral=True)
-        
+
+        status_msg = None
         try:
             # Build orchestrator and run once
             from ghdcbot.engine.orchestrator import Orchestrator
-            
+
             github_adapter_for_sync = build_adapter(
                 config.runtime.github_adapter,
                 token=config.github.token,
@@ -1720,7 +1770,7 @@ def run_bot(config_path: str) -> None:
                 token=config.discord.token,
                 guild_id=config.discord.guild_id,
             )
-            
+
             orchestrator = Orchestrator(
                 github_reader=github_adapter_for_sync,
                 github_writer=github_writer_for_sync,
@@ -1729,8 +1779,12 @@ def run_bot(config_path: str) -> None:
                 storage=storage,
                 config=config,
             )
-            
-            await interaction.followup.send("🔄 Syncing GitHub events and sending notifications...", ephemeral=True)
+
+            status_msg = await interaction.followup.send(
+                "🔄 Syncing GitHub events and sending notifications...",
+                ephemeral=True,
+                wait=True,
+            )
 
             # run_once() is synchronous and can take many minutes for large orgs; running it on the
             # event loop blocks Discord heartbeats and delays other slash commands (they then hit
@@ -1743,13 +1797,19 @@ def run_bot(config_path: str) -> None:
 
             await asyncio.to_thread(_run_sync_and_close)
 
-            await interaction.followup.send("✅ Sync complete! Notifications sent for new GitHub events.", ephemeral=True)
-        except Exception as exc:
-            logger.exception("Sync failed", exc_info=True)
-            await interaction.followup.send(
-                f"❌ Sync failed: {exc}",
-                ephemeral=True,
+            await status_msg.edit(
+                content="✅ Sync complete! Notifications sent for new GitHub events.",
             )
+        except Exception as exc:
+            logger.exception("Sync failed")
+            err_text = f"❌ Sync failed: {exc}"
+            if status_msg is not None:
+                try:
+                    await status_msg.edit(content=err_text)
+                except Exception:
+                    await interaction.followup.send(err_text, ephemeral=True)
+            else:
+                await interaction.followup.send(err_text, ephemeral=True)
 
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:

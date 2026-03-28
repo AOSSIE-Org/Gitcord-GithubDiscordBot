@@ -27,8 +27,7 @@ github:
     mode: allow
     names:
       - "Gitcord-GithubDiscordBot"
-      # Add more repos as needed, e.g.:
-      # - "another-repo"
+      - "Gitcord-Test"
 
 discord:
   guild_id: "1022871757289422898"
@@ -63,7 +62,8 @@ discord:
     channel_id: null  # null = DM; set to a channel ID to post there instead
 
 scoring:
-  period_days: 30
+  # Main planning/audit window; /summary still shows last 7 and 30 days from stored events.
+  period_days: 7
   weights:
     issue_opened: 3
     pr_opened: 5
