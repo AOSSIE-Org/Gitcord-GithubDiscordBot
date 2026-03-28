@@ -5,6 +5,7 @@
 
 services:
   init_data:
+    build: .
     image: gitcord:latest
     user: "0"
     volumes:
