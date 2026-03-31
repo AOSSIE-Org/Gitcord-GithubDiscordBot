@@ -165,6 +165,7 @@ def _collect_snapshot_data(
     contribution_summaries: list[ContributionSummary] | None,
     run_id: str,
     generated_at: datetime,
+    *,
     include_raw_events: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Collect all snapshot data into structured dictionaries."""

@@ -1,6 +1,6 @@
 """Tests for GitHub snapshot writing."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -367,7 +367,7 @@ def test_raw_events_excluded_when_false() -> None:
             github_user="alice",
             event_type="pr_merged",
             repo="org/repo",
-            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),
             payload={"pr_number": 1},
         )
     ]
@@ -377,11 +377,11 @@ def test_raw_events_excluded_when_false() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
         contribution_summaries=None,
         run_id="test-run",
-        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
         include_raw_events=False,
     )
     assert "events.json" not in snapshots
@@ -395,14 +395,14 @@ def test_raw_events_included_when_enabled() -> None:
             github_user="alice",
             event_type="pr_merged",
             repo="org/repo",
-            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),
             payload={"pr_number": 42},
         ),
         ContributionEvent(
             github_user="bob",
             event_type="issue_opened",
             repo="org/repo",
-            created_at=datetime(2024, 1, 20, tzinfo=timezone.utc),
+            created_at=datetime(2024, 1, 20, tzinfo=UTC),
             payload={"issue_number": 7},
         ),
     ]
@@ -412,11 +412,11 @@ def test_raw_events_included_when_enabled() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
         contribution_summaries=None,
         run_id="test-run",
-        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
         include_raw_events=True,
     )
     assert "events.json" in snapshots
@@ -433,20 +433,20 @@ def test_raw_events_included_when_enabled() -> None:
 def test_raw_events_respects_period_start() -> None:
     """Only events at or after period_start are included in events.json."""
     storage = MockStorage()
-    period_start = datetime(2024, 1, 10, tzinfo=timezone.utc)
+    period_start = datetime(2024, 1, 10, tzinfo=UTC)
     storage.contributions = [
         ContributionEvent(
             github_user="alice",
             event_type="pr_merged",
             repo="org/repo",
-            created_at=datetime(2024, 1, 5, tzinfo=timezone.utc),  # before period_start
+            created_at=datetime(2024, 1, 5, tzinfo=UTC),  # before period_start
             payload={},
         ),
         ContributionEvent(
             github_user="bob",
             event_type="pr_merged",
             repo="org/repo",
-            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),  # within period
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),  # within period
             payload={},
         ),
     ]
@@ -457,10 +457,10 @@ def test_raw_events_respects_period_start() -> None:
         scores=[],
         member_roles={},
         period_start=period_start,
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
         contribution_summaries=None,
         run_id="test-run",
-        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
         include_raw_events=True,
     )
     events_data = snapshots["events.json"]["data"]
@@ -476,7 +476,7 @@ def test_write_snapshots_raw_events_via_config() -> None:
             github_user="alice",
             event_type="pr_merged",
             repo="org/repo",
-            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),
             payload={"pr_number": 1},
         )
     ]
@@ -490,9 +490,34 @@ def test_write_snapshots_raw_events_via_config() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
     )
 
     written_paths = [path for _, _, path, _ in github_writer.files_written]
     assert any("events.json" in p for p in written_paths)
+
+
+def test_raw_events_graceful_when_storage_missing_method() -> None:
+    """events.json is omitted gracefully if storage lacks list_contributions."""
+    class MinimalStorage:
+        def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+            return []
+        def list_pending_issue_requests(self) -> list[dict]:
+            return []
+
+    storage = MinimalStorage()
+    snapshots = _collect_snapshot_data(
+        storage=storage,
+        config=_make_config(),
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
+        contribution_summaries=None,
+        run_id="test-run",
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
+        include_raw_events=True,
+    )
+    assert "events.json" not in snapshots
