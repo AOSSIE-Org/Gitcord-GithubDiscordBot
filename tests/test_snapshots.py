@@ -359,8 +359,8 @@ def _make_config(*, snapshots: "SnapshotConfig | None" = None) -> "BotConfig":
     )
 
 
-def test_raw_events_excluded_by_default() -> None:
-    """events.json is not written when include_raw_events is False (default)."""
+def test_raw_events_excluded_when_false() -> None:
+    """events.json is not written when include_raw_events is False."""
     storage = MockStorage()
     storage.contributions = [
         ContributionEvent(

@@ -114,7 +114,7 @@ def _write_snapshots(
         contribution_summaries=contribution_summaries,
         run_id=run_id,
         generated_at=now,
-        include_raw_events=getattr(snapshot_config, "include_raw_events", False),
+        include_raw_events=snapshot_config.include_raw_events,
     )
     
     # Write each snapshot file to GitHub
@@ -315,26 +315,27 @@ def _collect_snapshot_data(
     }
 
     if include_raw_events:
-        raw_events = storage.list_contributions(period_start)
-        events_data = [
-            {
-                "github_user": event.github_user,
-                "event_type": event.event_type,
-                "repo": event.repo,
-                "created_at": event.created_at.isoformat(),
-                "payload": event.payload,
+        list_contributions = getattr(storage, "list_contributions", None)
+        if callable(list_contributions):
+            events_data = [
+                {
+                    "github_user": event.github_user,
+                    "event_type": event.event_type,
+                    "repo": event.repo,
+                    "created_at": event.created_at.isoformat(),
+                    "payload": event.payload,
+                }
+                for event in list_contributions(period_start)
+            ]
+            files["events.json"] = {
+                "schema_version": SCHEMA_VERSION,
+                "generated_at": generated_at.isoformat(),
+                "org": org,
+                "run_id": run_id,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "data": events_data,
             }
-            for event in raw_events
-        ]
-        files["events.json"] = {
-            "schema_version": SCHEMA_VERSION,
-            "generated_at": generated_at.isoformat(),
-            "org": org,
-            "run_id": run_id,
-            "period_start": period_start.isoformat(),
-            "period_end": period_end.isoformat(),
-            "data": events_data,
-        }
 
     return files
 
