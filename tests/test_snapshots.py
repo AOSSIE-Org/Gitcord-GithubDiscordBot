@@ -501,7 +501,7 @@ def test_write_snapshots_raw_events_via_config() -> None:
 def test_raw_events_graceful_when_storage_missing_method() -> None:
     """events.json is omitted gracefully if storage lacks list_contributions."""
     class MinimalStorage:
-        def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+        def list_recent_notifications(self, _limit: int = 1000) -> list[dict]:
             return []
         def list_pending_issue_requests(self) -> list[dict]:
             return []

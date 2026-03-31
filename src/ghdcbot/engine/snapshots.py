@@ -284,7 +284,7 @@ def _collect_snapshot_data(
     notifications_data = []
     list_notifications = getattr(storage, "list_recent_notifications", None)
     if callable(list_notifications):
-        recent_notifications = list_notifications(limit=1000)  # Last 1000 notifications
+        recent_notifications = list_notifications(1000)  # Last 1000 notifications
         for notif in recent_notifications:
             notifications_data.append({
                 "dedupe_key": notif.get("dedupe_key"),
@@ -327,6 +327,7 @@ def _collect_snapshot_data(
                     "payload": event.payload,
                 }
                 for event in list_contributions(period_start)
+                if event.created_at <= period_end
             ]
             files["events.json"] = {
                 "schema_version": SCHEMA_VERSION,
