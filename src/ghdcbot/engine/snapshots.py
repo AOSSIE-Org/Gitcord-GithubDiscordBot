@@ -251,10 +251,8 @@ def _collect_snapshot_data(
     }
     
     # Issue requests snapshot
-    issue_requests_data = []
-    pending_requests = storage.list_pending_issue_requests()
-    for req in pending_requests:
-        issue_requests_data.append({
+    issue_requests_data = [
+        {
             "request_id": req.get("request_id"),
             "discord_user_id": req.get("discord_user_id"),
             "github_user": req.get("github_user"),
@@ -264,7 +262,9 @@ def _collect_snapshot_data(
             "issue_url": req.get("issue_url"),
             "created_at": req.get("created_at"),
             "status": req.get("status"),
-        })
+        }
+        for req in storage.list_pending_issue_requests()
+    ]
     
     issue_requests = {
         "schema_version": SCHEMA_VERSION,
@@ -275,10 +275,8 @@ def _collect_snapshot_data(
     }
     
     # Notifications snapshot (recent sent notifications)
-    notifications_data = []
-    recent_notifications = storage.list_recent_notifications(limit=1000)
-    for notif in recent_notifications:
-        notifications_data.append({
+    notifications_data = [
+        {
             "dedupe_key": notif.get("dedupe_key"),
             "event_type": notif.get("event_type"),
             "github_user": notif.get("github_user"),
@@ -287,7 +285,9 @@ def _collect_snapshot_data(
             "target": notif.get("target"),
             "channel_id": notif.get("channel_id"),
             "sent_at": notif.get("sent_at"),
-        })
+        }
+        for notif in storage.list_recent_notifications(limit=1000)
+    ]
     
     notifications = {
         "schema_version": SCHEMA_VERSION,
