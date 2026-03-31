@@ -1,6 +1,6 @@
 """Tests for GitHub snapshot writing."""
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -99,8 +99,8 @@ def test_collect_snapshot_data() -> None:
     scores = [
         Score(
             github_user="alice",
-            period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+            period_start=datetime(2024, 1, 1, tzinfo=UTC),
+            period_end=datetime(2024, 1, 31, tzinfo=UTC),
             points=100,
         ),
     ]
@@ -110,10 +110,10 @@ def test_collect_snapshot_data() -> None:
         "456": ["Maintainer"],
     }
     
-    period_start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = datetime(2024, 1, 1, tzinfo=UTC)
+    period_end = datetime(2024, 1, 31, tzinfo=UTC)
     run_id = "test-run-123"
-    generated_at = datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc)
+    generated_at = datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC)
     
     snapshots = _collect_snapshot_data(
         storage=storage,
@@ -193,8 +193,8 @@ def test_collect_snapshot_data_with_contributors() -> None:
             prs_reviewed=2,
             comments=10,
             total_score=50,
-            period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+            period_start=datetime(2024, 1, 1, tzinfo=UTC),
+            period_end=datetime(2024, 1, 31, tzinfo=UTC),
         ),
     ]
     
@@ -204,11 +204,11 @@ def test_collect_snapshot_data_with_contributors() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
         contribution_summaries=contribution_summaries,
         run_id="test-run",
-        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
     )
     
     contributors = snapshots["contributors.json"]
@@ -246,8 +246,8 @@ def test_write_snapshots_disabled() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
     )
     
     assert len(github_writer.files_written) == 0
@@ -283,8 +283,8 @@ def test_write_snapshots_enabled() -> None:
         ],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
     )
     
     # Should have written snapshot files
@@ -332,8 +332,8 @@ def test_write_snapshots_handles_errors() -> None:
         identity_mappings=[],
         scores=[],
         member_roles={},
-        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=datetime(2024, 1, 31, tzinfo=UTC),
     )
     
     # Should not have written files due to error
@@ -466,6 +466,44 @@ def test_raw_events_respects_period_start() -> None:
     events_data = snapshots["events.json"]["data"]
     assert len(events_data) == 1
     assert events_data[0]["github_user"] == "bob"
+
+
+def test_raw_events_respects_period_end() -> None:
+    """Only events at or before period_end are included in events.json."""
+    storage = MockStorage()
+    period_end = datetime(2024, 1, 31, tzinfo=UTC)
+    storage.contributions = [
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),  # within period
+            payload={},
+        ),
+        ContributionEvent(
+            github_user="bob",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 2, 5, tzinfo=UTC),  # after period_end
+            payload={},
+        ),
+    ]
+    snapshots = _collect_snapshot_data(
+        storage=storage,
+        config=_make_config(),
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=UTC),
+        period_end=period_end,
+        contribution_summaries=None,
+        run_id="test-run",
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=UTC),
+        include_raw_events=True,
+    )
+    events_data = snapshots["events.json"]["data"]
+    assert len(events_data) == 1
+    assert events_data[0]["github_user"] == "alice"
 
 
 def test_write_snapshots_raw_events_via_config() -> None:
