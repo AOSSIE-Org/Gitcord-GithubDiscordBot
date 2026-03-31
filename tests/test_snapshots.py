@@ -29,15 +29,19 @@ from ghdcbot.engine.snapshots import (
 
 class MockStorage:
     """Mock storage for testing."""
-    
+
     def __init__(self) -> None:
-        self.notifications = []
-    
+        self.notifications: list[dict] = []
+        self.audit_events: list[dict] = []
+
     def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
         return self.notifications[:limit]
-    
+
     def list_pending_issue_requests(self) -> list[dict]:
         return []
+
+    def append_audit_event(self, event: dict) -> None:
+        self.audit_events.append(event)
 
 
 class MockGitHubWriter:
@@ -297,6 +301,10 @@ def test_write_snapshots_enabled() -> None:
     parsed = json.loads(content)
     assert "schema_version" in parsed
     assert parsed["org"] == "test-org"
+
+    # Audit event should be recorded after a successful snapshot write
+    assert len(storage.audit_events) == 1
+    assert storage.audit_events[0]["event_type"] == "snapshot_written"
 
 
 def test_write_snapshots_handles_errors() -> None:

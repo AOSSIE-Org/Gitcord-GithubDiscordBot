@@ -541,7 +541,7 @@ class SqliteStorage:
 
     def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
         """Return all identity link rows for a Discord user (verified and pending).
-        Optional method; not part of the Storage protocol. Used for /verify and /status.
+        Used for /verify and /status.
         """
         with self._connect() as conn:
             rows = conn.execute(
@@ -657,9 +657,7 @@ class SqliteStorage:
             conn.execute("UPDATE issue_requests SET status = ? WHERE request_id = ?", (status, request_id))
 
     def append_audit_event(self, event: dict) -> None:
-        """Append a single audit event (append-only) to data_dir/audit_events.jsonl.
-        Optional method; not part of the Storage protocol.
-        """
+        """Append a single audit event (append-only) to data_dir/audit_events.jsonl."""
         path = self._db_path.parent / "audit_events.jsonl"
         payload = dict(event)
         if "timestamp" not in payload:
@@ -670,7 +668,6 @@ class SqliteStorage:
     def list_audit_events(self) -> list[dict]:
         """Read-only: return all audit events from audit_events.jsonl.
         Returns empty list if file doesn't exist. Does not modify data.
-        Optional method; not part of the Storage protocol.
         """
         path = self._db_path.parent / "audit_events.jsonl"
         events = []
@@ -729,7 +726,6 @@ class SqliteStorage:
     def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
         """List recent notifications (for snapshot export).
         Returns list of notification dicts, ordered by sent_at DESC.
-        Optional method; not part of the Storage protocol.
         """
         with self._connect() as conn:
             rows = conn.execute(
