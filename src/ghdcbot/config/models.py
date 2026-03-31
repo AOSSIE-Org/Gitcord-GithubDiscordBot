@@ -214,6 +214,8 @@ class SnapshotConfig(BaseModel):
     repo_path: str = ""  # Format: "owner/repo" (e.g., "org/gitcord-data")
     # Optional: branch to write to (default: main/master)
     branch: str | None = None
+    # Optional: export raw ContributionEvent records to events.json (can be large)
+    include_raw_events: bool = False
 
 
 class BotConfig(BaseModel):

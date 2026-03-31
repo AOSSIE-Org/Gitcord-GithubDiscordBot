@@ -18,7 +18,7 @@ from ghdcbot.config.models import (
     SnapshotConfig,
 )
 from ghdcbot.core.modes import RunMode
-from ghdcbot.core.models import ContributionSummary, Score
+from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 from ghdcbot.engine.snapshots import (
     SCHEMA_VERSION,
     _collect_snapshot_data,
@@ -29,15 +29,19 @@ from ghdcbot.engine.snapshots import (
 
 class MockStorage:
     """Mock storage for testing."""
-    
+
     def __init__(self) -> None:
-        self.notifications = []
-    
+        self.notifications: list[dict] = []
+        self.contributions: list[ContributionEvent] = []
+
     def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
         return self.notifications[:limit]
-    
+
     def list_pending_issue_requests(self) -> list[dict]:
         return []
+
+    def list_contributions(self, since: datetime) -> list[ContributionEvent]:
+        return [e for e in self.contributions if e.created_at >= since]
 
 
 class MockGitHubWriter:
@@ -334,3 +338,161 @@ def test_write_snapshots_handles_errors() -> None:
     
     # Should not have written files due to error
     assert len(github_writer.files_written) == 0
+
+
+def _make_config(*, snapshots: "SnapshotConfig | None" = None) -> "BotConfig":
+    return BotConfig(
+        runtime=RuntimeConfig(
+            mode=RunMode.DRY_RUN,
+            log_level="INFO",
+            data_dir="/tmp/test",
+            github_adapter="test",
+            discord_adapter="test",
+            storage_adapter="test",
+        ),
+        github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
+        discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
+        scoring=ScoringConfig(period_days=30, weights={}),
+        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
+        assignments=AssignmentConfig(),
+        snapshots=snapshots,
+    )
+
+
+def test_raw_events_excluded_by_default() -> None:
+    """events.json is not written when include_raw_events is False (default)."""
+    storage = MockStorage()
+    storage.contributions = [
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            payload={"pr_number": 1},
+        )
+    ]
+    snapshots = _collect_snapshot_data(
+        storage=storage,
+        config=_make_config(),
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        contribution_summaries=None,
+        run_id="test-run",
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        include_raw_events=False,
+    )
+    assert "events.json" not in snapshots
+
+
+def test_raw_events_included_when_enabled() -> None:
+    """events.json is written with correct structure when include_raw_events=True."""
+    storage = MockStorage()
+    storage.contributions = [
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            payload={"pr_number": 42},
+        ),
+        ContributionEvent(
+            github_user="bob",
+            event_type="issue_opened",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 20, tzinfo=timezone.utc),
+            payload={"issue_number": 7},
+        ),
+    ]
+    snapshots = _collect_snapshot_data(
+        storage=storage,
+        config=_make_config(),
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        contribution_summaries=None,
+        run_id="test-run",
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        include_raw_events=True,
+    )
+    assert "events.json" in snapshots
+    events_snapshot = snapshots["events.json"]
+    assert events_snapshot["schema_version"] == SCHEMA_VERSION
+    assert events_snapshot["org"] == "test-org"
+    assert len(events_snapshot["data"]) == 2
+    assert events_snapshot["data"][0]["github_user"] == "alice"
+    assert events_snapshot["data"][0]["event_type"] == "pr_merged"
+    assert events_snapshot["data"][0]["payload"] == {"pr_number": 42}
+    assert events_snapshot["data"][1]["github_user"] == "bob"
+
+
+def test_raw_events_respects_period_start() -> None:
+    """Only events at or after period_start are included in events.json."""
+    storage = MockStorage()
+    period_start = datetime(2024, 1, 10, tzinfo=timezone.utc)
+    storage.contributions = [
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 5, tzinfo=timezone.utc),  # before period_start
+            payload={},
+        ),
+        ContributionEvent(
+            github_user="bob",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),  # within period
+            payload={},
+        ),
+    ]
+    snapshots = _collect_snapshot_data(
+        storage=storage,
+        config=_make_config(),
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=period_start,
+        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+        contribution_summaries=None,
+        run_id="test-run",
+        generated_at=datetime(2024, 1, 31, 12, 0, 0, tzinfo=timezone.utc),
+        include_raw_events=True,
+    )
+    events_data = snapshots["events.json"]["data"]
+    assert len(events_data) == 1
+    assert events_data[0]["github_user"] == "bob"
+
+
+def test_write_snapshots_raw_events_via_config() -> None:
+    """include_raw_events=True in SnapshotConfig results in events.json being written."""
+    storage = MockStorage()
+    storage.contributions = [
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="org/repo",
+            created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            payload={"pr_number": 1},
+        )
+    ]
+    config = _make_config(snapshots=SnapshotConfig(enabled=True, repo_path="org/repo", include_raw_events=True))
+    github_writer = MockGitHubWriter()
+
+    write_snapshots_to_github(
+        storage=storage,
+        config=config,
+        github_writer=github_writer,
+        identity_mappings=[],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+    )
+
+    written_paths = [path for _, _, path, _ in github_writer.files_written]
+    assert any("events.json" in p for p in written_paths)

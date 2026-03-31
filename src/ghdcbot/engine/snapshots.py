@@ -114,6 +114,7 @@ def _write_snapshots(
         contribution_summaries=contribution_summaries,
         run_id=run_id,
         generated_at=now,
+        include_raw_events=getattr(snapshot_config, "include_raw_events", False),
     )
     
     # Write each snapshot file to GitHub
@@ -164,6 +165,7 @@ def _collect_snapshot_data(
     contribution_summaries: list[ContributionSummary] | None,
     run_id: str,
     generated_at: datetime,
+    include_raw_events: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Collect all snapshot data into structured dictionaries."""
     org = config.github.org
@@ -302,7 +304,7 @@ def _collect_snapshot_data(
         "data": notifications_data,
     }
     
-    return {
+    files: dict[str, dict[str, Any]] = {
         "meta.json": meta,
         "identities.json": identities,
         "scores.json": scores_snapshot,
@@ -311,6 +313,30 @@ def _collect_snapshot_data(
         "issue_requests.json": issue_requests,
         "notifications.json": notifications,
     }
+
+    if include_raw_events:
+        raw_events = storage.list_contributions(period_start)
+        events_data = [
+            {
+                "github_user": event.github_user,
+                "event_type": event.event_type,
+                "repo": event.repo,
+                "created_at": event.created_at.isoformat(),
+                "payload": event.payload,
+            }
+            for event in raw_events
+        ]
+        files["events.json"] = {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": generated_at.isoformat(),
+            "org": org,
+            "run_id": run_id,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "data": events_data,
+        }
+
+    return files
 
 
 def _parse_repo_path(repo_path: str) -> tuple[str, str]:
