@@ -342,3 +342,6 @@ def test_write_snapshots_handles_errors() -> None:
     
     # Should not have written files due to error
     assert len(github_writer.files_written) == 0
+
+    # Should not have recorded an audit event on error path
+    assert len(storage.audit_events) == 0

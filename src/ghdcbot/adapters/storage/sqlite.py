@@ -663,7 +663,8 @@ class SqliteStorage:
         if "timestamp" not in payload:
             payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         line = json.dumps(payload, separators=(",", ":")) + "\n"
-        path.open("a", encoding="utf-8").write(line)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
     def list_audit_events(self) -> list[dict]:
         """Read-only: return all audit events from audit_events.jsonl.
