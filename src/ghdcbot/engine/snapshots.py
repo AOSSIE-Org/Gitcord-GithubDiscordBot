@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ghdcbot.config.models import BotConfig, IdentityMapping
+from ghdcbot.core.interfaces import Storage
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 logger = logging.getLogger("Snapshots")
@@ -30,7 +31,7 @@ SCHEMA_VERSION = "1.0.0"
 
 
 def write_snapshots_to_github(
-    storage: Any,
+    storage: Storage,
     config: BotConfig,
     github_writer: Any,
     identity_mappings: list[IdentityMapping],
@@ -83,7 +84,7 @@ def write_snapshots_to_github(
 
 
 def _write_snapshots(
-    storage: Any,
+    storage: Storage,
     config: BotConfig,
     github_writer: Any,
     snapshot_config: Any,
@@ -138,23 +139,21 @@ def _write_snapshots(
             },
         )
         # Audit log
-        append_audit = getattr(storage, "append_audit_event", None)
-        if callable(append_audit):
-            append_audit({
-                "event_type": "snapshot_written",
-                "context": {
-                    "org": config.github.org,
-                    "repo": f"{owner}/{repo}",
-                    "snapshot_dir": snapshot_dir,
-                    "run_id": run_id,
-                    "files_written": files_written,
-                    "timestamp": now.isoformat(),
-                },
-            })
+        storage.append_audit_event({
+            "event_type": "snapshot_written",
+            "context": {
+                "org": config.github.org,
+                "repo": f"{owner}/{repo}",
+                "snapshot_dir": snapshot_dir,
+                "run_id": run_id,
+                "files_written": files_written,
+                "timestamp": now.isoformat(),
+            },
+        })
 
 
 def _collect_snapshot_data(
-    storage: Any,
+    storage: Storage,
     config: BotConfig,
     identity_mappings: list[IdentityMapping],
     scores: list[Score],
@@ -253,21 +252,19 @@ def _collect_snapshot_data(
     
     # Issue requests snapshot
     issue_requests_data = []
-    list_pending = getattr(storage, "list_pending_issue_requests", None)
-    if callable(list_pending):
-        pending_requests = list_pending()
-        for req in pending_requests:
-            issue_requests_data.append({
-                "request_id": req.get("request_id"),
-                "discord_user_id": req.get("discord_user_id"),
-                "github_user": req.get("github_user"),
-                "owner": req.get("owner"),
-                "repo": req.get("repo"),
-                "issue_number": req.get("issue_number"),
-                "issue_url": req.get("issue_url"),
-                "created_at": req.get("created_at"),
-                "status": req.get("status"),
-            })
+    pending_requests = storage.list_pending_issue_requests()
+    for req in pending_requests:
+        issue_requests_data.append({
+            "request_id": req.get("request_id"),
+            "discord_user_id": req.get("discord_user_id"),
+            "github_user": req.get("github_user"),
+            "owner": req.get("owner"),
+            "repo": req.get("repo"),
+            "issue_number": req.get("issue_number"),
+            "issue_url": req.get("issue_url"),
+            "created_at": req.get("created_at"),
+            "status": req.get("status"),
+        })
     
     issue_requests = {
         "schema_version": SCHEMA_VERSION,
@@ -279,20 +276,18 @@ def _collect_snapshot_data(
     
     # Notifications snapshot (recent sent notifications)
     notifications_data = []
-    list_notifications = getattr(storage, "list_recent_notifications", None)
-    if callable(list_notifications):
-        recent_notifications = list_notifications(limit=1000)  # Last 1000 notifications
-        for notif in recent_notifications:
-            notifications_data.append({
-                "dedupe_key": notif.get("dedupe_key"),
-                "event_type": notif.get("event_type"),
-                "github_user": notif.get("github_user"),
-                "discord_user_id": notif.get("discord_user_id"),
-                "repo": notif.get("repo"),
-                "target": notif.get("target"),
-                "channel_id": notif.get("channel_id"),
-                "sent_at": notif.get("sent_at"),
-            })
+    recent_notifications = storage.list_recent_notifications(limit=1000)
+    for notif in recent_notifications:
+        notifications_data.append({
+            "dedupe_key": notif.get("dedupe_key"),
+            "event_type": notif.get("event_type"),
+            "github_user": notif.get("github_user"),
+            "discord_user_id": notif.get("discord_user_id"),
+            "repo": notif.get("repo"),
+            "target": notif.get("target"),
+            "channel_id": notif.get("channel_id"),
+            "sent_at": notif.get("sent_at"),
+        })
     
     notifications = {
         "schema_version": SCHEMA_VERSION,

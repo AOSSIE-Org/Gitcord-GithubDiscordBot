@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, Protocol, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
+from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import (
     AssignmentPlan,
     ContributionEvent,
@@ -59,6 +60,7 @@ class Storage(Protocol):
         period_start: datetime,
         period_end: datetime,
         weights: dict[str, int],
+        difficulty_weights: dict[str, int] | None = None,
     ) -> Sequence[ContributionSummary]:
         """Aggregate contribution counts and scores for the period."""
 
@@ -73,6 +75,88 @@ class Storage(Protocol):
 
     def set_cursor(self, source: str, cursor: datetime) -> None:
         """Persist last sync cursor for a source."""
+
+    # Identity linking
+
+    def create_identity_claim(
+        self,
+        discord_user_id: str,
+        github_user: str,
+        verification_code: str,
+        expires_at: datetime,
+        *,
+        max_age_days: int | None = None,
+    ) -> None:
+        """Create or refresh a pending identity claim for (discord_user_id, github_user)."""
+
+    def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
+        """Return identity link row for (discord_user_id, github_user), or None."""
+
+    def mark_identity_verified(self, discord_user_id: str, github_user: str) -> None:
+        """Mark an identity claim as verified."""
+
+    def unlink_identity(self, discord_user_id: str, cooldown_hours: int) -> dict | None:
+        """Unlink the verified identity for a Discord user. Returns unlink info or None."""
+
+    def list_verified_identity_mappings(self) -> list[IdentityMapping]:
+        """Return all verified identity mappings."""
+
+    def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
+        """Return all identity link rows for a Discord user (verified and pending)."""
+
+    def get_identity_status(
+        self, discord_user_id: str, max_age_days: int | None = None
+    ) -> dict:
+        """Return current identity status dict for a Discord user."""
+
+    # Issue requests
+
+    def insert_issue_request(
+        self,
+        request_id: str,
+        discord_user_id: str,
+        github_user: str,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        issue_url: str,
+    ) -> None:
+        """Store a new issue assignment request with status pending."""
+
+    def list_pending_issue_requests(self) -> list[dict]:
+        """Return all pending issue requests ordered by created_at ascending."""
+
+    def get_issue_request(self, request_id: str) -> dict | None:
+        """Return a single issue request by request_id, or None."""
+
+    def update_issue_request_status(self, request_id: str, status: str) -> None:
+        """Update an issue request status (pending, approved, rejected, cancelled)."""
+
+    # Audit log
+
+    def append_audit_event(self, event: dict) -> None:
+        """Append an audit event (append-only)."""
+
+    def list_audit_events(self) -> list[dict]:
+        """Return all audit events."""
+
+    # Notifications
+
+    def was_notification_sent(self, dedupe_key: str) -> bool:
+        """Check if a notification was already sent (deduplication)."""
+
+    def mark_notification_sent(
+        self,
+        dedupe_key: str,
+        event: Any,
+        discord_user_id: str,
+        channel_id: str | None,
+        target_github_user: str | None = None,
+    ) -> None:
+        """Record that a notification was sent (deduplication tracking)."""
+
+    def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+        """Return recent sent notifications ordered by sent_at descending."""
 
 
 class ScoreStrategy(Protocol):
