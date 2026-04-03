@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Any, Iterable, Protocol, Sequence
+from typing import Literal, Protocol
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import (
@@ -129,7 +130,11 @@ class Storage(Protocol):
     def get_issue_request(self, request_id: str) -> dict | None:
         """Return a single issue request by request_id, or None."""
 
-    def update_issue_request_status(self, request_id: str, status: str) -> None:
+    def update_issue_request_status(
+        self,
+        request_id: str,
+        status: Literal["pending", "approved", "rejected", "cancelled"],
+    ) -> None:
         """Update an issue request status (pending, approved, rejected, cancelled)."""
 
     # Audit log
@@ -148,7 +153,7 @@ class Storage(Protocol):
     def mark_notification_sent(
         self,
         dedupe_key: str,
-        event: Any,
+        event: ContributionEvent,
         discord_user_id: str,
         channel_id: str | None,
         target_github_user: str | None = None,
