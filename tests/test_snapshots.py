@@ -19,6 +19,7 @@ from ghdcbot.config.models import (
 )
 from ghdcbot.core.modes import RunMode
 from ghdcbot.core.models import ContributionSummary, Score
+from ghdcbot.core.interfaces import AuditEventDict, IssueRequestDict, NotificationRecordDict
 from ghdcbot.engine.snapshots import (
     SCHEMA_VERSION,
     _collect_snapshot_data,
@@ -31,16 +32,16 @@ class MockStorage:
     """Mock storage for testing."""
 
     def __init__(self) -> None:
-        self.notifications: list[dict] = []
-        self.audit_events: list[dict] = []
+        self.notifications: list[NotificationRecordDict] = []
+        self.audit_events: list[AuditEventDict] = []
 
-    def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+    def list_recent_notifications(self, limit: int = 1000) -> list[NotificationRecordDict]:
         return self.notifications[:limit]
 
-    def list_pending_issue_requests(self) -> list[dict]:
+    def list_pending_issue_requests(self) -> list[IssueRequestDict]:
         return []
 
-    def append_audit_event(self, event: dict) -> None:
+    def append_audit_event(self, event: AuditEventDict) -> None:
         self.audit_events.append(event)
 
 

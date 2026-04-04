@@ -4,9 +4,17 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 from ghdcbot.config.models import IdentityMapping
+from ghdcbot.core.interfaces import (
+    AuditEventDict,
+    IdentityLinkDict,
+    IdentityStatusDict,
+    IssueRequestDict,
+    NotificationRecordDict,
+    UnlinkResultDict,
+)
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 
@@ -435,7 +443,7 @@ class SqliteStorage:
                 ),
             )
 
-    def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
+    def get_identity_link(self, discord_user_id: str, github_user: str) -> IdentityLinkDict | None:
         self.init_schema()
         gh_norm = github_user.strip().lower()
         with self._connect() as conn:
@@ -468,7 +476,7 @@ class SqliteStorage:
 
     def unlink_identity(
         self, discord_user_id: str, cooldown_hours: int
-    ) -> dict | None:
+    ) -> UnlinkResultDict | None:
         """Unlink the verified identity for this Discord user (set verified=0, unlinked_at=now).
         Rows are never deleted. Returns unlink info for audit, or None if no verified link.
         Raises ValueError if inside cooldown window.
@@ -539,7 +547,7 @@ class SqliteStorage:
             for row in rows
         ]
 
-    def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
+    def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[IdentityLinkDict]:
         """Return all identity link rows for a Discord user (verified and pending).
         Used for /verify and /status.
         """
@@ -556,7 +564,7 @@ class SqliteStorage:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_identity_status(self, discord_user_id: str, max_age_days: int | None = None) -> dict:
+    def get_identity_status(self, discord_user_id: str, max_age_days: int | None = None) -> IdentityStatusDict:
         """Read-only: return current identity status for a Discord user.
         Returns dict with github_user, status ('verified'|'verified_stale'|'pending'|'not_linked'),
         verified_at (UTC ISO or None), is_stale (bool).
@@ -626,7 +634,7 @@ class SqliteStorage:
                 (request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, now),
             )
 
-    def list_pending_issue_requests(self) -> list[dict]:
+    def list_pending_issue_requests(self) -> list[IssueRequestDict]:
         """Return all issue requests with status pending, ordered by created_at ascending."""
         with self._connect() as conn:
             rows = conn.execute(
@@ -640,7 +648,7 @@ class SqliteStorage:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_issue_request(self, request_id: str) -> dict | None:
+    def get_issue_request(self, request_id: str) -> IssueRequestDict | None:
         """Return a single issue request by request_id, or None."""
         with self._connect() as conn:
             row = conn.execute(
@@ -649,14 +657,18 @@ class SqliteStorage:
             ).fetchone()
         return dict(row) if row else None
 
-    def update_issue_request_status(self, request_id: str, status: str) -> None:
+    def update_issue_request_status(
+        self,
+        request_id: str,
+        status: Literal["pending", "approved", "rejected", "cancelled"],
+    ) -> None:
         """Update request status to approved, rejected, or cancelled."""
         if status not in ("pending", "approved", "rejected", "cancelled"):
             raise ValueError(f"Invalid status: {status}")
         with self._connect() as conn:
             conn.execute("UPDATE issue_requests SET status = ? WHERE request_id = ?", (status, request_id))
 
-    def append_audit_event(self, event: dict) -> None:
+    def append_audit_event(self, event: AuditEventDict) -> None:
         """Append a single audit event (append-only) to data_dir/audit_events.jsonl."""
         path = self._db_path.parent / "audit_events.jsonl"
         payload = dict(event)
@@ -666,7 +678,7 @@ class SqliteStorage:
         with path.open("a", encoding="utf-8") as f:
             f.write(line)
 
-    def list_audit_events(self) -> list[dict]:
+    def list_audit_events(self) -> list[AuditEventDict]:
         """Read-only: return all audit events from audit_events.jsonl.
         Returns empty list if file doesn't exist. Does not modify data.
         """
@@ -695,7 +707,7 @@ class SqliteStorage:
     def mark_notification_sent(
         self,
         dedupe_key: str,
-        event: Any,
+        event: ContributionEvent,
         discord_user_id: str,
         channel_id: str | None,
         target_github_user: str | None = None,
@@ -724,7 +736,7 @@ class SqliteStorage:
                 ),
             )
 
-    def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+    def list_recent_notifications(self, limit: int = 1000) -> list[NotificationRecordDict]:
         """List recent notifications (for snapshot export).
         Returns list of notification dicts, ordered by sent_at DESC.
         """

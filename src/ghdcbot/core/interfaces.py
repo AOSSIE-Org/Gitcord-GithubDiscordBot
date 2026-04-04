@@ -14,14 +14,17 @@ from ghdcbot.core.models import (
 )
 
 
-class IdentityLinkDict(TypedDict, total=False):
+class _IdentityLinkRequired(TypedDict):
     discord_user_id: str
     github_user: str
     github_user_normalized: str
     verified: int
+    created_at: str
+
+
+class IdentityLinkDict(_IdentityLinkRequired, total=False):
     verification_code: str | None
     expires_at: str | None
-    created_at: str
     verified_at: str | None
     unlinked_at: str | None
 
@@ -54,7 +57,7 @@ class IssueRequestDict(TypedDict):
     issue_number: int
     issue_url: str
     created_at: str
-    status: str
+    status: Literal["pending", "approved", "rejected", "cancelled"]
 
 
 class AuditEventContext(TypedDict, total=False):
@@ -66,8 +69,11 @@ class AuditEventContext(TypedDict, total=False):
     timestamp: str
 
 
-class AuditEventDict(TypedDict, total=False):
+class _AuditEventRequired(TypedDict):
     event_type: str
+
+
+class AuditEventDict(_AuditEventRequired, total=False):
     timestamp: str
     context: AuditEventContext
 

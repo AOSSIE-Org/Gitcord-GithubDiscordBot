@@ -261,15 +261,15 @@ def _collect_snapshot_data(
     # Issue requests snapshot
     issue_requests_data = [
         {
-            "request_id": req.get("request_id"),
-            "discord_user_id": req.get("discord_user_id"),
-            "github_user": req.get("github_user"),
-            "owner": req.get("owner"),
-            "repo": req.get("repo"),
-            "issue_number": req.get("issue_number"),
-            "issue_url": req.get("issue_url"),
-            "created_at": req.get("created_at"),
-            "status": req.get("status"),
+            "request_id": req["request_id"],
+            "discord_user_id": req["discord_user_id"],
+            "github_user": req["github_user"],
+            "owner": req["owner"],
+            "repo": req["repo"],
+            "issue_number": req["issue_number"],
+            "issue_url": req["issue_url"],
+            "created_at": req["created_at"],
+            "status": req["status"],
         }
         for req in storage.list_pending_issue_requests()
     ]
@@ -285,14 +285,14 @@ def _collect_snapshot_data(
     # Notifications snapshot (recent sent notifications)
     notifications_data = [
         {
-            "dedupe_key": notif.get("dedupe_key"),
-            "event_type": notif.get("event_type"),
-            "github_user": notif.get("github_user"),
-            "discord_user_id": notif.get("discord_user_id"),
-            "repo": notif.get("repo"),
-            "target": notif.get("target"),
-            "channel_id": notif.get("channel_id"),
-            "sent_at": notif.get("sent_at"),
+            "dedupe_key": notif["dedupe_key"],
+            "event_type": notif["event_type"],
+            "github_user": notif["github_user"],
+            "discord_user_id": notif["discord_user_id"],
+            "repo": notif["repo"],
+            "target": notif["target"],
+            "channel_id": notif["channel_id"],
+            "sent_at": notif["sent_at"],
         }
         for notif in storage.list_recent_notifications(limit=1000)
     ]
