@@ -4,11 +4,11 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Literal, Protocol, TypedDict
 
-from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import (
     AssignmentPlan,
     ContributionEvent,
     ContributionSummary,
+    IdentityMapping,
     ReviewPlan,
     Score,
 )

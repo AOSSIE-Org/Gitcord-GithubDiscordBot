@@ -6,6 +6,12 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class IdentityMapping:
+    github_user: str
+    discord_user_id: str
+
+
+@dataclass(frozen=True)
 class ContributionEvent:
     github_user: str
     event_type: str

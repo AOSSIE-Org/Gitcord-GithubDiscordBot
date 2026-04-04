@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
-from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.interfaces import (
     AuditEventDict,
     IdentityLinkDict,
@@ -15,7 +14,7 @@ from ghdcbot.core.interfaces import (
     NotificationRecordDict,
     UnlinkResultDict,
 )
-from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
+from ghdcbot.core.models import ContributionEvent, ContributionSummary, IdentityMapping, Score
 
 
 class SqliteStorage:
