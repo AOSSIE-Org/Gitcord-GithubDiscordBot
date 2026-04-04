@@ -18,11 +18,19 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ghdcbot.config.models import BotConfig, IdentityMapping
-from ghdcbot.core.interfaces import Storage
+from ghdcbot.core.interfaces import AuditEventDict, IssueRequestDict, NotificationRecordDict
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
+
+
+class SnapshotStorage(Protocol):
+    """Narrow protocol for the storage methods used by the snapshot writer."""
+
+    def append_audit_event(self, event: AuditEventDict) -> None: ...
+    def list_pending_issue_requests(self) -> list[IssueRequestDict]: ...
+    def list_recent_notifications(self, limit: int = 1000) -> list[NotificationRecordDict]: ...
 
 logger = logging.getLogger("Snapshots")
 
@@ -31,7 +39,7 @@ SCHEMA_VERSION = "1.0.0"
 
 
 def write_snapshots_to_github(
-    storage: Storage,
+    storage: SnapshotStorage,
     config: BotConfig,
     github_writer: Any,
     identity_mappings: list[IdentityMapping],
@@ -84,7 +92,7 @@ def write_snapshots_to_github(
 
 
 def _write_snapshots(
-    storage: Storage,
+    storage: SnapshotStorage,
     config: BotConfig,
     github_writer: Any,
     snapshot_config: Any,
@@ -153,7 +161,7 @@ def _write_snapshots(
 
 
 def _collect_snapshot_data(
-    storage: Storage,
+    storage: SnapshotStorage,
     config: BotConfig,
     identity_mappings: list[IdentityMapping],
     scores: list[Score],

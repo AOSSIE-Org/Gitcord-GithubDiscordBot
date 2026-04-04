@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import (
@@ -12,6 +12,60 @@ from ghdcbot.core.models import (
     ReviewPlan,
     Score,
 )
+
+
+class IdentityLinkDict(TypedDict, total=False):
+    discord_user_id: str
+    github_user: str
+    verified: int
+    verification_code: str | None
+    expires_at: str | None
+    created_at: str
+    verified_at: str | None
+    unlinked_at: str | None
+
+
+class UnlinkResultDict(TypedDict):
+    discord_user_id: str
+    github_user: str
+    verified_at: str
+    unlinked_at: str
+
+
+class IdentityStatusDict(TypedDict):
+    github_user: str | None
+    status: Literal["verified", "verified_stale", "pending", "not_linked"]
+    verified_at: str | None
+    is_stale: bool
+
+
+class IssueRequestDict(TypedDict):
+    request_id: str
+    discord_user_id: str
+    github_user: str
+    owner: str
+    repo: str
+    issue_number: int
+    issue_url: str
+    created_at: str
+    status: str
+
+
+class AuditEventDict(TypedDict, total=False):
+    event_type: str
+    timestamp: str
+    context: dict
+
+
+class NotificationRecordDict(TypedDict):
+    dedupe_key: str
+    event_type: str
+    github_user: str
+    discord_user_id: str
+    repo: str
+    target: str | None
+    channel_id: str | None
+    sent_at: str
 
 
 class GitHubReader(Protocol):
@@ -90,24 +144,30 @@ class Storage(Protocol):
     ) -> None:
         """Create or refresh a pending identity claim for (discord_user_id, github_user)."""
 
-    def get_identity_link(self, discord_user_id: str, github_user: str) -> dict | None:
+    def get_identity_link(
+        self, discord_user_id: str, github_user: str
+    ) -> IdentityLinkDict | None:
         """Return identity link row for (discord_user_id, github_user), or None."""
 
     def mark_identity_verified(self, discord_user_id: str, github_user: str) -> None:
         """Mark an identity claim as verified."""
 
-    def unlink_identity(self, discord_user_id: str, cooldown_hours: int) -> dict | None:
+    def unlink_identity(
+        self, discord_user_id: str, cooldown_hours: int
+    ) -> UnlinkResultDict | None:
         """Unlink the verified identity for a Discord user. Returns unlink info or None."""
 
     def list_verified_identity_mappings(self) -> list[IdentityMapping]:
         """Return all verified identity mappings."""
 
-    def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
+    def get_identity_links_for_discord_user(
+        self, discord_user_id: str
+    ) -> list[IdentityLinkDict]:
         """Return all identity link rows for a Discord user (verified and pending)."""
 
     def get_identity_status(
         self, discord_user_id: str, max_age_days: int | None = None
-    ) -> dict:
+    ) -> IdentityStatusDict:
         """Return current identity status dict for a Discord user."""
 
     # Issue requests
@@ -124,10 +184,10 @@ class Storage(Protocol):
     ) -> None:
         """Store a new issue assignment request with status pending."""
 
-    def list_pending_issue_requests(self) -> list[dict]:
+    def list_pending_issue_requests(self) -> list[IssueRequestDict]:
         """Return all pending issue requests ordered by created_at ascending."""
 
-    def get_issue_request(self, request_id: str) -> dict | None:
+    def get_issue_request(self, request_id: str) -> IssueRequestDict | None:
         """Return a single issue request by request_id, or None."""
 
     def update_issue_request_status(
@@ -139,10 +199,10 @@ class Storage(Protocol):
 
     # Audit log
 
-    def append_audit_event(self, event: dict) -> None:
+    def append_audit_event(self, event: AuditEventDict) -> None:
         """Append an audit event (append-only)."""
 
-    def list_audit_events(self) -> list[dict]:
+    def list_audit_events(self) -> list[AuditEventDict]:
         """Return all audit events."""
 
     # Notifications
@@ -160,7 +220,7 @@ class Storage(Protocol):
     ) -> None:
         """Record that a notification was sent (deduplication tracking)."""
 
-    def list_recent_notifications(self, limit: int = 1000) -> list[dict]:
+    def list_recent_notifications(self, limit: int = 1000) -> list[NotificationRecordDict]:
         """Return recent sent notifications ordered by sent_at descending."""
 
 
