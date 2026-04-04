@@ -17,6 +17,7 @@ from ghdcbot.core.models import (
 class IdentityLinkDict(TypedDict, total=False):
     discord_user_id: str
     github_user: str
+    github_user_normalized: str
     verified: int
     verification_code: str | None
     expires_at: str | None
@@ -25,11 +26,16 @@ class IdentityLinkDict(TypedDict, total=False):
     unlinked_at: str | None
 
 
-class UnlinkResultDict(TypedDict):
+class _UnlinkResultRequired(TypedDict):
     discord_user_id: str
     github_user: str
     verified_at: str
     unlinked_at: str
+
+
+class UnlinkResultDict(_UnlinkResultRequired, total=False):
+    cooldown_until: str | None
+    cooldown_hours: int
 
 
 class IdentityStatusDict(TypedDict):
@@ -51,10 +57,19 @@ class IssueRequestDict(TypedDict):
     status: str
 
 
+class AuditEventContext(TypedDict, total=False):
+    org: str
+    repo: str
+    snapshot_dir: str
+    run_id: str
+    files_written: int
+    timestamp: str
+
+
 class AuditEventDict(TypedDict, total=False):
     event_type: str
     timestamp: str
-    context: dict
+    context: AuditEventContext
 
 
 class NotificationRecordDict(TypedDict):
