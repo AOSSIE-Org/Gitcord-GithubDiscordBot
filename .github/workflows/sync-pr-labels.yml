@@ -1,8 +1,9 @@
 name: Sync PR Labels
 
+# Use pull_request_target only: fork PRs get a read-only GITHUB_TOKEN on
+# pull_request, so issues.addLabels returns 403. This job only calls the API
+# (no checkout of PR code), which is the safe pattern for pull_request_target.
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, edited]
   pull_request_target:
     types: [opened, reopened, synchronize, edited]
 
