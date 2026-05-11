@@ -1,7 +1,7 @@
 # Gitcord Technical Documentation
 
 **Version:** 1.0  
-**Last Updated:** February 2026  
+**Last Updated:** May 2026  
 **Author:** Technical Architecture Review
 
 ---
@@ -59,6 +59,81 @@ Gitcord is built on four foundational principles:
 - Writers check `MutationPolicy` before executing any changes
 - Failed reads don't crash the system; they produce partial results
 - Safe to run with read-only tokens for observation
+
+### 1.3 How Gitcord Works
+
+Gitcord connects a GitHub organization and a Discord server so open-source communities can recognize contributors, review activity, and manage assignment workflows with less manual work. The project is designed around a simple loop:
+
+```text
+Load config -> Read GitHub and Discord -> Store activity -> Score contributors -> Plan actions -> Report -> Apply if allowed
+```
+
+The code starts from the CLI in `src/ghdcbot/cli.py`. The CLI loads a YAML configuration file, expands environment variables such as `GITHUB_TOKEN` and `DISCORD_TOKEN`, builds the configured adapters, and then either runs a one-time sync or starts the Discord bot.
+
+For a one-time sync, `src/ghdcbot/engine/orchestrator.py` coordinates the whole system:
+
+1. It initializes SQLite storage.
+2. It resolves verified Discord-to-GitHub identity mappings.
+3. It reads GitHub contribution activity from the configured organization.
+4. It stores contribution events locally.
+5. It computes contributor scores for the configured activity window.
+6. It reads Discord member roles.
+7. It plans role changes, issue assignments, review requests, notifications, reports, and snapshots.
+8. It applies GitHub or Discord changes only when the runtime mode and write permissions allow it.
+
+The default operating style is safe by design. In `dry-run` and `observer` modes, Gitcord reads data and writes audit reports, but it does not change GitHub or Discord. In `active` mode, it can assign issues, request reviews, add or remove Discord roles, send Discord messages, and write snapshots, but only if the relevant write permissions are enabled in config.
+
+### 1.4 Main Runtime Modes
+
+Gitcord uses `RunMode` and `MutationPolicy` from `src/ghdcbot/core/modes.py` to decide whether actions may be applied.
+
+| Mode | What Gitcord Does |
+| --- | --- |
+| `dry-run` | Reads data, computes plans, writes audit reports, skips mutations. |
+| `observer` | Read-only observation mode, also skips mutations. |
+| `active` | Applies GitHub and Discord changes when write permissions are enabled. |
+
+This means a maintainer can test the complete workflow safely before allowing the bot to mutate GitHub or Discord.
+
+### 1.5 Feature Summary
+
+The current codebase provides these major Gitcord features:
+
+- **Discord-GitHub identity linking:** Users verify GitHub ownership through a temporary code placed in their GitHub bio or public gist.
+- **Contribution ingestion:** Gitcord reads GitHub issues, pull requests, merges, reviews, comments, helpful comments, reverted PRs, and failed-CI merge signals.
+- **Merge-focused scoring:** Scores are based primarily on merged PRs, with optional difficulty labels and quality adjustments.
+- **Discord role automation:** Roles can be added or removed from score thresholds, merge-count rules, and repo-contributor rules.
+- **Issue assignment planning:** Eligible Discord roles can be mapped to GitHub users and used for deterministic issue assignment.
+- **PR review assignment planning:** Gitcord can plan review requests for eligible reviewers.
+- **Mentor-controlled issue assignment:** Contributors can request an issue, and mentors can approve, reject, or replace the assignee from Discord.
+- **PR context previews:** The bot can show PR status, author, reviews, CI state, idle time, and mentor signal from a PR URL.
+- **Verified-only notifications:** GitHub activity notifications are sent only to verified Discord users and are deduplicated.
+- **CodeRabbit reminders:** Optional reminders can notify PR authors about old CodeRabbit review comments.
+- **Audit reports:** Dry runs generate JSON and Markdown reports of planned Discord and GitHub actions.
+- **Activity reports:** Gitcord writes a human-readable activity feed for mentor visibility.
+- **Audit event export:** CLI export supports JSON, CSV, and Markdown with filters for user, event type, and date range.
+- **SQLite local state:** Contributions, scores, cursors, identity links, issue requests, notifications, and audit events are stored locally.
+- **GitHub snapshots:** Optional snapshot writing exports identities, scores, contributors, roles, issue requests, and notifications to a GitHub repository.
+- **Docker support:** The project includes Docker and Docker Compose files for deployment.
+
+### 1.6 Main Code Areas
+
+| Area | Files | Responsibility |
+| --- | --- | --- |
+| CLI | `src/ghdcbot/cli.py`, `src/ghdcbot/__main__.py` | Command-line entry points and command routing. |
+| Config | `src/ghdcbot/config/loader.py`, `src/ghdcbot/config/models.py` | YAML loading, env expansion, Pydantic validation. |
+| Core models | `src/ghdcbot/core/models.py`, `src/ghdcbot/core/interfaces.py`, `src/ghdcbot/core/modes.py` | Shared dataclasses, protocols, and mutation policy. |
+| GitHub adapter | `src/ghdcbot/adapters/github/rest.py` | GitHub ingestion, assignments, review requests, snapshots file writes. |
+| Discord adapter | `src/ghdcbot/adapters/discord/api.py` | Discord role reads/writes, DMs, channel messages. |
+| Storage | `src/ghdcbot/adapters/storage/sqlite.py` | SQLite schema and persistence methods. |
+| Orchestration | `src/ghdcbot/engine/orchestrator.py` | Main sync pipeline. |
+| Scoring | `src/ghdcbot/engine/scoring.py` | Weighted contributor scoring. |
+| Planning | `src/ghdcbot/engine/planning.py`, `src/ghdcbot/engine/assignment.py` | Role plans, assignment plans, review plans. |
+| Discord bot | `src/ghdcbot/bot.py` | Slash commands and Discord UI workflows. |
+| Identity | `src/ghdcbot/engine/identity_linking.py`, `src/ghdcbot/adapters/github/identity.py` | GitHub account verification. |
+| Reports | `src/ghdcbot/engine/reporting.py`, `src/ghdcbot/engine/audit_export.py` | Audit report rendering and export. |
+| Notifications | `src/ghdcbot/engine/notifications.py` | GitHub-to-Discord notification logic. |
+| Snapshots | `src/ghdcbot/engine/snapshots.py` | GitHub-backed JSON snapshot export. |
 
 ---
 

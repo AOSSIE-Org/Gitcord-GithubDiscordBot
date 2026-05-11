@@ -1,8 +1,12 @@
 name: Sync PR Labels
 
-# Use pull_request_target only: fork PRs get a read-only GITHUB_TOKEN on
-# pull_request, so issues.addLabels returns 403. This job only calls the API
-# (no checkout of PR code), which is the safe pattern for pull_request_target.
+# Fork PRs: GITHUB_TOKEN is read-only on `pull_request`, so labeling must not run there.
+# This job only uses the API (no PR checkout) — safe for pull_request_target.
+#
+# If labeling still returns 403 after this is on default branch:
+# - Repo Settings → Actions → General → Workflow permissions → Read and write (not read-only).
+# - Or add repo/org secret EXTERNAL_LABELLER_TOKEN: classic PAT with repo scope, or
+#   fine-grained token with Issues + Pull requests read/write on this repository.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, edited]
@@ -14,14 +18,17 @@ permissions:
 
 jobs:
   sync-labels:
-    if: ${{ github.repository_owner == 'AOSSIE-Org' }}
+    # Skip pull_request runs entirely if an old workflow version still lists that trigger.
+    if: ${{ github.repository_owner == 'AOSSIE-Org' && github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
+    env:
+      LABELS_GITHUB_TOKEN: ${{ secrets.EXTERNAL_LABELLER_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Get PR details
         id: pr-details
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const pr = context.payload.pull_request;
             return {
@@ -36,7 +43,7 @@ jobs:
         id: extract-issue
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prBody = context.payload.pull_request.body || '';
             
@@ -63,7 +70,7 @@ jobs:
         if: steps.extract-issue.outputs.issue_number != ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const issueNumber = '${{ steps.extract-issue.outputs.issue_number }}';
             const prNumber = context.payload.pull_request.number;
@@ -99,7 +106,7 @@ jobs:
         if: steps.extract-issue.outputs.issue_number == ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             
@@ -118,7 +125,7 @@ jobs:
         id: changed-files
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             
@@ -137,7 +144,7 @@ jobs:
       - name: Apply file-based labels
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             const changedFiles = JSON.parse('${{ steps.changed-files.outputs.files }}');
@@ -189,7 +196,7 @@ jobs:
       - name: Apply PR size label
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             
@@ -268,10 +275,8 @@ jobs:
       # STEP 4: Contributor-based labels
       - name: Apply contributor-based labels
         uses: actions/github-script@v7
-        env:
-          LABELLER_TOKEN: ${{ secrets.EXTERNAL_LABELLER_TOKEN || secrets.GITHUB_TOKEN }}
         with:
-          github-token: ${{ env.LABELLER_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             const prAuthor = context.payload.pull_request.user.login;
@@ -335,7 +340,7 @@ jobs:
       - name: Label sync summary
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
             
