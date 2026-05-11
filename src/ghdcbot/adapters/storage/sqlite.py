@@ -44,6 +44,11 @@ class SqliteStorage:
                     source TEXT PRIMARY KEY,
                     cursor TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    event_name TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS identity_links (
                     discord_user_id TEXT NOT NULL,
                     github_user TEXT NOT NULL,
@@ -316,6 +321,22 @@ class SqliteStorage:
                 """,
                 (source, cursor_utc.isoformat()),
             )
+
+    def record_webhook_delivery(self, delivery_id: str, event_name: str) -> bool:
+        # GitHub can retry the same delivery.
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO webhook_deliveries (delivery_id, event_name, received_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (delivery_id, event_name, now),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
 
     def create_identity_claim(
         self,

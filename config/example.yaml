@@ -87,6 +87,11 @@ assignments:
 repo_contributor_roles:
   castro: "castro"
 
+# Optional: GitHub org webhooks, verified with X-Hub-Signature-256.
+# webhooks:
+#   enabled: false
+#   secret: "${GITHUB_WEBHOOK_SECRET}"
+
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"
     discord_user_id: "YOUR_DISCORD_USER_ID"

@@ -24,3 +24,24 @@ def test_role_mappings_required() -> None:
     with pytest.raises(ValidationError) as excinfo:
         BotConfig.model_validate(payload)
     assert "role_mappings" in str(excinfo.value)
+
+
+def test_webhooks_enabled_requires_secret() -> None:
+    payload = {
+        "runtime": {
+            "mode": "dry-run",
+            "log_level": "INFO",
+            "data_dir": "/tmp",
+            "github_adapter": "ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            "discord_adapter": "ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            "storage_adapter": "ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        },
+        "github": {"org": "x", "token": "t", "api_base": "https://api.github.com"},
+        "discord": {"guild_id": "1", "token": "t"},
+        "scoring": {"period_days": 30, "weights": {"pr_merged": 5}},
+        "role_mappings": [{"discord_role": "Contributor", "min_score": 1}],
+        "webhooks": {"enabled": True, "secret": ""},
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        BotConfig.model_validate(payload)
+    assert "webhooks.secret is required" in str(excinfo.value)

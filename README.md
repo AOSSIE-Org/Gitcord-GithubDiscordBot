@@ -102,6 +102,12 @@ Core boundaries:
 Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 ```
 
+### GitHub Webhook Ingestion
+
+Gitcord supports a secure webhook ingestion layer for org-level GitHub events. Webhook payloads are verified with `X-Hub-Signature-256`, deduped with `X-GitHub-Delivery`, and stored as the same `ContributionEvent` records used by `/sync`.
+
+This keeps `/sync` useful as a backfill/reconcile path while allowing future deployments to process GitHub events without scanning every repository on each sync. Deployments should terminate TLS before the webhook handler and keep `GITHUB_WEBHOOK_SECRET` out of source control.
+
 ### Key User Journeys
 
 1. **Dry‑run review**

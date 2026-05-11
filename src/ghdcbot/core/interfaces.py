@@ -74,6 +74,10 @@ class Storage(Protocol):
     def set_cursor(self, source: str, cursor: datetime) -> None:
         """Persist last sync cursor for a source."""
 
+    def record_webhook_delivery(self, delivery_id: str, event_name: str) -> bool:
+        # Return False when a delivery was already stored.
+        ...
+
 
 class ScoreStrategy(Protocol):
     def compute_scores(

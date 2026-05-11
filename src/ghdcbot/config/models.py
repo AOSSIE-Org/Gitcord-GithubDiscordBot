@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from ghdcbot.core.modes import RunMode
 
@@ -216,6 +216,24 @@ class SnapshotConfig(BaseModel):
     branch: str | None = None
 
 
+class WebhookConfig(BaseModel):
+    enabled: bool = False
+    secret: str = ""
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, value: str) -> str:
+        if value and len(value) < 16:
+            raise ValueError("webhooks.secret must be at least 16 characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_enabled_secret(self) -> "WebhookConfig":
+        if self.enabled and not self.secret:
+            raise ValueError("webhooks.secret is required when webhooks.enabled is true")
+        return self
+
+
 class BotConfig(BaseModel):
     runtime: RuntimeConfig
     github: GitHubConfig
@@ -228,6 +246,7 @@ class BotConfig(BaseModel):
     merge_role_rules: MergeRoleRulesConfig | None = None
     # Optional: GitHub snapshot storage
     snapshots: SnapshotConfig | None = None
+    webhooks: WebhookConfig | None = None
     # Optional: repo name -> Discord role for "Contributor-X" (PR merged in repo X grants role)
     repo_contributor_roles: dict[str, str] | None = None
 
