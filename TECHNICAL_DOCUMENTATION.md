@@ -852,12 +852,17 @@ class MutationPolicy:
 - `GET /repos/{owner}/{repo}/commits` - Commit history (for PR context)
 
 **Event Types Ingested:**
-- `issue_opened` - New issue created
-- `issue_assigned` - Issue assigned to user
-- `pr_opened` - New PR created
-- `pr_merged` - PR merged
+- `issue_opened` - New issue created (ingested for reports, not scored)
+- `issue_assigned` - Issue assigned to user (triggers notification)
+- `pr_opened` - New PR created (ingested for reports, not scored)
+- `pr_merged` - PR merged (**only event that affects scores** - merge-only scoring)
 - `pr_reviewed` - PR review submitted (approved/changes_requested/comment)
-- `comment` - Comment on issue/PR
+- `comment` - Comment on issue/PR (ingested for reports, not scored)
+- `pr_reverted` - Reverted PR (quality penalty if configured)
+- `pr_merged_with_failed_ci` - PR merged with failing CI (quality penalty if configured)
+- `helpful_comment` - Comment marked as helpful (quality bonus if configured)
+
+**Note on Scoring:** Gitcord uses merge-only scoring. Only `pr_merged` events contribute to contributor scores. Other events (issue_opened, pr_opened, comment) are ingested for audit trails and activity reports but do not affect scoring. This prevents spam and gaming while keeping the system simple and mentor-approved.
 
 **Incremental Ingestion:**
 - Uses `cursors` table to track last-seen timestamp
@@ -1137,6 +1142,10 @@ runtime:
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  # Optional: Disable scoring while keeping ingestion (default: true)
+  enable_scoring: true
+  # Optional: Disable Discord role updates while keeping notifications (default: true)
+  enable_discord_role_updates: true
 
 github:
   org: "example-org"
@@ -1145,6 +1154,14 @@ github:
   permissions:
     read: true
     write: true
+  # Optional: If true, fallback to user repos when org access fails (default: false)
+  user_fallback: false
+  # Optional: Filter repos to include/exclude
+  repos:
+    mode: "allow"  # or "deny"
+    names:
+      - "repo-a"
+      - "repo-b"
 
 discord:
   guild_id: "123456789"
@@ -1152,22 +1169,56 @@ discord:
   permissions:
     read: true
     write: true
+  # Optional: Channel ID for activity feed summary (default: null)
+  activity_channel_id: null
+  # Optional: Channel names where PR URLs trigger passive preview (requires message content intent)
+  pr_preview_channels: []
+  # Optional: Per-command permission rules (if omitted, falls back to assignments.issue_assignees)
+  command_permissions:
+    assign-issue:
+      role_ids: []
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    issue-requests:
+      role_ids: []
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    sync:
+      role_ids: []
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+  # TESTING ONLY: Allow any guild member to run restricted commands (default: false)
+  unrestricted_slash_commands: false
   notifications:
     enabled: true
     issue_assignment: true
     pr_review_requested: true
     pr_review_result: true
     pr_merged: true
-    channel_id: null
+    # Optional: CodeRabbit reminder for old review comments
+    coderabbit_reminders: false
+    coderabbit_reminder_after_hours: 48
+    coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]
+    channel_id: null  # null = DM; set to channel ID to post there
 
 scoring:
   period_days: 30
+  # Note: Only "pr_merged" events affect scores (merge-only scoring to prevent spam)
   weights:
-    issue_opened: 3
-    pr_opened: 5
-    pr_reviewed: 2
-    comment: 1
     pr_merged: 10
+  # Optional: Difficulty-aware scoring via PR labels (e.g., "easy", "medium", "hard")
+  difficulty_weights:
+    easy: 5
+    medium: 10
+    hard: 20
+  # Optional: Quality adjustments (penalties and bonuses)
+  quality_adjustments:
+    penalties:
+      reverted_pr: 5
+      failed_ci_merge: 3
+    bonuses:
+      pr_review: 2
+      helpful_comment: 1
 
 role_mappings:
   - discord_role: "Contributor"
@@ -1175,11 +1226,28 @@ role_mappings:
   - discord_role: "Maintainer"
     min_score: 40
 
+assignments:
+  review_roles:
+    - "Maintainer"
+  issue_assignees:
+    - "Mentor"
+  # Optional: Roles required for issue request eligibility (empty = any verified user)
+  issue_request_eligible_roles: []
+
 merge_role_rules:
   enabled: true
   rules:
     - discord_role: "apprentice"
       min_merged_prs: 1
+
+# Optional: Grant Discord roles when contributor has PR merged in specific repo
+repo_contributor_roles:
+  repo-name: "discord-role-name"
+
+# Optional: Identity linking settings
+identity:
+  unlink_cooldown_hours: 24
+  verified_max_age_days: null  # null = no stale check; or set days (e.g., 90)
 
 snapshots:
   enabled: true
@@ -1193,13 +1261,16 @@ snapshots:
 
 - **Adapter:** Plugin component (GitHub reader/writer, Discord reader/writer, Storage)
 - **Claim:** Pending identity link (before verification)
-- **Contribution Event:** Raw GitHub activity (issue_opened, pr_opened, etc.)
+- **Contribution Event:** Raw GitHub activity ingested (issue_opened, pr_opened, pr_merged, pr_reviewed, comment, pr_reverted, pr_merged_with_failed_ci, helpful_comment). Note: Only `pr_merged` events affect scores (merge-only scoring); others are tracked for reports and audit.
 - **Cursor:** Timestamp tracking for incremental ingestion
 - **Deduplication:** Preventing duplicate operations (assignments, notifications)
 - **Identity Mapping:** Verified Discord ↔ GitHub link
+- **Merge-Only Scoring:** Score calculation uses only `pr_merged` events to prevent spam and gaming. Other events are ingested but don't contribute to scores.
 - **Mutation:** Write operation (role change, issue assignment)
 - **Orchestrator:** Core execution engine for `run-once` cycle
 - **Plan:** Precomputed change (role add/remove, issue assignment)
+- **Quality Adjustments:** Optional scoring bonuses/penalties for PR reviews, helpful comments, reverted PRs, and failed CI merges.
+- **Repo Contributor Roles:** Discord roles granted when a user has a PR merged in a specific repository.
 - **Snapshot:** GitHub-backed JSON state export
 - **Verified User:** Discord user with verified GitHub link
 
