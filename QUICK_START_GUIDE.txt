@@ -1,0 +1,52 @@
+GITCORD BOT - QUICK START GUIDE
+================================
+
+1. LINK YOUR GITHUB ACCOUNT (Required First Step)
+---------------------------------------------------
+Type in Discord: /link
+• Bot will DM you a verification code
+• Comment that code on any GitHub issue/PR
+• Return to Discord and type: /verify-link
+
+2. AVAILABLE COMMANDS
+-------------------
+/link               - Start GitHub identity linking
+/verify-link        - Complete identity verification  
+/unlink             - Remove your GitHub link
+/status             - Check your linked GitHub account
+/metrics            - View your contribution stats
+/request-issue      - Request an issue assignment (needs mentor approval)
+/assign-issue       - Directly assign yourself to an issue (mentors only)
+/sync               - Manually sync data (mentors only)
+/issue-requests     - View pending issue requests (mentors only)
+
+3. HOW TO REQUEST AN ISSUE
+--------------------------
+1. Find an issue on GitHub you want to work on
+2. Copy the issue URL
+3. In Discord type: /request-issue <paste-url>
+4. A mentor will review and approve your request
+5. Once approved, the issue is assigned to you on GitHub
+
+4. FOR MENTORS
+--------------
+• /assign-issue <url> - Instantly assign issue to yourself or others
+• /sync - Refresh all data and apply pending changes
+• /issue-requests - View all pending requests from contributors
+
+5. HOW SCORING WORKS
+--------------------
+• PR merged = +10 points (base)
+• Difficulty labels adjust score (easy/medium/hard)
+• Quality bonuses: PR review (+2), helpful comment (+1)
+• Quality penalties: Reverted PR (-5), failed CI merge (-3)
+• Top contributors get Discord roles automatically
+
+6. TIPS
+-------
+• Must be verified (/link + /verify-link) to use most commands
+• Use /metrics to track your progress
+• Request issues early - they're assigned on first-come basis
+• Stay active to maintain contributor roles
+
+Need help? Type /status to check your verification status.
