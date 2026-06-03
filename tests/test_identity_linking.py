@@ -334,6 +334,9 @@ def test_relink_works_after_unlink(tmp_path: Path) -> None:
     mappings = storage.list_verified_identity_mappings()
     assert len(mappings) == 1
     assert mappings[0].github_user == "octocat" and mappings[0].discord_user_id == "d1"
+    status = storage.get_identity_status("d1")
+    assert status["status"] == "verified"
+    assert status["github_user"] == "octocat"
 
 
 # --- Identity status (read-only) ---
@@ -395,6 +398,19 @@ def test_identity_status_not_linked_after_unlink(tmp_path: Path) -> None:
     status = storage.get_identity_status("d1")
     assert status["status"] == "not_linked"
     assert status["github_user"] is None
+
+
+def test_unlinked_identity_hidden_from_active_link_list(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+    svc.create_claim("d1", "octocat")
+    svc.verify_claim("d1", "octocat")
+    svc.unlink("d1", cooldown_hours=0)
+
+    links = storage.get_identity_links_for_discord_user("d1")
+
+    assert links == []
 
 
 def test_cli_identity_status_output_contains_correct_fields(
@@ -605,4 +621,3 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
