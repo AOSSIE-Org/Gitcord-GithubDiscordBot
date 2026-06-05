@@ -423,7 +423,8 @@ class SqliteStorage:
                     verification_code = excluded.verification_code,
                     expires_at = excluded.expires_at,
                     created_at = excluded.created_at,
-                    verified_at = NULL
+                    verified_at = NULL,
+                    unlinked_at = NULL
                 """,
                 (
                     discord_user_id,
@@ -460,7 +461,8 @@ class SqliteStorage:
                 SET verified = 1,
                     verified_at = ?,
                     verification_code = NULL,
-                    expires_at = NULL
+                    expires_at = NULL,
+                    unlinked_at = NULL
                 WHERE discord_user_id = ? AND github_user_normalized = ?
                 """,
                 (now, discord_user_id, gh_norm),
@@ -549,7 +551,7 @@ class SqliteStorage:
                 SELECT discord_user_id, github_user, verified, verification_code,
                        expires_at, created_at, verified_at, unlinked_at
                 FROM identity_links
-                WHERE discord_user_id = ?
+                WHERE discord_user_id = ? AND unlinked_at IS NULL
                 ORDER BY verified DESC, created_at DESC
                 """,
                 (discord_user_id,),

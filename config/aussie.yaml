@@ -36,7 +36,7 @@ discord:
     read: true
     write: true
   # TESTING: set false in production — when true, any server member may use /assign-issue, /issue-requests, /sync.
-  unrestricted_slash_commands: true
+  unrestricted_slash_commands: false
   # Per-command slash access (role_ids stable; role_names optional). Admins may use these when enabled below.
   command_permissions:
     assign-issue:
