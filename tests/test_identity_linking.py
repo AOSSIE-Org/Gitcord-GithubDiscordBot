@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from ghdcbot.adapters.github.identity import VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
+from ghdcbot.bot import IdentityVerificationView, build_identity_verification_embed
 from ghdcbot.config.models import (
     AssignmentConfig,
     BotConfig,
@@ -57,6 +60,23 @@ def test_impersonation_attempt_fails_when_github_user_already_verified(tmp_path:
 
     with pytest.raises(ValueError):
         svc.create_claim("d2", "octocat")
+
+
+def test_duplicate_pending_claim_for_same_github_user_is_rejected(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
+
+    first_claim = svc.create_claim("d1", "shubham_5080")
+
+    with pytest.raises(ValueError, match="active pending claim"):
+        svc.create_claim("d2", "shubham_5080")
+
+    original_row = storage.get_identity_link("d1", "shubham_5080")
+    duplicate_row = storage.get_identity_link("d2", "shubham_5080")
+    assert original_row is not None
+    assert original_row["verification_code"] == first_claim.verification_code
+    assert duplicate_row is None
 
 
 def test_create_claim_rejects_already_verified_same_pair(tmp_path: Path) -> None:
@@ -613,6 +633,133 @@ def test_create_claim_rejects_refresh_when_not_stale(tmp_path: Path) -> None:
     # Should reject creating new claim when not stale
     with pytest.raises(ValueError, match="already verified"):
         svc.create_claim("d1", "alice", max_age_days=30)
+
+
+class _FakeInteractionResponse:
+    def __init__(self) -> None:
+        self.edits: list[dict] = []
+        self.messages: list[dict] = []
+
+    async def edit_message(self, **kwargs) -> None:  # noqa: ANN003
+        self.edits.append(kwargs)
+
+    async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+        self.messages.append({"content": content, "ephemeral": ephemeral})
+
+
+class _FakeButtonInteraction:
+    def __init__(self, discord_user_id: str) -> None:
+        self.user = SimpleNamespace(id=discord_user_id)
+        self.response = _FakeInteractionResponse()
+
+
+def _view_children_disabled(view: IdentityVerificationView) -> bool:
+    return all(bool(getattr(item, "disabled", False)) for item in view.children)
+
+
+def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+    claim = svc.create_claim("d1", "octocat")
+    embed = build_identity_verification_embed(claim)
+    view = IdentityVerificationView(
+        service=svc,
+        storage=storage,
+        discord_user_id="d1",
+        github_user="octocat",
+    )
+    interaction = _FakeButtonInteraction("d1")
+
+    asyncio.run(view.verify_identity(interaction))
+
+    row = storage.get_identity_link("d1", "octocat")
+    assert row is not None
+    assert row["verified"] == 1
+    assert row["verification_code"] is None
+    assert interaction.response.edits[0]["content"] == (
+        "✅ Successfully verified GitHub account\n\n"
+        "GitHub: octocat\n\n"
+        "Status: Verified"
+    )
+    assert interaction.response.edits[0]["embed"] is None
+    assert interaction.response.edits[0]["view"] is view
+    assert embed.to_dict()["fields"][0]["value"] == "octocat"
+    assert _view_children_disabled(view)
+
+
+def test_identity_verify_button_reports_expired_claim(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(
+        storage=storage,
+        github_identity=_GitHubIdentityAlways(True, "bio"),
+        ttl_minutes=-1,
+    )
+    svc.create_claim("d1", "octocat")
+    view = IdentityVerificationView(
+        service=svc,
+        storage=storage,
+        discord_user_id="d1",
+        github_user="octocat",
+    )
+    interaction = _FakeButtonInteraction("d1")
+
+    asyncio.run(view.verify_identity(interaction))
+
+    row = storage.get_identity_link("d1", "octocat")
+    assert row is not None
+    assert row["verified"] == 0
+    assert interaction.response.edits[0]["content"] == (
+        "❌ Verification expired.\n\n"
+        "Run /link again to generate a new verification code."
+    )
+    assert _view_children_disabled(view)
+
+
+def test_identity_verify_button_reports_code_not_found(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
+    svc.create_claim("d1", "octocat")
+    view = IdentityVerificationView(
+        service=svc,
+        storage=storage,
+        discord_user_id="d1",
+        github_user="octocat",
+    )
+    interaction = _FakeButtonInteraction("d1")
+
+    asyncio.run(view.verify_identity(interaction))
+
+    row = storage.get_identity_link("d1", "octocat")
+    assert row is not None
+    assert row["verified"] == 0
+    assert interaction.response.messages[0]["content"] == (
+        "❌ Verification code not found.\n\n"
+        "Please ensure the code is present in your GitHub bio or public gist and try again."
+    )
+    assert interaction.response.messages[0]["ephemeral"] is True
+    assert not _view_children_disabled(view)
+
+
+def test_identity_verify_cancel_button_disables_view() -> None:
+    svc = SimpleNamespace()
+    storage = SimpleNamespace()
+    view = IdentityVerificationView(
+        service=svc,
+        storage=storage,
+        discord_user_id="d1",
+        github_user="octocat",
+    )
+    interaction = _FakeButtonInteraction("d1")
+
+    asyncio.run(view.cancel_verification(interaction))
+
+    assert interaction.response.edits[0]["content"] == "Verification cancelled."
+    assert interaction.response.edits[0]["embed"] is None
+    assert interaction.response.edits[0]["view"] is view
+    assert _view_children_disabled(view)
 
 
 def _parse_utc(value: str) -> datetime:

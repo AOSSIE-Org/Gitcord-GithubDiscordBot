@@ -14,7 +14,7 @@ from discord import app_commands
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
-from ghdcbot.engine.identity_linking import IdentityLinkService
+from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.metrics import (
     format_metrics_summary,
     get_contribution_metrics,
@@ -59,6 +59,118 @@ from ghdcbot.discord_command_permissions import (
 SLASH_CMD_ASSIGN_ISSUE = "assign-issue"
 SLASH_CMD_ISSUE_REQUESTS = "issue-requests"
 SLASH_CMD_SYNC = "sync"
+
+
+def build_identity_verification_embed(claim: LinkClaim) -> discord.Embed:
+    """Build the ephemeral /link verification instructions embed."""
+    embed = discord.Embed(
+        title="Verify GitHub Account",
+        description=(
+            "1. Copy this code.\n"
+            "2. Paste it into your GitHub bio or public gist.\n"
+            "3. Click Verify."
+        ),
+        color=0x2563EB,
+    )
+    embed.add_field(name="GitHub Account", value=claim.github_user, inline=False)
+    embed.add_field(name="Verification Code", value=f"`{claim.verification_code}`", inline=False)
+    embed.add_field(name="Expires At (UTC)", value=claim.expires_at.isoformat(), inline=False)
+    return embed
+
+
+class IdentityVerificationView(discord.ui.View):
+    """Ephemeral /link buttons that reuse IdentityLinkService.verify_claim()."""
+
+    def __init__(
+        self,
+        *,
+        service: IdentityLinkService,
+        storage: Any,
+        discord_user_id: str,
+        github_user: str,
+        timeout: float = 600.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.storage = storage
+        self.discord_user_id = discord_user_id
+        self.github_user = github_user
+
+        verify_button = discord.ui.Button(label="Verify", style=discord.ButtonStyle.success)
+        verify_button.callback = self.verify_identity
+        self.add_item(verify_button)
+
+        cancel_button = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self.cancel_verification
+        self.add_item(cancel_button)
+
+    def _disable(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    def _pending_github_user(self, discord_user_id: str) -> str:
+        get_link = getattr(self.storage, "get_identity_link", None)
+        if not callable(get_link):
+            raise ValueError("Identity link status is unavailable.")
+        row = get_link(discord_user_id, self.github_user)
+        if not row:
+            raise ValueError("No identity claim found for this Discord user and GitHub user")
+        return str(row.get("github_user") or self.github_user)
+
+    async def _edit_response(self, interaction: discord.Interaction, content: str) -> None:
+        self._disable()
+        await interaction.response.edit_message(content=content, embed=None, view=self)
+
+    async def verify_identity(self, interaction: discord.Interaction) -> None:
+        clicker_id = str(interaction.user.id)
+        if clicker_id != self.discord_user_id:
+            await interaction.response.send_message(
+                "This verification button belongs to another Discord user.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            github_user = self._pending_github_user(clicker_id)
+            ok, location = self.service.verify_claim(clicker_id, github_user)
+        except ValueError as e:
+            await self._edit_response(interaction, f"Verification failed: {e}")
+            return
+
+        if ok:
+            await self._edit_response(
+                interaction,
+                (
+                    "✅ Successfully verified GitHub account\n\n"
+                    f"GitHub: {github_user}\n\n"
+                    "Status: Verified"
+                ),
+            )
+            return
+
+        if location == "expired":
+            await self._edit_response(
+                interaction,
+                "❌ Verification expired.\n\nRun /link again to generate a new verification code.",
+            )
+            return
+
+        await interaction.response.send_message(
+            (
+                "❌ Verification code not found.\n\n"
+                "Please ensure the code is present in your GitHub bio or public gist and try again."
+            ),
+            ephemeral=True,
+        )
+
+    async def cancel_verification(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.discord_user_id:
+            await interaction.response.send_message(
+                "This verification button belongs to another Discord user.",
+                ephemeral=True,
+            )
+            return
+        await self._edit_response(interaction, "Verification cancelled.")
 
 
 def run_bot(config_path: str) -> None:
@@ -140,13 +252,14 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True,
             )
             return
-        msg = (
-            f"**Verification code:** `{claim.verification_code}`\n\n"
-            "1. Put this code in your **GitHub profile bio** or in a **public gist**.\n"
-            f"2. Run `/verify-link` with `{github_username}` here.\n\n"
-            f"Code expires at (UTC): {claim.expires_at.isoformat()}"
+        embed = build_identity_verification_embed(claim)
+        view = IdentityVerificationView(
+            service=service,
+            storage=storage,
+            discord_user_id=discord_user_id,
+            github_user=github_username,
         )
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @tree.command(
         name="verify-link",
