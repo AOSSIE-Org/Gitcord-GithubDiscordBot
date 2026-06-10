@@ -9,7 +9,12 @@ import pytest
 
 from ghdcbot.adapters.github.identity import VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
-from ghdcbot.bot import IdentityVerificationView, build_identity_verification_embed
+from ghdcbot.bot import (
+    IdentityVerificationView,
+    VERIFICATION_CODE_REMOVAL_NOTE,
+    build_identity_verification_embed,
+    github_profile_settings_url,
+)
 from ghdcbot.config.models import (
     AssignmentConfig,
     BotConfig,
@@ -657,17 +662,63 @@ def _view_children_disabled(view: IdentityVerificationView) -> bool:
     return all(bool(getattr(item, "disabled", False)) for item in view.children)
 
 
+def test_github_profile_settings_url_from_api_base() -> None:
+    assert (
+        github_profile_settings_url("https://api.github.com")
+        == "https://github.com/settings/profile"
+    )
+    assert (
+        github_profile_settings_url("https://ghes.example.com/api/v3")
+        == "https://ghes.example.com/settings/profile"
+    )
+
+
+def test_identity_verification_embed_includes_github_profile_settings_link(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+    claim = svc.create_claim("d1", "octocat")
+    profile_settings_url = github_profile_settings_url("https://api.github.com")
+
+    embed = build_identity_verification_embed(claim, profile_settings_url=profile_settings_url)
+    description = embed.to_dict()["description"]
+
+    assert profile_settings_url in description
+    assert "Copy the verification code below" in description
+    assert "Paste the code into your GitHub bio" in description
+
+
+def test_identity_verification_view_includes_github_profile_button() -> None:
+    profile_settings_url = github_profile_settings_url("https://api.github.com")
+    view = IdentityVerificationView(
+        service=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        discord_user_id="d1",
+        github_user="octocat",
+        profile_settings_url=profile_settings_url,
+    )
+    link_buttons = [
+        item
+        for item in view.children
+        if getattr(item, "label", None) == "Open GitHub Profile"
+        and getattr(item, "url", None) == profile_settings_url
+    ]
+    assert len(link_buttons) == 1
+
+
 def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     storage = SqliteStorage(data_dir=str(tmp_path))
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
     claim = svc.create_claim("d1", "octocat")
-    embed = build_identity_verification_embed(claim)
+    profile_settings_url = github_profile_settings_url("https://api.github.com")
+    embed = build_identity_verification_embed(claim, profile_settings_url=profile_settings_url)
     view = IdentityVerificationView(
         service=svc,
         storage=storage,
         discord_user_id="d1",
         github_user="octocat",
+        profile_settings_url=profile_settings_url,
     )
     interaction = _FakeButtonInteraction("d1")
 
@@ -680,7 +731,8 @@ def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     assert interaction.response.edits[0]["content"] == (
         "✅ Successfully verified GitHub account\n\n"
         "GitHub: octocat\n\n"
-        "Status: Verified"
+        f"Status: Verified\n\n"
+        f"{VERIFICATION_CODE_REMOVAL_NOTE}"
     )
     assert interaction.response.edits[0]["embed"] is None
     assert interaction.response.edits[0]["view"] is view
@@ -702,6 +754,7 @@ def test_identity_verify_button_reports_expired_claim(tmp_path: Path) -> None:
         storage=storage,
         discord_user_id="d1",
         github_user="octocat",
+        profile_settings_url=github_profile_settings_url("https://api.github.com"),
     )
     interaction = _FakeButtonInteraction("d1")
 
@@ -727,6 +780,7 @@ def test_identity_verify_button_reports_code_not_found(tmp_path: Path) -> None:
         storage=storage,
         discord_user_id="d1",
         github_user="octocat",
+        profile_settings_url=github_profile_settings_url("https://api.github.com"),
     )
     interaction = _FakeButtonInteraction("d1")
 
@@ -751,6 +805,7 @@ def test_identity_verify_cancel_button_disables_view() -> None:
         storage=storage,
         discord_user_id="d1",
         github_user="octocat",
+        profile_settings_url=github_profile_settings_url("https://api.github.com"),
     )
     interaction = _FakeButtonInteraction("d1")
 
