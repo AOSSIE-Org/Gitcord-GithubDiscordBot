@@ -60,15 +60,33 @@ SLASH_CMD_ASSIGN_ISSUE = "assign-issue"
 SLASH_CMD_ISSUE_REQUESTS = "issue-requests"
 SLASH_CMD_SYNC = "sync"
 
+VERIFICATION_CODE_REMOVAL_NOTE = (
+    "You may now safely remove the verification code from your GitHub bio. "
+    "It was only required to prove ownership during the verification process."
+)
 
-def build_identity_verification_embed(claim: LinkClaim) -> discord.Embed:
+
+def github_profile_settings_url(api_base: str) -> str:
+    """Derive the GitHub web profile settings URL from config.github.api_base."""
+    base = api_base.rstrip("/")
+    if base in ("https://api.github.com", "http://api.github.com"):
+        return "https://github.com/settings/profile"
+    if base.endswith("/api/v3"):
+        return f"{base[: -len('/api/v3')]}/settings/profile"
+    if base.endswith("/api"):
+        return f"{base[: -len('/api')]}/settings/profile"
+    return f"{base}/settings/profile"
+
+
+def build_identity_verification_embed(claim: LinkClaim, *, profile_settings_url: str) -> discord.Embed:
     """Build the ephemeral /link verification instructions embed."""
     embed = discord.Embed(
         title="Verify GitHub Account",
         description=(
-            "1. Copy this code.\n"
-            "2. Paste it into your GitHub bio or public gist.\n"
-            "3. Click Verify."
+            "1. Copy the verification code below.\n"
+            f"2. Open GitHub profile settings:\n   {profile_settings_url}\n"
+            "3. Paste the code into your GitHub bio.\n"
+            "4. Return here and click Verify."
         ),
         color=0x2563EB,
     )
@@ -88,6 +106,7 @@ class IdentityVerificationView(discord.ui.View):
         storage: Any,
         discord_user_id: str,
         github_user: str,
+        profile_settings_url: str,
         timeout: float = 600.0,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -95,6 +114,13 @@ class IdentityVerificationView(discord.ui.View):
         self.storage = storage
         self.discord_user_id = discord_user_id
         self.github_user = github_user
+
+        github_button = discord.ui.Button(
+            label="Open GitHub Profile",
+            style=discord.ButtonStyle.link,
+            url=profile_settings_url,
+        )
+        self.add_item(github_button)
 
         verify_button = discord.ui.Button(label="Verify", style=discord.ButtonStyle.success)
         verify_button.callback = self.verify_identity
@@ -143,7 +169,8 @@ class IdentityVerificationView(discord.ui.View):
                 (
                     "✅ Successfully verified GitHub account\n\n"
                     f"GitHub: {github_user}\n\n"
-                    "Status: Verified"
+                    f"Status: Verified\n\n"
+                    f"{VERIFICATION_CODE_REMOVAL_NOTE}"
                 ),
             )
             return
@@ -200,6 +227,7 @@ def run_bot(config_path: str) -> None:
         api_base=str(config.github.api_base),
     )
     service = IdentityLinkService(storage=storage, github_identity=github_identity)
+    profile_settings_url = github_profile_settings_url(str(config.github.api_base))
     discord_reader = build_adapter(
         config.runtime.discord_adapter,
         token=config.discord.token,
@@ -252,12 +280,13 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True,
             )
             return
-        embed = build_identity_verification_embed(claim)
+        embed = build_identity_verification_embed(claim, profile_settings_url=profile_settings_url)
         view = IdentityVerificationView(
             service=service,
             storage=storage,
             discord_user_id=discord_user_id,
             github_user=github_username,
+            profile_settings_url=profile_settings_url,
         )
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -286,7 +315,10 @@ def run_bot(config_path: str) -> None:
                 )
             else:
                 await interaction.followup.send(
-                    f"Verified: **{github_username}** ↔ your Discord (found in {location}).",
+                    (
+                        f"Verified: **{github_username}** ↔ your Discord (found in {location}).\n\n"
+                        f"{VERIFICATION_CODE_REMOVAL_NOTE}"
+                    ),
                     ephemeral=True,
                 )
         else:
