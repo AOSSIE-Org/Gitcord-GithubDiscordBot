@@ -60,15 +60,23 @@ SLASH_CMD_ASSIGN_ISSUE = "assign-issue"
 SLASH_CMD_ISSUE_REQUESTS = "issue-requests"
 SLASH_CMD_SYNC = "sync"
 
+GITHUB_PROFILE_SETTINGS_URL = "https://github.com/settings/profile"
+
+VERIFICATION_CODE_REMOVAL_NOTE = (
+    "You may now safely remove the verification code from your GitHub bio. "
+    "It was only required to prove ownership during the verification process."
+)
+
 
 def build_identity_verification_embed(claim: LinkClaim) -> discord.Embed:
     """Build the ephemeral /link verification instructions embed."""
     embed = discord.Embed(
         title="Verify GitHub Account",
         description=(
-            "1. Copy this code.\n"
-            "2. Paste it into your GitHub bio or public gist.\n"
-            "3. Click Verify."
+            "1. Copy the verification code below.\n"
+            f"2. Open GitHub profile settings:\n   {GITHUB_PROFILE_SETTINGS_URL}\n"
+            "3. Paste the code into your GitHub bio.\n"
+            "4. Return here and click Verify."
         ),
         color=0x2563EB,
     )
@@ -95,6 +103,13 @@ class IdentityVerificationView(discord.ui.View):
         self.storage = storage
         self.discord_user_id = discord_user_id
         self.github_user = github_user
+
+        github_button = discord.ui.Button(
+            label="Open GitHub Profile",
+            style=discord.ButtonStyle.link,
+            url=GITHUB_PROFILE_SETTINGS_URL,
+        )
+        self.add_item(github_button)
 
         verify_button = discord.ui.Button(label="Verify", style=discord.ButtonStyle.success)
         verify_button.callback = self.verify_identity
@@ -143,7 +158,8 @@ class IdentityVerificationView(discord.ui.View):
                 (
                     "✅ Successfully verified GitHub account\n\n"
                     f"GitHub: {github_user}\n\n"
-                    "Status: Verified"
+                    f"Status: Verified\n\n"
+                    f"{VERIFICATION_CODE_REMOVAL_NOTE}"
                 ),
             )
             return
@@ -286,7 +302,10 @@ def run_bot(config_path: str) -> None:
                 )
             else:
                 await interaction.followup.send(
-                    f"Verified: **{github_username}** ↔ your Discord (found in {location}).",
+                    (
+                        f"Verified: **{github_username}** ↔ your Discord (found in {location}).\n\n"
+                        f"{VERIFICATION_CODE_REMOVAL_NOTE}"
+                    ),
                     ephemeral=True,
                 )
         else:

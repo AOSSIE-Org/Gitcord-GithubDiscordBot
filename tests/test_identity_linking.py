@@ -9,7 +9,12 @@ import pytest
 
 from ghdcbot.adapters.github.identity import VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
-from ghdcbot.bot import IdentityVerificationView, build_identity_verification_embed
+from ghdcbot.bot import (
+    GITHUB_PROFILE_SETTINGS_URL,
+    IdentityVerificationView,
+    VERIFICATION_CODE_REMOVAL_NOTE,
+    build_identity_verification_embed,
+)
 from ghdcbot.config.models import (
     AssignmentConfig,
     BotConfig,
@@ -657,6 +662,36 @@ def _view_children_disabled(view: IdentityVerificationView) -> bool:
     return all(bool(getattr(item, "disabled", False)) for item in view.children)
 
 
+def test_identity_verification_embed_includes_github_profile_settings_link(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+    claim = svc.create_claim("d1", "octocat")
+
+    embed = build_identity_verification_embed(claim)
+    description = embed.to_dict()["description"]
+
+    assert GITHUB_PROFILE_SETTINGS_URL in description
+    assert "Copy the verification code below" in description
+    assert "Paste the code into your GitHub bio" in description
+
+
+def test_identity_verification_view_includes_github_profile_button() -> None:
+    view = IdentityVerificationView(
+        service=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        discord_user_id="d1",
+        github_user="octocat",
+    )
+    link_buttons = [
+        item
+        for item in view.children
+        if getattr(item, "label", None) == "Open GitHub Profile"
+        and getattr(item, "url", None) == GITHUB_PROFILE_SETTINGS_URL
+    ]
+    assert len(link_buttons) == 1
+
+
 def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     storage = SqliteStorage(data_dir=str(tmp_path))
     storage.init_schema()
@@ -680,7 +715,8 @@ def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     assert interaction.response.edits[0]["content"] == (
         "✅ Successfully verified GitHub account\n\n"
         "GitHub: octocat\n\n"
-        "Status: Verified"
+        f"Status: Verified\n\n"
+        f"{VERIFICATION_CODE_REMOVAL_NOTE}"
     )
     assert interaction.response.edits[0]["embed"] is None
     assert interaction.response.edits[0]["view"] is view
