@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, Sequence
@@ -19,11 +21,57 @@ class RateLimitStatus:
     reset_at: datetime | None
 
 
+_GITHUB_RETRY_MAX_ATTEMPTS = 4
+_GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
+_GITHUB_MAX_RATE_LIMIT_RECOVERIES = 10
+_GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS = 1.0
+
+
+def _github_retry_sleep_seconds(failed_attempt: int) -> float:
+    """Backoff before the next attempt after failed_attempt (1-indexed)."""
+    if 1 <= failed_attempt <= len(_GITHUB_RETRY_BACKOFF_SECONDS):
+        base = _GITHUB_RETRY_BACKOFF_SECONDS[failed_attempt - 1]
+    else:
+        base = _GITHUB_RETRY_BACKOFF_SECONDS[-1]
+    return base + random.uniform(0, 0.5)
+
+
+def _is_rate_limit_exhausted(response: httpx.Response) -> bool:
+    if response.status_code != 403:
+        return False
+    rate_limit = _parse_rate_limit(response.headers)
+    return rate_limit.remaining == 0
+
+
+def _rate_limit_reset_timestamp(headers: dict) -> int | None:
+    reset = headers.get("X-RateLimit-Reset")
+    if reset is None:
+        return None
+    reset_str = str(reset).strip()
+    if not reset_str.isdigit():
+        return None
+    return int(reset_str)
+
+
+def _rate_limit_sleep_seconds(headers: dict) -> float | None:
+    reset_ts = _rate_limit_reset_timestamp(headers)
+    if reset_ts is None:
+        return None
+    sleep_seconds = reset_ts - time.time()
+    if sleep_seconds < 0:
+        sleep_seconds = 0.0
+    return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
+
+
 class GitHubRestAdapter:
     def __init__(self, token: str, org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
         self._last_repo_count: int | None = None
+        self._sync_cached_repos: list[dict] | None = None
+        self._sync_request_count = 0
+        self._sync_repos_processed = 0
         self._client = httpx.Client(
             base_url=api_base,
             headers={
@@ -42,13 +90,43 @@ class GitHubRestAdapter:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    @property
+    def sync_request_count(self) -> int:
+        return self._sync_request_count
+
+    @property
+    def sync_repos_processed(self) -> int:
+        return self._sync_repos_processed
+
+    def peek_repos_for_sync(self) -> int:
+        self._ensure_sync_repos_cached()
+        return len(self._sync_cached_repos or [])
+
+    def _ensure_sync_repos_cached(self) -> None:
+        if self._sync_cached_repos is None:
+            self._sync_cached_repos = list(self._list_repos())
+
+    def _reset_sync_tracking(self) -> None:
+        self._sync_request_count = 0
+        self._sync_repos_processed = 0
+
+    def _increment_sync_request_count(self) -> None:
+        self._sync_request_count += 1
+
     def list_contributions(self, since: datetime) -> Iterable[ContributionEvent]:
+        self._reset_sync_tracking()
+        self._ensure_sync_repos_cached()
+        repos = self._sync_cached_repos or []
         self._logger.info(
             "Starting GitHub ingestion",
-            extra={"org": self._org, "since": since.isoformat()},
+            extra={"org": self._org, "since": since.isoformat(), "repos_total": len(repos)},
         )
-        for repo in self._list_repos():
-            yield from self._ingest_repo(repo, since)
+        try:
+            for repo in repos:
+                yield from self._ingest_repo(repo, since)
+                self._sync_repos_processed += 1
+        finally:
+            self._sync_cached_repos = None
 
     def list_open_issues(self) -> Iterable[dict]:
         for repo in self._list_repos():
@@ -404,7 +482,11 @@ class GitHubRestAdapter:
         repo_name = repo["name"]
         owner = repo["owner"]["login"]
         full_name = repo["full_name"]
-        self._logger.info("Ingesting repository", extra={"repo": full_name})
+        started = time.monotonic()
+        self._logger.info(
+            "Repository ingestion started",
+            extra={"event": "repo_ingestion_started", "repo": full_name},
+        )
 
         issue_events, issue_numbers, issue_authors = self._collect_issue_events(
             owner, repo_name, since
@@ -426,20 +508,22 @@ class GitHubRestAdapter:
                 issue_authors=issue_authors, pr_authors=pr_authors,
             )
         )
+        repo_events = (
+            issue_events
+            + issue_comment_events
+            + pr_events
+            + pr_comment_events
+            + helpful_comment_events
+        )
         self._logger.info(
-            "Ingestion results",
+            "Repository ingestion completed",
             extra={
+                "event": "repo_ingestion_completed",
                 "repo": full_name,
-                "issue_events": len(issue_events),
-                "pr_events": len(pr_events),
-                "comment_events": len(issue_comment_events) + len(pr_comment_events),
+                "events": len(repo_events),
+                "duration_ms": int((time.monotonic() - started) * 1000),
             },
         )
-        if pr_opened_count:
-            self._logger.info(
-                "Emitted pr_opened event",
-                extra={"repo": full_name, "count": pr_opened_count},
-            )
         yield from issue_events
         yield from issue_comment_events
         yield from pr_events
@@ -1062,11 +1146,100 @@ class GitHubRestAdapter:
                 return
             page += 1
 
+    def _execute_request_with_retries(
+        self, method: str, path: str, params: dict
+    ) -> httpx.Response | None:
+        last_reason = "unknown"
+        for attempt in range(1, _GITHUB_RETRY_MAX_ATTEMPTS + 1):
+            response: httpx.Response | None = None
+            transport_error: str | None = None
+
+            rate_limit_recovery_count = 0
+            while True:
+                try:
+                    self._increment_sync_request_count()
+                    response = self._client.request(method, path, params=params)
+                    transport_error = None
+                except httpx.TimeoutException:
+                    transport_error = "Timeout"
+                    break
+                except httpx.ConnectError:
+                    transport_error = "ConnectError"
+                    break
+                except httpx.HTTPError as exc:
+                    self._logger.warning("GitHub request failed", extra={"path": path, "error": str(exc)})
+                    return None
+
+                if response is not None and _is_rate_limit_exhausted(response):
+                    if rate_limit_recovery_count >= _GITHUB_MAX_RATE_LIMIT_RECOVERIES:
+                        reset_timestamp = _rate_limit_reset_timestamp(response.headers)
+                        self._log_github_rate_limit_exhausted(
+                            path,
+                            0,
+                            reset_timestamp,
+                            0.0,
+                        )
+                        self._logger.warning(
+                            "GitHub rate limit recovery cap exceeded",
+                            extra={
+                                "event": "github_rate_limit_recovery_exhausted",
+                                "path": path,
+                                "recoveries": rate_limit_recovery_count,
+                                "max_recoveries": _GITHUB_MAX_RATE_LIMIT_RECOVERIES,
+                            },
+                        )
+                        return None
+                    sleep_seconds = _rate_limit_sleep_seconds(response.headers)
+                    reset_timestamp = _rate_limit_reset_timestamp(response.headers)
+                    if sleep_seconds is None:
+                        self._log_github_rate_limit_missing_reset(
+                            path, response.headers.get("X-RateLimit-Reset")
+                        )
+                        return None
+                    rate_limit_recovery_count += 1
+                    self._log_github_rate_limit_exhausted(
+                        path, 0, reset_timestamp, sleep_seconds
+                    )
+                    time.sleep(sleep_seconds)
+                    self._log_github_rate_limit_recovered(path, attempt)
+                    continue
+
+                break
+
+            if transport_error is not None:
+                last_reason = transport_error
+                if attempt >= _GITHUB_RETRY_MAX_ATTEMPTS:
+                    self._log_github_request_failed(path, attempt, last_reason)
+                    return None
+                sleep_seconds = _github_retry_sleep_seconds(attempt)
+                self._log_github_request_retry(
+                    path, attempt + 1, _GITHUB_RETRY_MAX_ATTEMPTS, last_reason, sleep_seconds
+                )
+                time.sleep(sleep_seconds)
+                continue
+
+            if response is None:
+                return None
+
+            if response.status_code in _GITHUB_TRANSIENT_STATUS_CODES:
+                last_reason = f"{response.status_code} {response.reason_phrase}"
+                if attempt >= _GITHUB_RETRY_MAX_ATTEMPTS:
+                    self._log_github_request_failed(path, attempt, last_reason)
+                    return None
+                sleep_seconds = _github_retry_sleep_seconds(attempt)
+                self._log_github_request_retry(
+                    path, attempt + 1, _GITHUB_RETRY_MAX_ATTEMPTS, last_reason, sleep_seconds
+                )
+                time.sleep(sleep_seconds)
+                continue
+
+            return response
+
+        return None
+
     def _request(self, method: str, path: str, params: dict) -> httpx.Response | None:
-        try:
-            response = self._client.request(method, path, params=params)
-        except httpx.HTTPError as exc:
-            self._logger.warning("GitHub request failed", extra={"path": path, "error": str(exc)})
+        response = self._execute_request_with_retries(method, path, params)
+        if response is None:
             return None
 
         rate_limit = _parse_rate_limit(response.headers)
@@ -1082,6 +1255,9 @@ class GitHubRestAdapter:
                 },
             )
 
+        if response.status_code == 401:
+            self._log_permission_issue(path, response)
+            return None
         if response.status_code == 403:
             self._log_permission_issue(path, response)
             return None
@@ -1092,10 +1268,8 @@ class GitHubRestAdapter:
         return response
 
     def _request_with_status(self, method: str, path: str, params: dict) -> httpx.Response | None:
-        try:
-            response = self._client.request(method, path, params=params)
-        except httpx.HTTPError as exc:
-            self._logger.warning("GitHub request failed", extra={"path": path, "error": str(exc)})
+        response = self._execute_request_with_retries(method, path, params)
+        if response is None:
             return None
 
         rate_limit = _parse_rate_limit(response.headers)
@@ -1116,6 +1290,75 @@ class GitHubRestAdapter:
         if response.status_code == 404:
             self._log_not_found(path, response)
         return response
+
+    def _log_github_request_retry(
+        self,
+        path: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str,
+        sleep_seconds: float,
+    ) -> None:
+        self._logger.warning(
+            "GitHub request retry",
+            extra={
+                "event": "github_request_retry",
+                "path": path,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "reason": reason,
+                "sleep_seconds": sleep_seconds,
+            },
+        )
+
+    def _log_github_request_failed(self, path: str, attempts: int, reason: str) -> None:
+        self._logger.warning(
+            "GitHub request failed after retries",
+            extra={
+                "event": "github_request_failed",
+                "path": path,
+                "attempts": attempts,
+                "reason": reason,
+            },
+        )
+
+    def _log_github_rate_limit_exhausted(
+        self,
+        path: str,
+        remaining: int,
+        reset_timestamp: int | None,
+        sleep_seconds: float,
+    ) -> None:
+        self._logger.warning(
+            "GitHub rate limit exhausted",
+            extra={
+                "event": "github_rate_limit_exhausted",
+                "path": path,
+                "remaining": remaining,
+                "reset_timestamp": reset_timestamp,
+                "sleep_seconds": sleep_seconds,
+            },
+        )
+
+    def _log_github_rate_limit_recovered(self, path: str, attempt: int) -> None:
+        self._logger.warning(
+            "GitHub rate limit recovered",
+            extra={
+                "event": "github_rate_limit_recovered",
+                "path": path,
+                "attempt": attempt,
+            },
+        )
+
+    def _log_github_rate_limit_missing_reset(self, path: str, reset_header: str | None) -> None:
+        self._logger.warning(
+            "GitHub rate limit missing or malformed reset header",
+            extra={
+                "event": "github_rate_limit_missing_reset",
+                "path": path,
+                "reset_header": reset_header,
+            },
+        )
 
     def _log_permission_issue(self, path: str, response: httpx.Response) -> None:
         self._logger.warning(
