@@ -109,6 +109,11 @@ class SyncSession(AbstractContextManager["SyncSession"]):
         counts = Counter(_contribution_event_type(event) for event in contributions)
         extra = self._event_summary_extra(dict(counts))
         unknown_count = counts.get("unknown", 0)
+        unknown_count += sum(
+            count
+            for event_type, count in counts.items()
+            if event_type not in self._EVENT_SUMMARY_TYPES and event_type != "unknown"
+        )
         if unknown_count:
             extra["unknown"] = unknown_count
         self._logger.info(
