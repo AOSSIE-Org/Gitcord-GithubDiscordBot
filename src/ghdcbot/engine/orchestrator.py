@@ -22,6 +22,7 @@ from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.scoring import WeightedScoreStrategy
 from ghdcbot.engine.snapshots import write_snapshots_to_github
+from ghdcbot.logging.sync_context import SyncSession
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,14 @@ class Orchestrator:
 
     def run_once(self) -> None:
         logger = logging.getLogger("Orchestrator")
+        with SyncSession() as sync:
+            try:
+                self._run_once_body(logger, sync)
+            except Exception as exc:
+                sync.log_failed(str(exc))
+                raise
+
+    def _run_once_body(self, logger: logging.Logger, sync: SyncSession) -> None:
         self.storage.init_schema()
 
         period_end = datetime.now(timezone.utc)
@@ -43,12 +52,18 @@ class Orchestrator:
         identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
 
         prior_cursor = self.storage.get_cursor("github") or period_start
+        peek_repos = getattr(self.github_reader, "peek_repos_for_sync", None)
+        repos_total = peek_repos() if callable(peek_repos) else 0
+        sync.log_started(prior_cursor, repos_total)
+
         contributions = list(self.github_reader.list_contributions(prior_cursor))
         stored = self.storage.record_contributions(contributions)
+        cursor_after = prior_cursor
         if contributions:
             new_cursor = max(event.created_at for event in contributions)
             if new_cursor > prior_cursor:
                 self.storage.set_cursor("github", new_cursor)
+                cursor_after = new_cursor
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         recent = self.storage.list_contributions(period_start)
@@ -276,6 +291,16 @@ class Orchestrator:
         except Exception as exc:
             # Never block run-once completion
             logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
+
+        repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))
+        requests_total = int(getattr(self.github_reader, "sync_request_count", 0))
+        sync.log_event_summary(contributions)
+        sync.log_completed(
+            cursor_after,
+            repos_processed=repos_processed,
+            events_fetched=len(contributions),
+            requests_total=requests_total,
+        )
 
     def close(self) -> None:
         for adapter in {self.github_reader, self.github_writer, self.discord_reader, self.discord_writer}:
