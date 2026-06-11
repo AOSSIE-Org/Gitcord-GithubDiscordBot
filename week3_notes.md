@@ -149,101 +149,86 @@ flowchart TD
 
 ---
 
-## Goal 2: Week 3 Implementation Points
+## Goal 2: Week 3 Implementation Status
 
-Implementation TODO notes per target area (for code changes in a follow-up PR).
+Implemented symbols: `_execute_request_with_retries()`, `_request()`, `_parse_rate_limit()`, `logging/setup.py` → `configure_logging()`, `SyncSession`, `sync_context.py`.
 
-### Retry handling
+### Retry handling — before vs after
 
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| HTTP retry | `rest.py` → `GitHubRestAdapter._request()` | Single attempt; `httpx.HTTPError` → log + return `None` | Add retry wrapper for transient failures (see `retry_design.md`) |
-| Status retry | `rest.py` → `_request()` | 403/404 → return `None` immediately | Retry 502/503/504 only; distinguish rate-limit 403 from permission 403 |
-| Bypass paths | `rest.py` → `assign_issue`, CI checks, etc. | Some calls use `_client` directly | Route through centralized `_request()` or shared retry helper |
+| Area | Before this PR | After this PR |
+|------|----------------|---------------|
+| HTTP retry | Single attempt in `_request()` | `_execute_request_with_retries()` — max 4 attempts with backoff + jitter |
+| Transient status | 502/503/504 stopped pagination | Retried via `_execute_request_with_retries()` |
+| Permission 403 | Returned `None` immediately | Still `None` via `_request()` + `_log_permission_issue()` |
+| Direct `_client` calls | No retry | **Still bypass** `_request()` in some mutation helpers (future refactor) |
 
-### Pagination
+### Rate-limit handling — before vs after
 
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| Page loop | `rest.py` → `_paginate()` | Stops on first `_request()` failure | After retry exhaustion, log repo+path+page; consider partial-ingestion summary |
-| Repo listing | `rest.py` → `_list_repos_from_path()` | Uses `_request_with_status` for first page | Same retry semantics as `_paginate` |
-| PR early exit | `rest.py` → `_collect_pull_request_events()` | Stops when `updated_at < since` | No change expected; document assumption (desc sort) |
+| Area | Before this PR | After this PR |
+|------|----------------|---------------|
+| Header parse | `_parse_rate_limit()` warn-only | Same parser; used for sleep-until-reset |
+| `403` + `Remaining == 0` | Log + return `None` | Sleep until `X-RateLimit-Reset` in inner loop (`_is_rate_limit_exhausted`, `_rate_limit_sleep_seconds`); capped by `_GITHUB_MAX_RATE_LIMIT_RECOVERIES` |
+| Permission `403` | Log + `None` | Unchanged — no sleep/retry |
+| Structured logs | None | `github_rate_limit_exhausted`, `github_rate_limit_recovered`, `github_request_retry` |
 
-### Rate-limit handling
+### Observability — before vs after
 
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| Header parse | `rest.py` → `_parse_rate_limit()` | Reads `X-RateLimit-Remaining`, `X-RateLimit-Reset` | Keep; use `reset_at` for sleep-until-reset |
-| Warn only | `rest.py` → `_request()` L1072–1083 | Warns when `remaining <= 1` | On 403 + `remaining == 0`, sleep until `reset_at` then retry |
-| Permission 403 | `rest.py` → `_log_permission_issue()` | Returns `None` (no retry) | Do not sleep/retry on permission errors |
+| Area | Before this PR | After this PR |
+|------|----------------|---------------|
+| `JsonFormatter` | Dropped `extra` fields | Preserves all custom fields |
+| Sync correlation | None | `sync_id` via `SyncSession` + `SyncContextFilter` |
+| Lifecycle logs | None | `github_sync_started` / `completed` / `failed` |
+| Per-repo | Generic info logs | `repo_ingestion_started` / `completed` with timing |
 
-### Cursor management
+### Still open (not in this PR)
 
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| Read | `orchestrator.py` L45 | `get_cursor("github") or period_start` | Document: first run only backfills scoring window, not full history |
-| Write | `orchestrator.py` L48–51 | `max(created_at)` of **this run only** | On partial ingestion failure, cursor may advance past un-fetched repos — discuss with mentors |
-| Storage | `sqlite.py` → `get_cursor` / `set_cursor` | Single global `"github"` key | Per-repo cursors out of scope unless mentors approve |
+| Area | Notes |
+|------|-------|
+| Pagination partial-ingestion summary | `_paginate()` stops on failure; no repo-level failure rollup yet |
+| Per-repo cursors | Single global `"github"` cursor remains |
+| Mutation bypass paths | `assign_issue`, CI checks still call `_client` directly |
+| `Retry-After` header | Secondary rate limits not handled |
 
-### Logging
-
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| Setup | `logging/setup.py` → `configure_logging()` | JSON lines to stdout | Add structured fields for retry attempts, rate-limit waits |
-| Ingestion | `rest.py` loggers | Per-repo info/warning | Log retry count, sleep duration, partial completion |
-| Orchestrator | `orchestrator.py` | `"Stored GitHub contributions"` count | Log cursor before/after, duration, repos processed |
-
-### PR / Issue fetching
-
-| Target | File / Function | Current behavior | Week 3 TODO |
-|--------|-----------------|------------------|-------------|
-| Issues | `rest.py` → `_collect_issue_events()` | `GET .../issues?since=...` | Retry via `_request` |
-| PRs | `rest.py` → `_collect_pull_request_events()` | `GET .../pulls?sort=updated&direction=desc` | Same |
-| Timeline | `rest.py` → `_issue_assignment_events()` | Timeline API for `issue_assigned` | Same |
-| Reviews | `rest.py` → `_pull_request_reviews()` | Review API for `pr_reviewed` | Same |
-| Open items (assignment) | `list_open_issues()`, `list_open_pull_requests()` | Separate from ingestion cursor | Same retry policy |
+See also: `retry_design.md`, `request_flow.md`, `observability_design.md`.
 
 ---
 
-## Goal 4: Rate Limiting — Today vs Proposed
+## Goal 4: Rate Limiting — Implemented Behavior
 
-### What happens today
+### Before this PR
 
-1. Every `_request()` / `_request_with_status()` call parses `X-RateLimit-Remaining` and `X-RateLimit-Reset` via `_parse_rate_limit()`.
-2. When `remaining <= 1`, a **warning** is logged with `reset_at` — no sleep, no throttle.
-3. On **403**, `_log_permission_issue()` runs and the function returns `None` — pagination stops for that path.
-4. There is **no distinction** between:
-   - Rate limit exhausted (`403` + `X-RateLimit-Remaining: 0`)
-   - Permission denied (`403` + non-zero remaining or missing headers)
-5. `tenacity` is in `pyproject.toml` but **not used** anywhere in the codebase.
-6. **502/503/504** are returned as-is; `_paginate` treats non-200 as failure and stops (partial data).
+1. `_request()` logged rate-limit warnings but did **not** sleep on exhaustion.
+2. All `403` responses were treated as permission failures.
+3. `502/503/504` aborted pagination without retry.
 
-### What should happen instead
+### What changed in this PR
+
+Implemented in `rest.py` via `_execute_request_with_retries()`:
 
 ```text
 HTTP response
     │
-    ├─ Timeout / ConnectionError → retry with backoff (see retry_design.md)
+    ├─ Timeout / ConnectionError → retry with backoff (max 4 transient attempts)
     │
     ├─ 502 / 503 / 504 → retry with backoff
     │
-    ├─ 403
-    │     ├─ X-RateLimit-Remaining == 0
-    │     │     → log warning
-    │     │     → sleep until X-RateLimit-Reset (+ small buffer)
-    │     │     → retry same request (counts toward retry budget)
-    │     │
-    │     └─ else (permission / abuse / secondary limit)
-    │           → log error, return None, do NOT retry
+    ├─ 403 + X-RateLimit-Remaining == 0
+    │     → _is_rate_limit_exhausted()
+    │     → _rate_limit_sleep_seconds() / _rate_limit_reset_timestamp()
+    │     → _log_github_rate_limit_exhausted → sleep → _log_github_rate_limit_recovered
+    │     → retry same request (separate from transient budget; capped at _GITHUB_MAX_RATE_LIMIT_RECOVERIES)
+    │     → missing reset → _log_github_rate_limit_missing_reset → return None
     │
-    ├─ 401 / 404 → return None, do NOT retry
+    ├─ 403 (permission, Remaining > 0) → _log_permission_issue() → return None via _request()
+    │
+    ├─ 401 / 404 → return None, no retry
     │
     └─ 200 → continue pagination
 ```
 
-### Secondary rate limits
+### Future stretch
 
-GitHub may return `403` with `Retry-After` header for abuse/secondary limits (not always accompanied by `X-RateLimit-Remaining: 0`). Week 3 stretch: parse `Retry-After` if present.
+GitHub may return `403` with `Retry-After` for abuse/secondary limits (not always `Remaining == 0`). Not implemented yet.
 
 ---
 
