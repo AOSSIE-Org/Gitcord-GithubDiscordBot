@@ -3,7 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from ghdcbot.adapters.github.rest import GitHubRestAdapter
+from ghdcbot.adapters.github.rest import (
+    GitHubRestAdapter,
+    _GITHUB_MAX_RATE_LIMIT_RECOVERIES,
+)
 
 
 class _SequenceMockClient:
@@ -133,7 +136,37 @@ def test_rate_limit_malformed_reset_header_returns_none(caplog) -> None:
     assert len(_event_records(caplog, "github_rate_limit_missing_reset")) == 1
 
 
-def test_rate_limit_negative_sleep_clamped_to_zero(monkeypatch, caplog) -> None:
+def test_rate_limit_recovery_cap_returns_none(monkeypatch, caplog) -> None:
+    fixed_now = 1_000_000.0
+    reset_ts = int(fixed_now) + 1
+    client = _SequenceMockClient(
+        [
+            httpx.Response(
+                403,
+                headers={
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(reset_ts),
+                },
+                text="rate limit",
+            )
+        ]
+        * (_GITHUB_MAX_RATE_LIMIT_RECOVERIES + 1)
+    )
+    adapter = _adapter_with_client(client)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("ghdcbot.adapters.github.rest.time.time", lambda: fixed_now)
+    monkeypatch.setattr("ghdcbot.adapters.github.rest.time.sleep", lambda s: sleep_calls.append(s))
+    caplog.set_level("WARNING")
+
+    response = adapter._request("GET", "/repos/AOSSIE/Gitcord/issues", {})
+
+    assert response is None
+    assert client.call_count == _GITHUB_MAX_RATE_LIMIT_RECOVERIES + 1
+    assert len(sleep_calls) == _GITHUB_MAX_RATE_LIMIT_RECOVERIES
+    assert len(_event_records(caplog, "github_rate_limit_recovery_exhausted")) == 1
+
+
+def test_rate_limit_negative_sleep_clamped_to_minimum(monkeypatch, caplog) -> None:
     fixed_now = 2_000_000.0
     reset_ts = int(fixed_now) - 10
     client = _SequenceMockClient(
@@ -159,4 +192,4 @@ def test_rate_limit_negative_sleep_clamped_to_zero(monkeypatch, caplog) -> None:
 
     assert response is not None
     assert response.status_code == 200
-    assert sleep_calls == [0.0]
+    assert sleep_calls == [1.0]

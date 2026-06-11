@@ -24,6 +24,8 @@ class RateLimitStatus:
 _GITHUB_RETRY_MAX_ATTEMPTS = 4
 _GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
+_GITHUB_MAX_RATE_LIMIT_RECOVERIES = 10
+_GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS = 1.0
 
 
 def _github_retry_sleep_seconds(failed_attempt: int) -> float:
@@ -58,8 +60,8 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
         return None
     sleep_seconds = reset_ts - time.time()
     if sleep_seconds < 0:
-        return 0.0
-    return sleep_seconds
+        sleep_seconds = 0.0
+    return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
 
 
 class GitHubRestAdapter:
@@ -1152,6 +1154,7 @@ class GitHubRestAdapter:
             response: httpx.Response | None = None
             transport_error: str | None = None
 
+            rate_limit_recovery_count = 0
             while True:
                 try:
                     self._increment_sync_request_count()
@@ -1168,6 +1171,24 @@ class GitHubRestAdapter:
                     return None
 
                 if response is not None and _is_rate_limit_exhausted(response):
+                    if rate_limit_recovery_count >= _GITHUB_MAX_RATE_LIMIT_RECOVERIES:
+                        reset_timestamp = _rate_limit_reset_timestamp(response.headers)
+                        self._log_github_rate_limit_exhausted(
+                            path,
+                            0,
+                            reset_timestamp,
+                            0.0,
+                        )
+                        self._logger.warning(
+                            "GitHub rate limit recovery cap exceeded",
+                            extra={
+                                "event": "github_rate_limit_recovery_exhausted",
+                                "path": path,
+                                "recoveries": rate_limit_recovery_count,
+                                "max_recoveries": _GITHUB_MAX_RATE_LIMIT_RECOVERIES,
+                            },
+                        )
+                        return None
                     sleep_seconds = _rate_limit_sleep_seconds(response.headers)
                     reset_timestamp = _rate_limit_reset_timestamp(response.headers)
                     if sleep_seconds is None:
@@ -1175,6 +1196,7 @@ class GitHubRestAdapter:
                             path, response.headers.get("X-RateLimit-Reset")
                         )
                         return None
+                    rate_limit_recovery_count += 1
                     self._log_github_rate_limit_exhausted(
                         path, 0, reset_timestamp, sleep_seconds
                     )

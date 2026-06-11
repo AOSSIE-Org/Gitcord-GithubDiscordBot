@@ -22,6 +22,13 @@ def get_sync_id() -> str | None:
     return _sync_id_var.get()
 
 
+def _contribution_event_type(event: Any) -> str:
+    event_type = getattr(event, "event_type", None)
+    if isinstance(event_type, str) and event_type:
+        return event_type
+    return "unknown"
+
+
 class SyncContextFilter(logging.Filter):
     """Attach the active sync_id to every log record in the current context."""
 
@@ -99,10 +106,14 @@ class SyncSession(AbstractContextManager["SyncSession"]):
         )
 
     def log_event_summary(self, contributions: list[Any]) -> None:
-        counts = Counter(event.event_type for event in contributions)
+        counts = Counter(_contribution_event_type(event) for event in contributions)
+        extra = self._event_summary_extra(dict(counts))
+        unknown_count = counts.get("unknown", 0)
+        if unknown_count:
+            extra["unknown"] = unknown_count
         self._logger.info(
             "GitHub event summary",
-            extra=self._event_summary_extra(dict(counts)),
+            extra=extra,
         )
 
     def log_request_summary(self, requests_total: int) -> None:

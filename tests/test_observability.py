@@ -20,7 +20,7 @@ from ghdcbot.config.models import (
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.orchestrator import Orchestrator
 from ghdcbot.logging.setup import JsonFormatter, configure_logging
-from ghdcbot.logging.sync_context import SyncSession, generate_sync_id
+from ghdcbot.logging.sync_context import SyncContextFilter, SyncSession, generate_sync_id
 
 
 def test_json_formatter_preserves_extra_fields() -> None:
@@ -59,7 +59,7 @@ def test_json_formatter_includes_sync_id_from_filter() -> None:
 
     capture = _CaptureHandler()
     capture.setFormatter(JsonFormatter())
-    capture.addFilter(__import__("ghdcbot.logging.sync_context", fromlist=["SyncContextFilter"]).SyncContextFilter())
+    capture.addFilter(SyncContextFilter())
 
     with SyncSession() as sync:
         capture.handle(
@@ -125,6 +125,24 @@ def test_sync_session_logs_started_and_completed(caplog) -> None:
     assert len(event_summary) == 1
     assert event_summary[0].issue_opened == 0
     assert event_summary[0].pr_merged == 0
+
+
+def test_log_event_summary_handles_missing_event_type(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="Orchestrator")
+
+    with SyncSession() as sync:
+        sync.log_event_summary([SimpleNamespace(), ContributionEvent(
+            github_user="alice",
+            event_type="issue_opened",
+            repo="repo",
+            created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            payload={},
+        )])
+
+    summary = [r for r in caplog.records if getattr(r, "event", None) == "github_event_summary"]
+    assert len(summary) == 1
+    assert summary[0].issue_opened == 1
+    assert summary[0].unknown == 1
 
 
 def test_sync_session_logs_failed(caplog) -> None:
