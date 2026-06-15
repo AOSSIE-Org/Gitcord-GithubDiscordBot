@@ -27,6 +27,7 @@ RUN chown -R appuser:appuser /app
 # Steady state: run as non-root. /data ownership for volumes is handled by init in compose.
 USER appuser
 
-# Default: run Discord bot. Override with run-once or other commands.
-# Example: docker compose run --rm bot --config /app/config/config.yaml run-once
-CMD ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]
+# ENTRYPOINT keeps `docker compose run bot --config … run-once` working without repeating ghdcbot.
+ENTRYPOINT ["ghdcbot"]
+# Default: run Discord bot. Override args for run-once, link, etc.
+CMD ["--config", "/app/config/config.yaml", "bot"]

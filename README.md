@@ -138,6 +138,7 @@ cd Gitcord-GithubDiscordBot
 cp .env.example .env          # Add your GITHUB_TOKEN and DISCORD_TOKEN
 cp config/docker-example.yaml config/config.yaml   # Set github.org and discord.guild_id
 docker compose up -d
+docker compose logs -f bot
 ```
 
 The Discord bot stays running; SQLite data and reports persist in a Docker volume. To run a one-off sync (e.g. dry-run):  

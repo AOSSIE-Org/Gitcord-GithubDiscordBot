@@ -13,9 +13,15 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 
 ---
 
-## Quick Start (3 steps)
+## Quick Start
 
 1. **Create `.env`** in the project root (copy from `.env.example`):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Edit `.env` and set your tokens:
 
    ```env
    GITHUB_TOKEN=your_fine_grained_pat
@@ -34,6 +40,7 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 
    ```bash
    docker compose up -d
+   docker compose logs -f bot
    ```
 
    The Discord bot runs in the background. Slash commands sync within ~30 seconds.
@@ -43,7 +50,8 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 ```bash
 docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
-(Do not pass `ghdcbot` — the image default command is `ghdcbot`.)
+
+The image `ENTRYPOINT` is `ghdcbot`, so you only pass subcommand arguments after the service name.
 
 ---
 
@@ -54,9 +62,10 @@ Gitcord-GithubDiscordBot/
 ├── .env                    # Tokens (never commit; not in image)
 ├── .env.example
 ├── config/
-│   ├── config.yaml         # Your active config (data_dir: /data for Docker)
+│   ├── config.yaml         # Your active config (create from docker-example.yaml; gitignored)
 │   ├── docker-example.yaml # Template for Docker
-│   └── example.yaml        # Template for local install
+│   ├── example.yaml        # Template for local install
+│   └── examples/           # Reference configs (not used by compose)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -79,8 +88,9 @@ Gitcord-GithubDiscordBot/
 | `PYTHONDONTWRITEBYTECODE=1` | Avoids writing `.pyc` in the image; cleaner and slightly faster. |
 | `PYTHONUNBUFFERED=1` | Logs show up immediately in `docker compose logs`. |
 | Copy `pyproject.toml` + `src/` then `pip install -e .` | Dependency layer is cached; only code/setup changes trigger reinstall. |
-| `useradd appuser` / `USER appuser` | Process runs as non-root; no gosu/entrypoint at runtime. |
-| `CMD ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; override with `docker compose run ... run-once` etc. |
+| `useradd appuser` / `USER appuser` | Process runs as non-root. |
+| `ENTRYPOINT ["ghdcbot"]` | Lets `docker compose run bot --config … run-once` work without repeating the binary name. |
+| `CMD ["--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; override args for `run-once` etc. |
 
 ---
 

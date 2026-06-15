@@ -1,6 +1,6 @@
-# Gitcord config for Aussie organization (AOSSIE-Org).
-# Set GITHUB_TOKEN and DISCORD_TOKEN in .env, or replace the token values below.
-# For Docker: set data_dir to "/data" and use: docker compose run --rm bot --config /app/config/aussie.yaml bot
+# Example config for AOSSIE-Org (reference only — not used by docker-compose).
+# Copy ideas into your own config/config.yaml; set GITHUB_TOKEN and DISCORD_TOKEN in .env.
+# For Docker: cp config/docker-example.yaml config/config.yaml and keep data_dir: "/data".
 
 runtime:
   mode: "active"
@@ -84,4 +84,3 @@ assignments:
   issue_request_eligible_roles: []
 
 repo_contributor_roles: {}
-

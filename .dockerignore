@@ -17,6 +17,7 @@ __pycache__
 
 # Local data and secrets (mount at runtime instead)
 data/
+config/config.yaml
 *.db
 .env
 .env.*
