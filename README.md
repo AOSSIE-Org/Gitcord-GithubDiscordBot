@@ -76,9 +76,10 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 ## 🔗 Repository Links
 
 1. [Main Repository](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
-2. [Installation Guide](INSTALLATION.md) - Complete setup instructions
-3. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
-4. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
+2. [Installation Guide](INSTALLATION.md) - Complete setup instructions (Docker and local)
+3. [Environment Variables](environment_variables.md) - `.env` reference
+4. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
+5. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
 
 ---
 
@@ -104,12 +105,16 @@ Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 
 ### Key User Journeys
 
-1. **Dry‑run review**
+1. **Preflight check**
    - Configure tokens and org
+   - Run `ghdcbot --config config/config.yaml validate`
+   - Fix any ✗ failures before continuing
+
+2. **Dry‑run review**
    - Run `run-once` in dry‑run mode
    - Review audit reports
 
-2. **Observer mode**
+3. **Observer mode**
    - Run read‑only without write permissions
    - Produce audit output for reviewers
 
@@ -178,10 +183,11 @@ cd Gitcord-GithubDiscordBot
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
-# Use the venv's pip to avoid shell aliases or PATH issues
-./.venv/bin/python -m pip install -e .
+source .venv/bin/activate
+pip install -e .
 ```
+
+Full walkthrough: **[INSTALLATION.md](INSTALLATION.md)**.
 
 **5. Configure Environment Variables**
 
@@ -194,22 +200,26 @@ DISCORD_TOKEN=your_discord_bot_token_here
 
 **6. Create Configuration File**
 
-Copy and edit: `cp config/example.yaml config/my-org-config.yaml`
+Copy and edit:
 
-Edit config: Set `github.org`, `discord.guild_id`, and `snapshots.repo_path`
+```bash
+cp config/example.yaml config/config.yaml
+```
+
+Edit `config/config.yaml`: set `github.org`, `discord.guild_id`, and `runtime.data_dir: "./data"`. Match `role_mappings` to role names in your Discord server.
 
 **7. Test Run (Dry-Run Mode)**
 
 ```bash
-./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml run-once
+ghdcbot --config config/config.yaml run-once
 ```
 
-This generates audit reports without making changes. Review `data/my-org/reports/audit.md`.
+This generates audit reports without making changes. Review `data/reports/audit.md`.
 
 **8. Run Discord Bot**
 
 ```bash
-./.venv/bin/python -m ghdcbot.cli --config config/my-org-config.yaml bot
+ghdcbot --config config/config.yaml bot
 ```
 
 Wait 30 seconds for commands to sync.
@@ -217,10 +227,11 @@ Wait 30 seconds for commands to sync.
 **9. Enable Active Mode** (After Testing)
 
 1. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
-2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in your config:
+2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in `config/config.yaml`:
    - `runtime.mode: "active"`
+   - `runtime.enable_discord_role_updates: true`
    - `discord.permissions.write: true`
-    Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) for details.
+   Then run `run-once` again. Ensure the bot’s role in the server is **above** any roles it should assign (Server Settings → Roles). See [Testing in Discord](docs/TESTING_DISCORD.md) and [INSTALLATION.md](INSTALLATION.md) for details.
 
 ---
 

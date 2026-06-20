@@ -2,6 +2,8 @@
 
 Docker support is designed for **mentor-friendly deployment** and **reproducible runs** without changing Gitcord’s offline-first architecture. The bot and `run-once` both work; SQLite and reports persist across restarts.
 
+For GitHub PAT setup, Discord bot creation, and first-time configuration, start with **[INSTALLATION.md](../INSTALLATION.md)**. This document covers Docker-specific details.
+
 ---
 
 ## Why Docker?
@@ -44,6 +46,14 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
    ```
 
    The Discord bot runs in the background. Slash commands sync within ~30 seconds.
+
+**Validate setup (read-only, before first sync):**
+
+```bash
+docker compose run --rm bot --config /app/config/config.yaml validate
+```
+
+Checks config, tokens, GitHub/Discord API access, guild, and role names. Exit code `0` = ready; `1` = fix reported issues.
 
 **Run a one-off sync (dry-run or active):**
 
@@ -127,7 +137,7 @@ Gitcord-GithubDiscordBot/
    `docker compose run --rm bot --config /app/config/config.yaml run-once`
 3. Inspect reports in the volume (e.g. copy out or run a temporary container that mounts the same volume and cats the file):  
    Reports are under `/data/reports/` (e.g. `audit.md`, `audit.json`).
-4. When satisfied, set `runtime.mode: "active"` and `discord.permissions.write: true` in config, then run `run-once` again or let the bot apply changes on the next sync.
+4. When satisfied, set `runtime.mode: "active"`, `runtime.enable_discord_role_updates: true`, and `discord.permissions.write: true` in config, then run `run-once` again or let the bot apply changes on the next sync.
 
 ---
 
