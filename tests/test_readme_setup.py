@@ -34,13 +34,11 @@ def test_load_config_with_env_vars_set(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.runtime.mode.value == "dry-run"
     assert config.github.org == "example-org"
     assert config.discord.guild_id == "000000000000000000"
-    assert config.runtime.data_dir == "/tmp/ghdcbot-state"
+    assert config.runtime.data_dir == "./data"
 
 
 def test_load_config_fails_without_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     """If env vars are missing, config load should fail with a clear error."""
-    monkeypatch.setenv("GITHUB_TOKEN", "")
-    monkeypatch.setenv("DISCORD_TOKEN", "")
     # Prevent .env from repopulating env so we truly test missing vars
     import ghdcbot.config.loader as loader_module
     monkeypatch.setattr(loader_module, "load_dotenv", lambda: None)
@@ -48,7 +46,8 @@ def test_load_config_fails_without_env_vars(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("DISCORD_TOKEN", raising=False)
     with pytest.raises(ConfigError) as excinfo:
         load_config(str(EXAMPLE_CONFIG_PATH))
-    assert "GITHUB_TOKEN" in str(excinfo.value) or "DISCORD_TOKEN" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "GITHUB_TOKEN is missing" in message or "DISCORD_TOKEN is missing" in message
 
 
 def test_readme_setup_run_once_completes_and_writes_reports(
@@ -61,10 +60,10 @@ def test_readme_setup_run_once_completes_and_writes_reports(
     monkeypatch.setenv("GITHUB_TOKEN", "test-token-github")
     monkeypatch.setenv("DISCORD_TOKEN", "test-token-discord")
 
-    # Use isolated data_dir (README uses /tmp/ghdcbot-state; we use tmp_path)
+    # Use isolated data_dir (example template uses ./data; override for test isolation)
     config_content = EXAMPLE_CONFIG_PATH.read_text()
     config_content = config_content.replace(
-        'data_dir: "/tmp/ghdcbot-state"',
+        'data_dir: "./data"',
         f'data_dir: "{tmp_path}"',
     )
     config_path = tmp_path / "ghdcbot-config.yaml"
