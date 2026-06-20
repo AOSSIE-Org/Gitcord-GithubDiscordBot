@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -2011,5 +2012,13 @@ def main(config_path: str) -> None:
     try:
         run_bot(config_path)
     except ConfigError as e:
-        logging.getLogger("ghdcbot.bot").error("Config error: %s", e)
+        print(e, file=sys.stderr)
         raise SystemExit(1) from e
+    except discord.LoginFailure:
+        print(
+            "Invalid DISCORD_TOKEN.\n\n"
+            "Please update DISCORD_TOKEN in your .env file\n"
+            "and restart Gitcord.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
