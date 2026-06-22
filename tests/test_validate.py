@@ -68,7 +68,8 @@ class _MockHttpClient:
         self._routes = routes
 
     def get(self, path: str, **kwargs: Any) -> _MockResponse:
-        for key, response in self._routes.items():
+        for key in sorted(self._routes.keys(), key=len, reverse=True):
+            response = self._routes[key]
             if path == key or path.startswith(key):
                 return response
         return _MockResponse(404, {})
@@ -239,6 +240,68 @@ def test_validate_fails_when_guild_missing(
     assert code == 1
     assert "✗ Guild not found" in output
     assert "⚠ Role mapping check skipped" in output
+    assert "runtime.enable_discord_role_updates is false." in output
+    mock_adapter.list_roles.assert_not_called()
+
+
+def test_validate_skips_role_mapping_when_guild_validation_fails(
+    tmp_path: Path,
+    disable_dotenv: None,
+    env_tokens: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_minimal_config_yaml(extra_roles=["Mentor"]))
+
+    github_client = _MockHttpClient(_github_ok_routes())
+    discord_routes = _discord_ok_routes()
+    discord_routes["/guilds/123456789012345678"] = _MockResponse(403, {"message": "Missing Access"})
+    discord_client = _MockHttpClient(discord_routes)
+    mock_adapter = MagicMock()
+    mock_adapter.list_roles.return_value = []
+    mock_adapter.close = MagicMock()
+
+    def fake_client(**kwargs: Any) -> _MockHttpClient:
+        base = str(kwargs.get("base_url", ""))
+        if "github" in base:
+            return github_client
+        return discord_client
+
+    with (
+        patch("ghdcbot.config.setup_validate.httpx.Client", side_effect=fake_client),
+        patch("ghdcbot.config.setup_validate.build_adapter", return_value=mock_adapter),
+    ):
+        code = run_validate(str(config_path))
+
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "✗ Guild not accessible" in output
+    assert "⚠ Role mapping check skipped" in output
+    assert "Guild validation failed." in output
+    assert '✗ Role "' not in output
+    mock_adapter.list_roles.assert_not_called()
+
+
+def test_validate_renders_report_on_unexpected_error(
+    tmp_path: Path,
+    disable_dotenv: None,
+    env_tokens: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_minimal_config_yaml())
+
+    with patch(
+        "ghdcbot.config.setup_validate.httpx.Client",
+        side_effect=RuntimeError("adapter init failed"),
+    ):
+        code = run_validate(str(config_path))
+
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "✗ Validation error" in output
+    assert "RuntimeError: adapter init failed" in output
+    assert "Validation failed." in output
 
 
 def test_validate_fails_when_role_missing(

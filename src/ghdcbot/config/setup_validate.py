@@ -77,46 +77,65 @@ def run_validate(config_path: str) -> int:
     github_client: httpx.Client | None = None
     discord_client: httpx.Client | None = None
     discord_adapter = None
+    guild_validated = False
     try:
-        github_client = httpx.Client(
-            base_url=str(config.github.api_base),
-            headers={
-                "Authorization": f"Bearer {config.github.token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=30.0,
-        )
-        _validate_github(config, report, github_client)
-        discord_client = httpx.Client(
-            base_url="https://discord.com/api/v10",
-            headers={"Authorization": f"Bot {config.discord.token}"},
-            timeout=30.0,
-        )
-        _validate_discord_bot(report, discord_client)
+        try:
+            github_client = httpx.Client(
+                base_url=str(config.github.api_base),
+                headers={
+                    "Authorization": f"Bearer {config.github.token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                timeout=30.0,
+            )
+            _validate_github(config, report, github_client)
+            discord_client = httpx.Client(
+                base_url="https://discord.com/api/v10",
+                headers={"Authorization": f"Bot {config.discord.token}"},
+                timeout=30.0,
+            )
+            _validate_discord_bot(report, discord_client)
 
-        guild_id = (config.discord.guild_id or "").strip()
-        if guild_id in _PLACEHOLDER_GUILD_IDS:
+            guild_id = (config.discord.guild_id or "").strip()
+            if guild_id in _PLACEHOLDER_GUILD_IDS:
+                report.add(
+                    CheckStatus.FAIL,
+                    "Guild ID not configured",
+                    "Set discord.guild_id to your Discord server ID (Developer Mode → Copy Server ID).",
+                )
+            else:
+                discord_adapter = build_adapter(
+                    config.runtime.discord_adapter,
+                    token=config.discord.token,
+                    guild_id=config.discord.guild_id,
+                )
+                guild_results_before = len(report.results)
+                _validate_guild(config, report, discord_client, discord_adapter)
+                guild_validated = not any(
+                    result.status == CheckStatus.FAIL
+                    for result in report.results[guild_results_before:]
+                )
+
+            if config.runtime.enable_discord_role_updates:
+                if guild_validated and discord_adapter is not None:
+                    _validate_role_mappings(config, report, discord_adapter)
+                elif discord_adapter is not None:
+                    report.add(
+                        CheckStatus.WARN,
+                        "Role mapping check skipped",
+                        "Guild validation failed.",
+                    )
+            else:
+                report.add(
+                    CheckStatus.WARN,
+                    "Role mapping check skipped",
+                    "runtime.enable_discord_role_updates is false.",
+                )
+        except Exception as exc:
             report.add(
                 CheckStatus.FAIL,
-                "Guild ID not configured",
-                "Set discord.guild_id to your Discord server ID (Developer Mode → Copy Server ID).",
-            )
-        else:
-            discord_adapter = build_adapter(
-                config.runtime.discord_adapter,
-                token=config.discord.token,
-                guild_id=config.discord.guild_id,
-            )
-            _validate_guild(config, report, discord_client, discord_adapter)
-
-        if getattr(config.runtime, "enable_discord_role_updates", True):
-            if discord_adapter is not None:
-                _validate_role_mappings(config, report, discord_adapter)
-        else:
-            report.add(
-                CheckStatus.WARN,
-                "Role mapping check skipped",
-                "runtime.enable_discord_role_updates is false.",
+                "Validation error",
+                f"{type(exc).__name__}: {exc}",
             )
     finally:
         if github_client is not None:

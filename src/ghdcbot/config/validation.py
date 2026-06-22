@@ -61,7 +61,7 @@ def validate_active_mode(config: BotConfig) -> None:
             "discord.guild_id (set your server ID — Developer Mode → Copy Server ID)"
         )
 
-    if getattr(config.runtime, "enable_discord_role_updates", True):
+    if config.runtime.enable_discord_role_updates:
         if not config.role_mappings:
             problems.append("role_mappings (at least one discord_role entry)")
         if not config.discord.permissions.write:
