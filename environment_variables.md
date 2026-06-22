@@ -32,7 +32,7 @@ ghdcbot --config config/config.yaml validate
 Checks (read-only, no bot startup):
 
 - Config file and YAML schema
-- `GITHUB_TOKEN` and `DISCORD_TOKEN` present
+- `GITHUB_TOKEN` and `DISCORD_TOKEN` configured (expanded from `.env`)
 - GitHub `GET /user` and org/repository access
 - Discord bot token and guild reachability
 - Discord role names from config (when `runtime.enable_discord_role_updates: true`)

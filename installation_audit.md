@@ -83,6 +83,6 @@
 ## Residual gaps (out of scope for Day 2)
 
 - No `requirements.txt` (by design — use `pip install -e .`)
-- No `ghdcbot validate` preflight command (planned later in Week 4)
+- ~~No `ghdcbot validate` preflight command~~ — **completed Week 4 Day 4** (`src/ghdcbot/config/setup_validate.py`, PR #24)
 - No cron/systemd examples
-- `config/example.yaml` still uses `/tmp/ghdcbot-state` in the tracked template (INSTALLATION tells users to set `./data` in their copy)
+- ~~`config/example.yaml` still uses `/tmp/ghdcbot-state`~~ — **fixed Week 4 Day 5** (`data_dir: "./data"` in template)
