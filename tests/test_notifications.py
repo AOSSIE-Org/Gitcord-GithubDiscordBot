@@ -170,6 +170,120 @@ def test_build_notification_message_pr_merged() -> None:
     assert "Thank you for your contribution" in msg
 
 
+def test_build_notification_message_pr_closed_template() -> None:
+    """Test building notification message for PR closed without merge."""
+    event = ContributionEvent(
+        github_user="contributor",
+        event_type="pr_closed",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 123,
+            "pr_title": "Improve onboarding validation",
+            "pr_author": "contributor",
+            "html_url": "https://github.com/AOSSIE/Gitcord/pull/123",
+        },
+    )
+    msg = _build_notification_message(event, "pr_closed", "AOSSIE", "contributor")
+    assert "PR Closed" in msg
+    assert "#123" in msg
+    assert "Improve onboarding validation" in msg
+    assert "AOSSIE/Gitcord" in msg
+    assert "closed without being merged" in msg
+    assert "Review the discussion" in msg
+
+
+def test_send_notification_pr_closed() -> None:
+    """Test notification for PR closed without merge."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_closed=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="contributor",
+        event_type="pr_closed",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 123,
+            "pr_title": "Improve onboarding validation",
+            "pr_author": "contributor",
+            "html_url": "https://github.com/AOSSIE/Gitcord/pull/123",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+    assert "PR Closed" in discord_writer.dms_sent[0][1]
+
+
+def test_pr_closed_disabled() -> None:
+    """Test that pr_closed notifications are skipped when disabled."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_closed=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="contributor",
+        event_type="pr_closed",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 123,
+            "pr_author": "contributor",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_closed_dedupe() -> None:
+    """Test that duplicate pr_closed notifications are not sent."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    storage.notifications_sent.add("pr_closed:Gitcord:123:contributor")
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_closed=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="contributor",
+        event_type="pr_closed",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 123,
+            "pr_author": "contributor",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
 def test_send_notification_unverified_user() -> None:
     """Test that unverified users don't receive notifications."""
     storage = MockStorage()

@@ -81,12 +81,15 @@ def send_notification_for_event(
             "issue_assigned": config.issue_assignment,
             "pr_review_requested": config.pr_review_requested,
             "pr_merged": config.pr_merged,
+            "pr_closed": config.pr_closed,
         }
         event_type_key = event.event_type
         if not event_config_map.get(event_type_key, False):
             return False
-        # For other events, notify the event.github_user (assignee, PR author, etc.)
-        target_github_user = event.github_user
+        if event.event_type == "pr_closed":
+            target_github_user = event.payload.get("pr_author") or event.github_user
+        else:
+            target_github_user = event.github_user
     
     if not target_github_user:
         logger.warning(
@@ -321,6 +324,17 @@ def _build_notification_message(
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
             f"✨ Thank you for your contribution!"
+        )
+
+    elif event_type_key == "pr_closed":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("pr_title") or payload.get("title", "Untitled")[:100]
+        return (
+            f"🔒 **PR Closed**\n\n"
+            f'Your PR **#{pr_number}** — *{pr_title}* was closed without being merged.\n\n'
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"Review the discussion for more details."
         )
     
     return None

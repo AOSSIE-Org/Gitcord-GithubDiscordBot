@@ -11,6 +11,7 @@ Architecture review of verified-only GitHub → Discord notifications before add
 - `issue_assigned`
 - `pr_reviewed`
 - `pr_merged`
+- `pr_closed`
 
 Other configured types (e.g. `pr_review_requested`) are not in this filter yet.
 
@@ -56,6 +57,16 @@ Ingestion already emits `pr_reviewed` with `state`, `review_id`, `pr_author`, `p
 | Template key | `pr_merged` |
 | Dedupe | `pr_merged:{repo}:{pr_number}:{target_user}` |
 
+### `pr_closed`
+
+| Step | Behavior |
+|------|----------|
+| Target | `payload.pr_author` |
+| Config flag | `notifications.pr_closed` |
+| Template key | `pr_closed` |
+| Dedupe | `pr_closed:{repo}:{pr_number}:{target_user}` |
+| Ingestion | `state == "closed"`, `merged_at` null, `closed_at >= since` (mutually exclusive with `pr_merged`) |
+
 ## Deduplication
 
 - Storage methods: `was_notification_sent(dedupe_key)`, `mark_notification_sent(...)`
@@ -69,3 +80,7 @@ Ingestion already emits `pr_reviewed` with `state`, `review_id`, `pr_author`, `p
 ## Week 5 Day 1 change
 
 Enable `COMMENT` state on `pr_reviewed` events behind `notifications.pr_review_comment`, notifying the PR author with a new template.
+
+## Week 5 Day 2 change
+
+Ingest `pr_closed` for PRs closed without merge; notify the PR author behind `notifications.pr_closed`. Merged PRs continue to emit only `pr_merged`.
