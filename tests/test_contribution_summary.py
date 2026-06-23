@@ -4,7 +4,7 @@ from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.core.models import ContributionEvent
 
 
-def test_list_contribution_summaries_counts_and_scores(tmp_path) -> None:
+def test_list_contribution_summaries_counts_activity(tmp_path) -> None:
     storage = SqliteStorage(str(tmp_path))
     storage.init_schema()
 
@@ -57,8 +57,7 @@ def test_list_contribution_summaries_counts_and_scores(tmp_path) -> None:
     ]
     storage.record_contributions(events)
 
-    weights = {"issue_opened": 3, "pr_reviewed": 2, "comment": 1, "pr_merged": 4}
-    summaries = storage.list_contribution_summaries(period_start, period_end, weights)
+    summaries = storage.list_contribution_summaries(period_start, period_end)
 
     assert [summary.github_user for summary in summaries] == ["alice", "bob"]
 
@@ -67,12 +66,10 @@ def test_list_contribution_summaries_counts_and_scores(tmp_path) -> None:
     assert alice.prs_opened == 0
     assert alice.prs_reviewed == 1
     assert alice.comments == 0
-    # Merge-only scoring: alice has no merged PRs, so score is 0
     assert alice.total_score == 0
 
     assert bob.issues_opened == 0
     assert bob.prs_opened == 1
     assert bob.prs_reviewed == 0
     assert bob.comments == 1
-    # Merge-only scoring: bob has 1 merged PR, so score is 4 (pr_merged weight)
-    assert bob.total_score == 4
+    assert bob.total_score == 0

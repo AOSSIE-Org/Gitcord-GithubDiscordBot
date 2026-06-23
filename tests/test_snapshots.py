@@ -14,7 +14,6 @@ from ghdcbot.config.models import (
     PermissionConfig,
     RoleMappingConfig,
     RuntimeConfig,
-    ScoringConfig,
     SnapshotConfig,
 )
 from ghdcbot.core.modes import RunMode
@@ -79,11 +78,10 @@ def test_collect_snapshot_data() -> None:
             github_adapter="test",
             discord_adapter="test",
             storage_adapter="test",
+            activity_period_days=30,
         ),
         github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
         discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
-        scoring=ScoringConfig(period_days=30, weights={}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
         assignments=AssignmentConfig(),
     )
     
@@ -173,11 +171,10 @@ def test_collect_snapshot_data_with_contributors() -> None:
             github_adapter="test",
             discord_adapter="test",
             storage_adapter="test",
+            activity_period_days=30,
         ),
         github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
         discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
-        scoring=ScoringConfig(period_days=30, weights={}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
         assignments=AssignmentConfig(),
     )
     
@@ -225,11 +222,10 @@ def test_write_snapshots_disabled() -> None:
             github_adapter="test",
             discord_adapter="test",
             storage_adapter="test",
+            activity_period_days=30,
         ),
         github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
         discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
-        scoring=ScoringConfig(period_days=30, weights={}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
         assignments=AssignmentConfig(),
         snapshots=SnapshotConfig(enabled=False, repo_path="org/repo"),
     )
@@ -260,11 +256,10 @@ def test_write_snapshots_enabled() -> None:
             github_adapter="test",
             discord_adapter="test",
             storage_adapter="test",
+            activity_period_days=30,
         ),
         github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
         discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
-        scoring=ScoringConfig(period_days=30, weights={}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
         assignments=AssignmentConfig(),
         snapshots=SnapshotConfig(enabled=True, repo_path="org/repo"),
     )
@@ -310,11 +305,10 @@ def test_write_snapshots_handles_errors() -> None:
             github_adapter="test",
             discord_adapter="test",
             storage_adapter="test",
+            activity_period_days=30,
         ),
         github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
         discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
-        scoring=ScoringConfig(period_days=30, weights={}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=10)],
         assignments=AssignmentConfig(),
         snapshots=SnapshotConfig(enabled=True, repo_path="invalid"),  # Invalid format
     )

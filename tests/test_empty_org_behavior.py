@@ -9,7 +9,6 @@ from ghdcbot.config.models import (
     GitHubConfig,
     RoleMappingConfig,
     RuntimeConfig,
-    ScoringConfig,
 )
 from ghdcbot.engine.planning import plan_discord_roles, plan_github_assignments
 
@@ -31,8 +30,6 @@ def test_empty_org_logs_and_plans_empty(monkeypatch, caplog) -> None:
             user_fallback=False,
         ),
         discord=DiscordConfig(guild_id="1", token="t"),
-        scoring=ScoringConfig(period_days=30, weights={"issue_opened": 1}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=1)],
         assignments=AssignmentConfig(),
         identity_mappings=[],
     )

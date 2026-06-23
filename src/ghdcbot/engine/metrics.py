@@ -31,9 +31,9 @@ class UserMetrics:
     issues_opened: int
     comments: int
     issue_engagement: float  # issues_opened * 1.0 + comments * 0.5 (documented formula)
-    total_score: int  # from config weights if provided, else 0
     period_start: datetime
     period_end: datetime
+    total_score: int = 0  # deprecated; kept for backward-compatible snapshots
 
 
 def get_contribution_metrics(
@@ -42,15 +42,8 @@ def get_contribution_metrics(
     period_end: datetime,
     weights: dict[str, int] | None = None,
 ) -> list[UserMetrics]:
-    """Compute read-only metrics per user for the given window.
-
-    Uses storage.list_contributions; filters to [period_start, period_end] and
-    aggregates in memory. No schema or scoring changes.
-
-    Weights are optional (e.g. config.scoring.weights). If provided, total_score
-    is computed using them; otherwise 0.
-    """
-    weights = weights or {}
+    """Compute read-only activity metrics per user for the given window."""
+    _ = weights  # deprecated; scoring removed
     since = period_start
     events = storage.list_contributions(since)
     # Filter to window (list_contributions returns all since `since`)
@@ -83,7 +76,6 @@ def get_contribution_metrics(
             b["issues_opened"] += 1
         elif e.event_type == "comment":
             b["comments"] += 1
-        b["total_score"] += weights.get(e.event_type, 0)
 
     result = []
     for user, b in sorted(buckets.items(), key=lambda x: x[0]):
@@ -111,10 +103,16 @@ def get_contribution_metrics(
 
 
 def rank_by_activity(metrics: list[UserMetrics]) -> list[UserMetrics]:
-    """Return metrics sorted by total_score descending (top contributors by activity).
-    Informational only; no gamification. Same order as audit report.
-    """
-    return sorted(metrics, key=lambda m: (-m.total_score, m.github_user))
+    """Return metrics sorted by activity (merged PRs, then reviews, then issues)."""
+    return sorted(
+        metrics,
+        key=lambda m: (
+            -m.prs_merged,
+            -m.reviews_submitted,
+            -m.issues_opened,
+            m.github_user,
+        ),
+    )
 
 
 def get_rank_for_user(ranked: list[UserMetrics], github_user: str) -> int | None:

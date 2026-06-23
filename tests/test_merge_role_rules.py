@@ -13,7 +13,6 @@ from ghdcbot.config.models import (
     MergeRoleRuleConfig,
     MergeRoleRulesConfig,
     RoleMappingConfig,
-    ScoringConfig,
 )
 from ghdcbot.core.models import ContributionEvent, Score
 from ghdcbot.engine.planning import count_merged_prs_per_user, plan_discord_roles
