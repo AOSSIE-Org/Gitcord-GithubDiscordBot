@@ -132,6 +132,29 @@ def test_build_notification_message_pr_changes_requested() -> None:
     assert "needs some updates" in msg
 
 
+def test_build_notification_message_pr_review_comment() -> None:
+    """Test building notification message for review comments."""
+    event = ContributionEvent(
+        github_user="bhavik",
+        event_type="pr_reviewed",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 123,
+            "state": "COMMENT",
+            "pr_author": "contributor",
+            "title": "Fix onboarding validation",
+        },
+    )
+    msg = _build_notification_message(event, "pr_review_comment", "AOSSIE", "contributor")
+    assert "New Review Comments" in msg
+    assert "#123" in msg
+    assert "bhavik" in msg
+    assert "AOSSIE/Gitcord" in msg
+    assert "Fix onboarding validation" in msg
+    assert "Review the feedback" in msg
+
+
 def test_build_notification_message_pr_merged() -> None:
     """Test building notification message for PR merge."""
     event = ContributionEvent(
@@ -337,15 +360,15 @@ def test_send_notification_pr_reviewed_approved() -> None:
 
 
 def test_send_notification_pr_reviewed_comment() -> None:
-    """Test that COMMENT reviews don't trigger notifications."""
+    """Test notification for PR review comments when enabled."""
     storage = MockStorage()
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "contributor"},
     ]
     discord_writer = MockDiscordWriter()
-    config = NotificationConfig(enabled=True, pr_review_result=True)
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
     policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
-    
+
     event = ContributionEvent(
         github_user="reviewer",
         event_type="pr_reviewed",
@@ -355,13 +378,82 @@ def test_send_notification_pr_reviewed_comment() -> None:
             "pr_number": 456,
             "state": "COMMENT",
             "pr_author": "contributor",
+            "review_id": 9001,
+            "title": "Fix onboarding validation",
         },
     )
-    
+
     result = send_notification_for_event(
         event, storage, discord_writer, policy, config, "test-org"
     )
-    
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+    assert "New Review Comments" in discord_writer.dms_sent[0][1]
+    assert "reviewer" in discord_writer.dms_sent[0][1]
+
+
+def test_send_notification_pr_reviewed_comment_disabled() -> None:
+    """Test that COMMENT reviews are skipped when pr_review_comment is false."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="reviewer",
+        event_type="pr_reviewed",
+        repo="test-repo",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 456,
+            "state": "COMMENT",
+            "pr_author": "contributor",
+            "review_id": 9001,
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "test-org"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_send_notification_pr_reviewed_comment_dedupe() -> None:
+    """Test that duplicate COMMENT review notifications are not sent."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    storage.notifications_sent.add(
+        "pr_reviewed:test-repo:456:contributor:9001:COMMENT"
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="reviewer",
+        event_type="pr_reviewed",
+        repo="test-repo",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 456,
+            "state": "COMMENT",
+            "pr_author": "contributor",
+            "review_id": 9001,
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "test-org"
+    )
+
     assert result is False
     assert len(discord_writer.dms_sent) == 0
 

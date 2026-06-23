@@ -58,10 +58,15 @@ def send_notification_for_event(
             event_type_key = "pr_changes_requested"
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
+        elif state == "COMMENT":
+            if not config.pr_review_comment:
+                return False
+            event_type_key = "pr_review_comment"
+            target_github_user = event.payload.get("pr_author")
         else:
-            # COMMENT, DISMISSED, or other states - no notification
+            # DISMISSED or other states - no notification
             logger.debug(
-                "Skipping notification: PR review state is not APPROVED or CHANGES_REQUESTED",
+                "Skipping notification: PR review state is not supported",
                 extra={
                     "state": state,
                     "pr_number": event.payload.get("pr_number"),
@@ -292,6 +297,20 @@ def _build_notification_message(
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
             f"💬 Please check the review comments on GitHub and address the feedback."
+        )
+
+    elif event_type_key == "pr_review_comment":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("title", "Untitled")[:100]
+        reviewer = event.github_user
+        return (
+            f"💬 **New Review Comments**\n\n"
+            f"New review comments were added to your **PR #{pr_number}**.\n\n"
+            f"**Reviewer:** `{reviewer}`\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**PR:** {pr_title}\n"
+            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"Review the feedback and update your PR if needed."
         )
     
     elif event_type_key == "pr_merged":

@@ -76,6 +76,7 @@ class NotificationConfig(BaseModel):
     issue_assignment: bool = True
     pr_review_requested: bool = True
     pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
+    pr_review_comment: bool = True  # COMMENT reviews on a PR
     pr_merged: bool = True
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
