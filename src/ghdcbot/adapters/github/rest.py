@@ -650,6 +650,27 @@ class GitHubRestAdapter:
                                 },
                             )
                         )
+                elif pr.get("state") == "closed":
+                    closed_at = _parse_iso8601(pr.get("closed_at"))
+                    if closed_at and closed_at >= since:
+                        author = (pr.get("user") or {}).get("login") or "<deleted>"
+                        pr_events.append(
+                            ContributionEvent(
+                                github_user=author,
+                                event_type="pr_closed",
+                                repo=repo,
+                                created_at=closed_at,
+                                payload={
+                                    "pr_number": pr["number"],
+                                    "pr_title": pr.get("title"),
+                                    "title": pr.get("title"),
+                                    "pr_author": author,
+                                    "repository": repo,
+                                    "html_url": pr.get("html_url"),
+                                    "closed_at": pr.get("closed_at"),
+                                },
+                            )
+                        )
                 # Check if this PR reverts another PR (whether merged or not)
                 reverted_pr_number = _detect_reverted_pr(pr, owner, repo, self._client)
                 if reverted_pr_number:
