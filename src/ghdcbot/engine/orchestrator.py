@@ -20,7 +20,6 @@ from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.notifications import run_coderabbit_reminders, send_notification_for_event
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
-from ghdcbot.engine.scoring import WeightedScoreStrategy
 from ghdcbot.engine.snapshots import write_snapshots_to_github
 from ghdcbot.logging.sync_context import SyncSession
 
@@ -47,7 +46,7 @@ class Orchestrator:
         self.storage.init_schema()
 
         period_end = datetime.now(timezone.utc)
-        period_start = period_end - timedelta(days=self.config.scoring.period_days)
+        period_start = period_end - timedelta(days=self.config.runtime.activity_period_days)
 
         identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
 
@@ -67,40 +66,7 @@ class Orchestrator:
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         recent = self.storage.list_contributions(period_start)
-        enable_scoring = getattr(self.config.runtime, "enable_scoring", True)
         enable_discord_role_updates = getattr(self.config.runtime, "enable_discord_role_updates", True)
-
-        if enable_scoring:
-            quality_adjustments = None
-            if getattr(self.config.scoring, "quality_adjustments", None) is not None:
-                qa = self.config.scoring.quality_adjustments
-                quality_adjustments = {
-                    "penalties": qa.penalties,
-                    "bonuses": qa.bonuses,
-                }
-            scoring = WeightedScoreStrategy(
-                weights=self.config.scoring.weights,
-                period_days=self.config.scoring.period_days,
-                difficulty_weights=getattr(self.config.scoring, "difficulty_weights", None),
-                quality_adjustments=quality_adjustments,
-            )
-            scores = scoring.compute_scores(recent, period_end)
-            self.storage.upsert_scores(scores)
-            logger.info("Computed scores", extra={"count": len(scores)})
-        else:
-            scores = list(self.storage.get_scores())
-            logger.info(
-                "Scoring disabled; using persisted scores",
-                extra={"count": len(scores)},
-            )
-
-        suppress_score_based_roles = (not enable_scoring) and (len(scores) == 0)
-        effective_role_mappings = [] if suppress_score_based_roles else self.config.role_mappings
-        if suppress_score_based_roles:
-            logger.info(
-                "Scoring disabled with empty persisted scores; suppressing score-based role mapping "
-                "changes while keeping merge/repo role logic active."
-            )
 
         member_roles = self.discord_reader.list_member_roles()
         role_to_github = build_role_to_github_map(identity_mappings, member_roles)
@@ -113,8 +79,8 @@ class Orchestrator:
 
         issues = list(self.github_reader.list_open_issues())
         prs = list(self.github_reader.list_open_pull_requests())
-        issue_plans = assignment.plan_issue_assignments(issues, scores)
-        review_plans = assignment.plan_review_requests(prs, scores)
+        issue_plans = assignment.plan_issue_assignments(issues, [])
+        review_plans = assignment.plan_review_requests(prs, [])
 
         policy = MutationPolicy(
             mode=self.config.runtime.mode,
@@ -163,9 +129,9 @@ class Orchestrator:
                 repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
                 discord_plans = plan_discord_roles(
                     member_roles,
-                    scores,
+                    [],
                     identity_mappings,
-                    effective_role_mappings,
+                    [],
                     storage=self.storage,
                     period_start=period_start,
                     period_end=period_end,
@@ -176,23 +142,7 @@ class Orchestrator:
                 # Pass difficulty_weights if available (optional parameter, backward compatible)
                 list_summaries = getattr(self.storage, "list_contribution_summaries", None)
                 if callable(list_summaries):
-                    difficulty_weights = getattr(self.config.scoring, "difficulty_weights", None)
-                    # Check if storage method accepts difficulty_weights (optional param)
-                    import inspect
-                    sig = inspect.signature(list_summaries)
-                    if "difficulty_weights" in sig.parameters:
-                        contribution_summaries = list_summaries(
-                            period_start,
-                            period_end,
-                            self.config.scoring.weights,
-                            difficulty_weights=difficulty_weights,
-                        )
-                    else:
-                        contribution_summaries = list_summaries(
-                            period_start,
-                            period_end,
-                            self.config.scoring.weights,
-                        )
+                    contribution_summaries = list_summaries(period_start, period_end)
                 else:
                     contribution_summaries = []
                 repo_count = getattr(self.github_reader, "_last_repo_count", None)
@@ -247,9 +197,9 @@ class Orchestrator:
             apply_discord_roles(
                 self.discord_writer,
                 member_roles,
-                scores,
+                [],
                 identity_mappings,
-                effective_role_mappings,
+                [],
                 policy,
                 storage=self.storage,
                 period_start=period_start,
@@ -271,7 +221,6 @@ class Orchestrator:
                     contribution_summaries_for_snapshot = list_summaries(
                         period_start,
                         period_end,
-                        self.config.scoring.weights,
                     )
                 except Exception:
                     # If summaries can't be computed, snapshot will have empty contributors data
@@ -282,7 +231,7 @@ class Orchestrator:
                 config=self.config,
                 github_writer=self.github_writer,
                 identity_mappings=identity_mappings,
-                scores=scores,
+                scores=[],
                 member_roles=member_roles,
                 period_start=period_start,
                 period_end=period_end,

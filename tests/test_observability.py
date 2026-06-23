@@ -15,7 +15,6 @@ from ghdcbot.config.models import (
     GitHubConfig,
     RoleMappingConfig,
     RuntimeConfig,
-    ScoringConfig,
 )
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.orchestrator import Orchestrator
@@ -195,15 +194,13 @@ def _minimal_config(tmp_path) -> BotConfig:
             storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
             github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
             discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
-            enable_scoring=False,
+            activity_period_days=30,
             enable_discord_role_updates=False,
         ),
         github=GitHubConfig(org="x", token="t", api_base="https://api.github.com"),
         discord=DiscordConfig(token="t", guild_id="1"),
-        scoring=ScoringConfig(period_days=30, weights={}),
         assignments=AssignmentConfig(issue_assignees=[], review_roles=[]),
         identity_mappings=[],
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=1)],
     )
 
 

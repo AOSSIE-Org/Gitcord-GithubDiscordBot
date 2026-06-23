@@ -2,6 +2,7 @@ runtime:
   mode: "dry-run"
   log_level: "INFO"
   data_dir: "/tmp/ghdcbot-state"
+  activity_period_days: 30
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
@@ -59,18 +60,6 @@ discord:
   #   coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]
   #   channel_id: null  # null = DM; set to channel ID to post there
 
-scoring:
-  period_days: 30
-  weights:
-    # Base scoring currently uses merged PR events.
-    pr_merged: 5
-
-role_mappings:
-  - discord_role: "Contributor"
-    min_score: 10
-  - discord_role: "Maintainer"
-    min_score: 40
-
 assignments:
   review_roles:
     - "Maintainer"
@@ -80,14 +69,23 @@ assignments:
   # Optional: roles required for a contributor to be "eligible" for issue assignment (empty = any verified user)
   issue_request_eligible_roles: []
 
+# Optional: Discord roles granted by merged PR count (promotion-only; never auto-removed)
+# merge_role_rules:
+#   enabled: true
+#   rules:
+#     - discord_role: "Contributor"
+#       min_merged_prs: 1
+#     - discord_role: "Maintainer"
+#       min_merged_prs: 5
+
 # Optional: unlink cooldown (hours) after verification before /unlink or CLI unlink is allowed
 # identity:
 #   unlink_cooldown_hours: 24
 
 # Optional: when a contributor has a PR merged in a repo, grant them the corresponding Discord role
 # (repo name -> Discord role name). Roles are add-only and never auto-removed.
-repo_contributor_roles:
-  castro: "castro"
+# repo_contributor_roles:
+#   my-repo: "my-repo-contributor"
 
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"

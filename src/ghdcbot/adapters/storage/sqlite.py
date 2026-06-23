@@ -174,17 +174,11 @@ class SqliteStorage:
         self,
         period_start: datetime,
         period_end: datetime,
-        weights: dict[str, int],
+        weights: dict[str, int] | None = None,
         difficulty_weights: dict[str, int] | None = None,
     ) -> Sequence[ContributionSummary]:
         start_utc = _ensure_utc(period_start)
         end_utc = _ensure_utc(period_end)
-        # Normalize difficulty weights keys to lowercase for case-insensitive matching
-        normalized_difficulty_weights = None
-        if difficulty_weights:
-            normalized_difficulty_weights = {
-                k.lower(): v for k, v in difficulty_weights.items()
-            }
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -218,28 +212,6 @@ class SqliteStorage:
                 bucket["prs_reviewed"] += 1
             elif event_type == "comment":
                 bucket["comments"] += 1
-            # Scoring: merge-only to prevent spam and align incentives with mentor-approved contributions.
-            # Only pr_merged events contribute to scores. All other events remain visible in reports
-            # but do not affect scores.
-            if event_type == "pr_merged":
-                # Check if this is a merged PR with difficulty labels
-                if normalized_difficulty_weights:
-                    payload = json.loads(row["payload_json"])
-                    difficulty_labels = payload.get("difficulty_labels", [])
-                    if difficulty_labels:
-                        # Find matching difficulty labels (case-insensitive)
-                        matching_weights = []
-                        for label in difficulty_labels:
-                            label_lower = label.lower() if isinstance(label, str) else str(label).lower()
-                            if label_lower in normalized_difficulty_weights:
-                                matching_weights.append(normalized_difficulty_weights[label_lower])
-                        if matching_weights:
-                            # Use max weight if multiple labels exist
-                            bucket["total_score"] += max(matching_weights)
-                            continue
-                # Fallback to weight-based scoring for merged PRs
-                bucket["total_score"] += weights.get("pr_merged", 0)
-            # All other event types are ignored for scoring (but remain in counts/reports)
 
         return [
             ContributionSummary(

@@ -11,7 +11,6 @@ from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.core.models import ContributionEvent, Score
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.orchestrator import apply_discord_roles
-from ghdcbot.engine.scoring import WeightedScoreStrategy
 
 
 def test_congratulation_sent_when_role_added(tmp_path) -> None:

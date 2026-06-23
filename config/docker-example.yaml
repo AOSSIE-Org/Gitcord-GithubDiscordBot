@@ -8,6 +8,7 @@ runtime:
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  activity_period_days: 30
 
 github:
   org: "example-org"
@@ -38,18 +39,6 @@ discord:
       allow_discord_administrators: true
   activity_channel_id: null
   pr_preview_channels: []
-
-scoring:
-  period_days: 30
-  weights:
-    # Base scoring currently uses merged PR events.
-    pr_merged: 5
-
-role_mappings:
-  - discord_role: "Contributor"
-    min_score: 10
-  - discord_role: "Maintainer"
-    min_score: 40
 
 assignments:
   review_roles:

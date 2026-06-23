@@ -415,7 +415,7 @@ def run_bot(config_path: str) -> None:
     async def status_cmd(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         discord_user_id = str(interaction.user.id)
-        period_days = config.scoring.period_days
+        period_days = config.runtime.activity_period_days
         lines = [f"**Activity window:** last {period_days} days (from bot config)."]
         get_links = getattr(storage, "get_identity_links_for_discord_user", None)
         if callable(get_links):
@@ -482,15 +482,14 @@ def run_bot(config_path: str) -> None:
             if status.get("is_stale"):
                 stale_warning = "\n\n⚠️ **Warning:** Identity verification is stale. Use `/verify-link` to refresh it."
         now = datetime.now(timezone.utc)
-        weights = getattr(config.scoring, "weights", None) or {}
         parts = []
         for days in (7, 30):
             start = now - timedelta(days=days)
-            metrics_list = get_contribution_metrics(storage, start, now, weights)
+            metrics_list = get_contribution_metrics(storage, start, now)
             user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
             parts.append(f"**Last {days} days:**\n{format_metrics_summary(user_metrics)}")
         ranked_30 = rank_by_activity(
-            get_contribution_metrics(storage, now - timedelta(days=30), now, weights)
+            get_contribution_metrics(storage, now - timedelta(days=30), now)
         )
         rank = get_rank_for_user(ranked_30, github_user)
         if rank is not None:
@@ -1295,7 +1294,7 @@ def run_bot(config_path: str) -> None:
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
                     })
-                period_days = self.config.scoring.period_days
+                period_days = self.config.runtime.activity_period_days
                 period_end = datetime.now(timezone.utc)
                 period_start = period_end - timedelta(days=period_days)
                 mentor_roles = getattr(self.config, "assignments", None)

@@ -23,7 +23,6 @@ from ghdcbot.config.models import (
     IdentityMapping,
     RoleMappingConfig,
     RuntimeConfig,
-    ScoringConfig,
 )
 from ghdcbot.engine.identity_linking import IdentityLinkService
 from ghdcbot.engine.orchestrator import Orchestrator
@@ -187,8 +186,6 @@ def test_verified_mappings_used_unverified_ignored_in_planning(tmp_path: Path) -
             user_fallback=False,
         ),
         discord=DiscordConfig(guild_id="1", token="t"),
-        scoring=ScoringConfig(period_days=30, weights={"issue_opened": 1}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=1)],
         assignments=AssignmentConfig(issue_assignees=["Contributor"], review_roles=[]),
         # Config mappings should be ignored when storage has verified mappings.
         identity_mappings=[
@@ -303,8 +300,6 @@ def test_unlinked_identity_not_used_in_planning(tmp_path: Path) -> None:
         ),
         github=GitHubConfig(org="x", token="t", api_base="https://api.github.com", user_fallback=False),
         discord=DiscordConfig(guild_id="1", token="t"),
-        scoring=ScoringConfig(period_days=30, weights={"issue_opened": 1}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=1)],
         assignments=AssignmentConfig(issue_assignees=["Contributor"], review_roles=[]),
         identity_mappings=[IdentityMapping(github_user="alice", discord_user_id="d1")],
     )
