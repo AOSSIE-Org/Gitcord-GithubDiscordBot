@@ -229,6 +229,7 @@ runtime:
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  activity_period_days: 30  # Activity window for reports and merge-based roles
 
 github:
   org: "your-org-name"  # Your GitHub organization name
@@ -252,20 +253,14 @@ discord:
     pr_merged: true
     channel_id: null  # null = DM, or set channel ID for channel posting
 
-scoring:
-  period_days: 30  # Scoring period in days
-  weights:
-    issue_opened: 3
-    pr_opened: 5
-    pr_reviewed: 2
-    comment: 1
-    pr_merged: 10
-
-role_mappings:
-  - discord_role: "Contributor"
-    min_score: 10
-  - discord_role: "Maintainer"
-    min_score: 40
+# Discord roles: use merge_role_rules and/or repo_contributor_roles (not score thresholds)
+merge_role_rules:
+  enabled: true
+  rules:
+    - discord_role: "Contributor"
+      min_merged_prs: 1
+    - discord_role: "Maintainer"
+      min_merged_prs: 5
 
 assignments:
   review_roles:
@@ -503,7 +498,7 @@ After installation:
 1. ✅ Run first `run-once` in dry-run mode
 2. ✅ Review `data/my-org/reports/audit.md`
 3. ✅ Test identity linking with `/link` and `/verify-link`
-4. ✅ Verify role mappings match your Discord roles
+4. ✅ Verify merge/repo role rules match your Discord roles
 5. ✅ Test issue assignment flow
 6. ✅ Enable active mode when ready
 7. ✅ Set up cron job or scheduled task for `run-once`
