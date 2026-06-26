@@ -46,21 +46,23 @@ discord:
     sync:
       role_names: ["Mentor"]
       allow_discord_administrators: true
-  # Optional: verified-only GitHub → Discord notifications (issue assigned, PR review, merged, etc.)
+  # Optional: verified-only GitHub → Discord notifications for the full issue/PR lifecycle
+  # Each notification type can be independently enabled/disabled
+  # All notifications are sent only to verified Discord users to prevent abuse
   # notifications:
-  #   enabled: true
-  #   issue_assignment: true
-  #   pr_review_requested: true
-  #   pr_review_result: true
-  #   pr_review_comment: true
-  #   pr_merged: true
-  #   pr_closed: true
-  #   issue_reopened: true
-  #   pr_reopened: true
+  #   enabled: true                    # Master switch for all notifications
+  #   issue_assignment: true           # 📋 Notify when issue is assigned to a user
+  #   pr_review_requested: true        # 👀 Notify when reviewer is requested on a PR
+  #   pr_review_result: true           # ✅ 🔁 Notify when PR review is approved or changes requested
+  #   pr_review_comment: true          # 💬 Notify when reviewer posts a comment on a PR review
+  #   pr_merged: true                  # 🎉 Notify when PR is merged to main
+  #   pr_closed: true                  # 🚫 Notify when PR is closed without merge
+  #   issue_reopened: true             # 📌 Notify when issue is reopened
+  #   pr_reopened: true                # 🔄 Notify when PR is reopened
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
   #   coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]
-  #   channel_id: null  # null = DM; set to channel ID to post there
+  #   channel_id: null  # null = DM to user; set to channel ID to post notifications there instead
 
 assignments:
   review_roles:
