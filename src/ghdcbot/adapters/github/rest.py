@@ -716,6 +716,9 @@ class GitHubRestAdapter:
                 pr_events.extend(
                     self._pull_request_reviews(owner, repo, pr["number"], since, pr_author=pr_author_for_reviews)
                 )
+                pr_events.extend(
+                    self._pull_request_reopened_events(owner, repo, pr, pr_author=pr_author_for_reviews, since=since)
+                )
         return pr_events, pr_numbers, pr_opened_count, pr_authors
 
     def _fetch_issue_difficulty_labels(
@@ -794,6 +797,59 @@ class GitHubRestAdapter:
                     created_at=submitted_at,
                     payload=payload,
                 )
+
+    def _pull_request_reopened_events(
+        self, owner: str, repo: str, pr: dict, pr_author: str | None = None, since: datetime | None = None
+    ) -> Iterable[ContributionEvent]:
+        """Fetch PR timeline events for 'reopened' and emit ContributionEvent for each."""
+        if not since:
+            return
+        pr_number = pr.get("number")
+        if not pr_number:
+            return
+        try:
+            params = {"per_page": 100}
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/timeline", params=params
+            ):
+                for event in page:
+                    if event.get("event") != "reopened":
+                        continue
+                    created_at = _parse_iso8601(event.get("created_at"))
+                    if not created_at or created_at < since:
+                        continue
+                    # Use provided pr_author or extract from PR data
+                    author = pr_author or (pr.get("user") or {}).get("login")
+                    if not author:
+                        author = "<deleted>"
+                    payload = {
+                        "pr_number": pr_number,
+                        "title": pr.get("title"),
+                        "pr_title": pr.get("title"),
+                        "pr_author": author,
+                        "repository": repo,
+                        "html_url": pr.get("html_url"),
+                        "reopened_at": event.get("created_at"),
+                    }
+                    yield ContributionEvent(
+                        github_user=author,
+                        event_type="pr_reopened",
+                        repo=repo,
+                        created_at=created_at,
+                        payload=payload,
+                    )
+        except Exception as e:
+            # If timeline call fails, omit reopened events to avoid wrong timestamps
+            self._logger.debug(
+                "Failed to fetch PR timeline for reopened events",
+                exc_info=True,
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "error": str(e),
+                },
+            )
 
     def _ingest_issue_comments(
         self, owner: str, repo: str, issue_numbers: Sequence[int], since: datetime
@@ -1035,6 +1091,7 @@ class GitHubRestAdapter:
                 payload=_issue_payload(issue),
             )
         yield from self._issue_assignment_events(owner, repo, issue, since)
+        yield from self._issue_reopened_events(owner, repo, issue, since)
 
     def _issue_assignment_events(
         self, owner: str, repo: str, issue: dict, since: datetime
@@ -1078,6 +1135,59 @@ class GitHubRestAdapter:
             # If timeline call fails, omit assignment events to avoid wrong timestamps
             self._logger.debug(
                 "Failed to fetch issue timeline for assignment events",
+                exc_info=True,
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "error": str(e),
+                },
+            )
+
+    def _issue_reopened_events(
+        self, owner: str, repo: str, issue: dict, since: datetime
+    ) -> Iterable[ContributionEvent]:
+        """Fetch issue timeline events for 'reopened' and emit ContributionEvent for each."""
+        issue_number = issue.get("number")
+        if not issue_number:
+            return
+        try:
+            params = {"per_page": 100}
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
+            ):
+                for event in page:
+                    if event.get("event") != "reopened":
+                        continue
+                    created_at = _parse_iso8601(event.get("created_at"))
+                    if not created_at or created_at < since:
+                        continue
+                    # Get current assignee from the issue data
+                    assignees = issue.get("assignees", [])
+                    if not assignees:
+                        # Skip if no assignee
+                        continue
+                    # Notify primary assignee (first in list, typically the main one)
+                    assignee = assignees[0] if isinstance(assignees, list) and assignees else None
+                    if not assignee or not isinstance(assignee, dict):
+                        continue
+                    assignee_login = assignee.get("login")
+                    if not assignee_login:
+                        continue
+                    payload = _issue_payload(issue)
+                    payload["reopened_at"] = event.get("created_at")
+                    payload["assignee"] = assignee_login
+                    yield ContributionEvent(
+                        github_user=assignee_login,
+                        event_type="issue_reopened",
+                        repo=repo,
+                        created_at=created_at,
+                        payload=payload,
+                    )
+        except Exception as e:
+            # If timeline call fails, omit reopened events to avoid wrong timestamps
+            self._logger.debug(
+                "Failed to fetch issue timeline for reopened events",
                 exc_info=True,
                 extra={
                     "owner": owner,

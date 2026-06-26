@@ -67,6 +67,26 @@ Ingestion already emits `pr_reviewed` with `state`, `review_id`, `pr_author`, `p
 | Dedupe | `pr_closed:{repo}:{pr_number}:{target_user}` |
 | Ingestion | `state == "closed"`, `merged_at` null, `closed_at >= since` (mutually exclusive with `pr_merged`) |
 
+### `issue_reopened`
+
+| Step | Behavior |
+|------|----------|
+| Target | `payload.assignee` (current assignee at time of reopened event) |
+| Config flag | `notifications.issue_reopened` |
+| Template key | `issue_reopened` |
+| Dedupe | `issue_reopened:{repo}:{issue_number}:{target_user}` |
+| Ingestion | Fetched from issue timeline; only emitted if issue has an assignee |
+
+### `pr_reopened`
+
+| Step | Behavior |
+|------|----------|
+| Target | `payload.pr_author` (PR author) |
+| Config flag | `notifications.pr_reopened` |
+| Template key | `pr_reopened` |
+| Dedupe | `pr_reopened:{repo}:{pr_number}:{target_user}` |
+| Ingestion | Fetched from PR timeline via `/repos/{owner}/{repo}/pulls/{number}/timeline` |
+
 ## Deduplication
 
 - Storage methods: `was_notification_sent(dedupe_key)`, `mark_notification_sent(...)`
@@ -84,3 +104,11 @@ Enable `COMMENT` state on `pr_reviewed` events behind `notifications.pr_review_c
 ## Week 5 Day 2 change
 
 Ingest `pr_closed` for PRs closed without merge; notify the PR author behind `notifications.pr_closed`. Merged PRs continue to emit only `pr_merged`.
+
+## Week 5 Day 3 change
+
+Complete the notification lifecycle by adding `issue_reopened` and `pr_reopened` notifications:
+- `issue_reopened`: Fetched from issue timeline; notifies current assignee if exists
+- `pr_reopened`: Fetched from PR timeline; notifies PR author
+
+Both are gated behind config flags (`notifications.issue_reopened`, `notifications.pr_reopened`) with independent control.

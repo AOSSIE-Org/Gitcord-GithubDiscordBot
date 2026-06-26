@@ -55,6 +55,8 @@ discord:
   #   pr_review_comment: true
   #   pr_merged: true
   #   pr_closed: true
+  #   issue_reopened: true
+  #   pr_reopened: true
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
   #   coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]

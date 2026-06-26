@@ -82,11 +82,17 @@ def send_notification_for_event(
             "pr_review_requested": config.pr_review_requested,
             "pr_merged": config.pr_merged,
             "pr_closed": config.pr_closed,
+            "issue_reopened": config.issue_reopened,
+            "pr_reopened": config.pr_reopened,
         }
         event_type_key = event.event_type
         if not event_config_map.get(event_type_key, False):
             return False
         if event.event_type == "pr_closed":
+            target_github_user = event.payload.get("pr_author") or event.github_user
+        elif event.event_type == "issue_reopened":
+            target_github_user = event.payload.get("assignee")
+        elif event.event_type == "pr_reopened":
             target_github_user = event.payload.get("pr_author") or event.github_user
         else:
             target_github_user = event.github_user
@@ -335,6 +341,30 @@ def _build_notification_message(
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
             f"Review the discussion for more details."
+        )
+
+    elif event_type_key == "issue_reopened":
+        issue_number = payload.get("issue_number")
+        issue_title = payload.get("title", "Untitled")[:100]
+        return (
+            f"📌 **Issue Reopened**\n\n"
+            f"Issue #{issue_number} **{issue_title}**\n\n"
+            f"assigned to you has been reopened.\n\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/issues/{issue_number}'}\n\n"
+            f"Please review the latest discussion and continue working if needed."
+        )
+
+    elif event_type_key == "pr_reopened":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("title", "Untitled")[:100]
+        return (
+            f"🔄 **PR Reopened**\n\n"
+            f"Your PR #{pr_number} **{pr_title}**\n\n"
+            f"has been reopened.\n\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"Please review the discussion and continue updating your PR."
         )
     
     return None

@@ -86,6 +86,8 @@ class NotificationConfig(BaseModel):
     pr_review_comment: bool = True  # COMMENT reviews on a PR
     pr_merged: bool = True
     pr_closed: bool = True  # PR closed without merge
+    issue_reopened: bool = True  # Issue reopened (notifies assignee)
+    pr_reopened: bool = True  # PR reopened (notifies author)
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
