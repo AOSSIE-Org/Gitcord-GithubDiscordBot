@@ -271,7 +271,7 @@ def _send_notifications_for_new_events(
     sent_count = 0
     pr_reviewed_count = 0
     for event in contributions:
-        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed"}:
+        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened"}:
             if event.event_type == "pr_reviewed":
                 pr_reviewed_count += 1
                 logger.info(

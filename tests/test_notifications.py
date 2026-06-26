@@ -627,3 +627,227 @@ def test_send_notification_audit_logging() -> None:
     assert audit["context"]["discord_user_id"] == "discord123"
     assert audit["context"]["event_type"] == "issue_assigned"
     assert audit["context"]["notification_type"] == "dm"
+
+
+def test_send_notification_issue_reopened() -> None:
+    """Test notification for issue reopened."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "alice"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_reopened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "issue_number": 123,
+            "title": "Improve onboarding",
+            "assignee": "alice",
+            "repository": "Gitcord",
+            "html_url": "https://github.com/AOSSIE/Gitcord/issues/123",
+            "reopened_at": "2024-06-26T10:30:00Z",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+    assert "Issue Reopened" in discord_writer.dms_sent[0][1]
+    assert "123" in discord_writer.dms_sent[0][1]
+    assert "Improve onboarding" in discord_writer.dms_sent[0][1]
+
+
+def test_send_notification_pr_reopened() -> None:
+    """Test notification for PR reopened."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord456", "github_user": "bob"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_reopened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 456,
+            "title": "Improve onboarding validation",
+            "pr_author": "bob",
+            "repository": "Gitcord",
+            "html_url": "https://github.com/AOSSIE/Gitcord/pull/456",
+            "reopened_at": "2024-06-26T11:00:00Z",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+    assert "PR Reopened" in discord_writer.dms_sent[0][1]
+    assert "456" in discord_writer.dms_sent[0][1]
+    assert "Improve onboarding validation" in discord_writer.dms_sent[0][1]
+
+
+def test_issue_reopened_disabled() -> None:
+    """Test that issue_reopened notifications are skipped when disabled."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "alice"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_reopened=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "issue_number": 123,
+            "title": "Improve onboarding",
+            "assignee": "alice",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_reopened_disabled() -> None:
+    """Test that pr_reopened notifications are skipped when disabled."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord456", "github_user": "bob"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_reopened=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 456,
+            "title": "Improve onboarding validation",
+            "pr_author": "bob",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_issue_reopened_dedupe() -> None:
+    """Test that duplicate issue_reopened notifications are not sent."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "alice"},
+    ]
+    storage.notifications_sent.add("issue_reopened:Gitcord:123:alice")
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_reopened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "issue_number": 123,
+            "title": "Improve onboarding",
+            "assignee": "alice",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_reopened_dedupe() -> None:
+    """Test that duplicate pr_reopened notifications are not sent."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord456", "github_user": "bob"},
+    ]
+    storage.notifications_sent.add("pr_reopened:Gitcord:456:bob")
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_reopened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "pr_number": 456,
+            "title": "Improve onboarding validation",
+            "pr_author": "bob",
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0
+
+
+def test_issue_reopened_without_assignee() -> None:
+    """Test that issue_reopened notifications are skipped for unassigned issues."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "alice"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_reopened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="",
+        event_type="issue_reopened",
+        repo="Gitcord",
+        created_at=datetime.now(timezone.utc),
+        payload={
+            "issue_number": 123,
+            "title": "Improve onboarding",
+            "assignee": None,  # No assignee
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE"
+    )
+
+    assert result is False
+    assert len(discord_writer.dms_sent) == 0

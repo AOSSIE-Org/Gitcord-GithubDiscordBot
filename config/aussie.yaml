@@ -58,6 +58,8 @@ discord:
     pr_review_comment: true
     pr_merged: true
     pr_closed: true
+    issue_reopened: true
+    pr_reopened: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
     channel_id: null  # null = DM; set to a channel ID to post there instead

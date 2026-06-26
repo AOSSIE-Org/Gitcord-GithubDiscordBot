@@ -103,3 +103,158 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
     assert len(merged) == 1
     assert merged[0].payload["pr_number"] == 21
     assert len(closed) == 0
+
+
+def test_issue_reopened_emitted_when_reopened(monkeypatch) -> None:
+    """Test that issue_reopened event is emitted when an issue is reopened."""
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    # Mock timeline endpoint for issue reopened event
+    routes = {
+        "/repos/owner/repo/issues": [
+            {
+                "number": 30,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-10T00:00:00Z",
+                "closed_at": None,
+                "title": "Improve onboarding",
+                "html_url": "https://github.com/owner/repo/issues/30",
+                "user": {"login": "alice"},
+                "assignees": [{"login": "charlie"}],
+            }
+        ],
+        "/repos/owner/repo/pulls": [],
+        "/repos/owner/repo/issues/30/comments": [],
+        "/repos/owner/repo/issues/30/timeline": [
+            {
+                "event": "reopened",
+                "created_at": "2024-01-10T10:30:00Z",
+                "actor": {"login": "someone"},
+            }
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    reopened = [event for event in events if event.event_type == "issue_reopened"]
+
+    assert len(reopened) == 1
+    assert reopened[0].github_user == "charlie"  # Assigned to charlie
+    assert reopened[0].payload["issue_number"] == 30
+    assert reopened[0].payload["title"] == "Improve onboarding"
+    assert reopened[0].payload["assignee"] == "charlie"
+    assert reopened[0].payload["reopened_at"] == "2024-01-10T10:30:00Z"
+
+
+def test_pr_reopened_emitted_when_reopened(monkeypatch) -> None:
+    """Test that pr_reopened event is emitted when a PR is reopened."""
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    # Mock timeline endpoint for PR reopened event
+    routes = {
+        "/repos/owner/repo/issues": [],
+        "/repos/owner/repo/pulls": [
+            {
+                "number": 40,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-11T00:00:00Z",
+                "closed_at": None,
+                "merged_at": None,
+                "title": "Improve onboarding validation",
+                "html_url": "https://github.com/owner/repo/pull/40",
+                "user": {"login": "bob"},
+            }
+        ],
+        "/repos/owner/repo/pulls/40/reviews": [],
+        "/repos/owner/repo/pulls/40/comments": [],
+        "/repos/owner/repo/pulls/40/timeline": [
+            {
+                "event": "reopened",
+                "created_at": "2024-01-11T11:00:00Z",
+                "actor": {"login": "someone"},
+            }
+        ],
+        "/repos/owner/repo/issues/40/comments": [],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    reopened = [event for event in events if event.event_type == "pr_reopened"]
+
+    assert len(reopened) == 1
+    assert reopened[0].github_user == "bob"  # PR author
+    assert reopened[0].payload["pr_number"] == 40
+    assert reopened[0].payload["title"] == "Improve onboarding validation"
+    assert reopened[0].payload["pr_author"] == "bob"
+    assert reopened[0].payload["reopened_at"] == "2024-01-11T11:00:00Z"
+
+
+def test_issue_reopened_skipped_without_assignee(monkeypatch) -> None:
+    """Test that issue_reopened event is skipped if issue has no assignee."""
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [
+            {
+                "number": 31,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-10T00:00:00Z",
+                "closed_at": None,
+                "title": "Unassigned issue",
+                "html_url": "https://github.com/owner/repo/issues/31",
+                "user": {"login": "alice"},
+                "assignees": [],  # No assignee
+            }
+        ],
+        "/repos/owner/repo/pulls": [],
+        "/repos/owner/repo/issues/31/comments": [],
+        "/repos/owner/repo/issues/31/timeline": [
+            {
+                "event": "reopened",
+                "created_at": "2024-01-10T10:30:00Z",
+                "actor": {"login": "someone"},
+            }
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    reopened = [event for event in events if event.event_type == "issue_reopened"]
+
+    assert len(reopened) == 0  # Should not emit if no assignee
