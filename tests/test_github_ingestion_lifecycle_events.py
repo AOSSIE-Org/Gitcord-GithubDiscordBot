@@ -131,12 +131,18 @@ def test_issue_reopened_emitted_when_reopened(monkeypatch) -> None:
                 "title": "Improve onboarding",
                 "html_url": "https://github.com/owner/repo/issues/30",
                 "user": {"login": "alice"},
-                "assignees": [{"login": "charlie"}],
+                "assignees": [{"login": "eve"}],
             }
         ],
         "/repos/owner/repo/pulls": [],
         "/repos/owner/repo/issues/30/comments": [],
         "/repos/owner/repo/issues/30/timeline": [
+            {
+                "event": "assigned",
+                "created_at": "2024-01-09T09:00:00Z",
+                "assignee": {"login": "charlie"},
+                "actor": {"login": "mentor"},
+            },
             {
                 "event": "reopened",
                 "created_at": "2024-01-10T10:30:00Z",
@@ -190,7 +196,7 @@ def test_pr_reopened_emitted_when_reopened(monkeypatch) -> None:
         ],
         "/repos/owner/repo/pulls/40/reviews": [],
         "/repos/owner/repo/pulls/40/comments": [],
-        "/repos/owner/repo/pulls/40/timeline": [
+        "/repos/owner/repo/issues/40/timeline": [
             {
                 "event": "reopened",
                 "created_at": "2024-01-11T11:00:00Z",

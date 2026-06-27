@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl, field_validator
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, field_validator
 
 
 class SocialProfileConfig(BaseModel):
@@ -49,10 +51,13 @@ class SocialProfileInput(BaseModel):
     @field_validator("platform")
     @classmethod
     def validate_platform(cls, value: str) -> str:
-        valid_platforms = {"x", "linkedin", "bluesky", "mastodon", "website"}
-        if value.lower() not in valid_platforms:
-            raise ValueError(f"Platform must be one of: {', '.join(valid_platforms)}")
-        return value.lower()
+        from ghdcbot.core.social_validators import SOCIAL_VALIDATORS
+
+        normalized = value.lower()
+        supported = tuple(SOCIAL_VALIDATORS.keys())
+        if normalized not in SOCIAL_VALIDATORS:
+            raise ValueError(f"Unknown platform: {value}. Supported: {', '.join(supported)}")
+        return normalized
     
     @field_validator("value")
     @classmethod
@@ -89,12 +94,19 @@ class LinkedInProfile(BaseModel):
     @field_validator("profile_url")
     @classmethod
     def validate_url(cls, value: str) -> str:
-        if not value.startswith("https://"):
+        parsed = urlparse(value)
+        if parsed.scheme != "https":
             raise ValueError("LinkedIn URL must start with https://")
-        if "linkedin.com/in/" not in value:
+
+        host = (parsed.hostname or "").lower()
+        if host not in {"linkedin.com", "www.linkedin.com"}:
             raise ValueError("Invalid LinkedIn profile URL")
-        if "company" in value.lower() or "companies" in value.lower():
+
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts and path_parts[0] in {"company", "companies"}:
             raise ValueError("Company pages are not supported, only personal profiles")
+        if len(path_parts) != 2 or path_parts[0] != "in" or not path_parts[1]:
+            raise ValueError("Invalid LinkedIn profile URL")
         return value
     
     @field_validator("profile_id")

@@ -55,7 +55,7 @@ Validation passed.
 
 **Expected:** FAIL with helpful message at config load.
 
-**Test A — `${GITHUB_TOKEN}` unset, no `.env`:** Unreliable when `.env` exists in project tree; `load_dotenv()` may still load tokens from developer machine.
+**Test A — `${GITHUB_TOKEN}` unset, no `.env`:** Run in an isolated environment so `load_dotenv()` cannot pick up local machine values. For example, use `env -i` (or explicitly `unset GITHUB_TOKEN DISCORD_TOKEN`) and run from a temp directory without a `.env` file before invoking validate.
 
 **Test B — inline invalid token (isolated `/tmp` config, no `${}` placeholders):**
 

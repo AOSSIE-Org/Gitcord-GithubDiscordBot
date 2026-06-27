@@ -1,6 +1,6 @@
 # Week 4 PR Descriptions (Ready to Copy)
 
-Three small PRs for easier review by Bhavik and Bruno.  
+Three small PRs for easier review by maintainers.  
 **Base branch:** `main` (or `week-4` if stacking on branch work).
 
 ---
@@ -31,12 +31,10 @@ docs/TESTING_DISCORD.md
 installation_audit.md
 fresh_install_test.md
 onboarding_test.md
-validate_command_test.md
-remaining_onboarding_issues.md
 deployment_readiness_report.md
-week4_summary.md
-week4_commit_audit.md
-week4_pr_descriptions.md
+docs/week4/validate_command_test.md
+docs/week4/remaining_onboarding_issues.md
+docs/week4/week4_summary.md
 ```
 
 ### Test plan
@@ -157,9 +155,12 @@ event_coverage.md
 ## Merge order
 
 ```text
-PR 1 (docs) → PR 2 (validate) → PR 3 (UX/templates)
-                    ↓
-              PR 4 (notifications, optional)
+PR 1 (docs) [target: week-4]
+  → PR 2 (validate) [target: week-4]
+  → PR 3 (UX/templates) [target: week-4]
+  → merge week-4 → main
+        ↓
+    PR 4 (notifications, optional) [target: main or rebased week-4]
 ```
 
 After merge, re-run fresh clone simulation from [fresh_install_test.md](fresh_install_test.md).

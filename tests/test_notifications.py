@@ -1,9 +1,6 @@
 """Tests for verified-only GitHub → Discord notifications."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
-
-import pytest
 
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.models import ContributionEvent
@@ -260,7 +257,6 @@ def test_pr_closed_dedupe() -> None:
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "contributor"},
     ]
-    storage.notifications_sent.add("pr_closed:Gitcord:123:contributor")
     discord_writer = MockDiscordWriter()
     config = NotificationConfig(enabled=True, pr_closed=True)
     policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
@@ -273,8 +269,10 @@ def test_pr_closed_dedupe() -> None:
         payload={
             "pr_number": 123,
             "pr_author": "contributor",
+            "closed_at": "2024-06-26T09:00:00Z",
         },
     )
+    storage.notifications_sent.add(_build_dedupe_key(event, "contributor"))
 
     result = send_notification_for_event(
         event, storage, discord_writer, policy, config, "AOSSIE"
@@ -767,7 +765,6 @@ def test_issue_reopened_dedupe() -> None:
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "alice"},
     ]
-    storage.notifications_sent.add("issue_reopened:Gitcord:123:alice")
     discord_writer = MockDiscordWriter()
     config = NotificationConfig(enabled=True, issue_reopened=True)
     policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
@@ -781,8 +778,10 @@ def test_issue_reopened_dedupe() -> None:
             "issue_number": 123,
             "title": "Improve onboarding",
             "assignee": "alice",
+            "reopened_at": "2024-06-26T10:30:00Z",
         },
     )
+    storage.notifications_sent.add(_build_dedupe_key(event, "alice"))
 
     result = send_notification_for_event(
         event, storage, discord_writer, policy, config, "AOSSIE"
@@ -798,7 +797,6 @@ def test_pr_reopened_dedupe() -> None:
     storage.verified_mappings = [
         {"discord_user_id": "discord456", "github_user": "bob"},
     ]
-    storage.notifications_sent.add("pr_reopened:Gitcord:456:bob")
     discord_writer = MockDiscordWriter()
     config = NotificationConfig(enabled=True, pr_reopened=True)
     policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
@@ -812,8 +810,10 @@ def test_pr_reopened_dedupe() -> None:
             "pr_number": 456,
             "title": "Improve onboarding validation",
             "pr_author": "bob",
+            "reopened_at": "2024-06-26T11:00:00Z",
         },
     )
+    storage.notifications_sent.add(_build_dedupe_key(event, "bob"))
 
     result = send_notification_for_event(
         event, storage, discord_writer, policy, config, "AOSSIE"

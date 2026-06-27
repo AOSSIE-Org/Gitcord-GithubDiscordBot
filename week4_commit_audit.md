@@ -173,8 +173,7 @@ git ls-files --others --exclude-standard
 git add INSTALLATION.md README.md environment_variables.md docs/DOCKER.md \
   docs/TESTING_DISCORD.md .env.example installation_audit.md \
   fresh_install_test.md onboarding_test.md deployment_readiness_report.md \
-  remaining_onboarding_issues.md week4_summary.md week4_commit_audit.md \
-  week4_pr_descriptions.md validate_command_test.md
+  remaining_onboarding_issues.md week4_summary.md validate_command_test.md
 ```
 
-(Split adds per [week4_pr_descriptions.md](week4_pr_descriptions.md).)
+(Only add `week4_commit_audit.md` and `week4_pr_descriptions.md` if you intentionally want to version planning/meta docs. Split adds per [week4_pr_descriptions.md](week4_pr_descriptions.md).)

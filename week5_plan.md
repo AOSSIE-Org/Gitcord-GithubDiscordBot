@@ -73,7 +73,7 @@ Scoring still exists in the codebase (`enable_scoring`); we are not extending it
 
 ### Files (expected)
 
-```
+```text
 src/ghdcbot/config/models.py          # NotificationConfig flags
 src/ghdcbot/engine/notifications.py   # routing + message templates
 src/ghdcbot/engine/orchestrator.py    # include events in notification pass

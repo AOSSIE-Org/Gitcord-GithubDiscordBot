@@ -103,12 +103,14 @@ def get_contribution_metrics(
 
 
 def rank_by_activity(metrics: list[UserMetrics]) -> list[UserMetrics]:
-    """Return metrics sorted by activity (merged PRs, then reviews, then issues)."""
+    """Return metrics sorted by activity (merged PRs, reviews, engagement, comments, issues)."""
     return sorted(
         metrics,
         key=lambda m: (
             -m.prs_merged,
             -m.reviews_submitted,
+            -m.issue_engagement,
+            -m.comments,
             -m.issues_opened,
             m.github_user,
         ),

@@ -810,7 +810,7 @@ class GitHubRestAdapter:
         try:
             params = {"per_page": 100}
             for page in self._paginate(
-                f"/repos/{owner}/{repo}/pulls/{pr_number}/timeline", params=params
+                f"/repos/{owner}/{repo}/issues/{pr_number}/timeline", params=params
             ):
                 for event in page:
                     if event.get("event") != "reopened":
@@ -1153,37 +1153,54 @@ class GitHubRestAdapter:
             return
         try:
             params = {"per_page": 100}
-            for page in self._paginate(
-                f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
-            ):
-                for event in page:
-                    if event.get("event") != "reopened":
-                        continue
-                    created_at = _parse_iso8601(event.get("created_at"))
-                    if not created_at or created_at < since:
-                        continue
-                    # Get current assignee from the issue data
-                    assignees = issue.get("assignees", [])
-                    if not assignees:
-                        # Skip if no assignee
-                        continue
-                    # Notify primary assignee (first in list, typically the main one)
-                    assignee = assignees[0] if isinstance(assignees, list) and assignees else None
-                    if not assignee or not isinstance(assignee, dict):
-                        continue
-                    assignee_login = assignee.get("login")
-                    if not assignee_login:
-                        continue
-                    payload = _issue_payload(issue)
-                    payload["reopened_at"] = event.get("created_at")
-                    payload["assignee"] = assignee_login
-                    yield ContributionEvent(
-                        github_user=assignee_login,
-                        event_type="issue_reopened",
-                        repo=repo,
-                        created_at=created_at,
-                        payload=payload,
-                    )
+            timeline_events: list[dict] = []
+            for page in self._paginate(f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params):
+                timeline_events.extend(page)
+            timeline_events = sorted(
+                timeline_events,
+                key=lambda item: (
+                    _parse_iso8601(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+                ),
+            )
+
+            active_assignees: list[str] = []
+            for event in timeline_events:
+                event_type = event.get("event")
+                assignee = event.get("assignee") if isinstance(event.get("assignee"), dict) else None
+                assignee_login = assignee.get("login") if assignee else None
+
+                if event_type == "assigned":
+                    if assignee_login and assignee_login not in active_assignees:
+                        active_assignees.append(assignee_login)
+                    continue
+
+                if event_type == "unassigned":
+                    if assignee_login:
+                        active_assignees = [login for login in active_assignees if login != assignee_login]
+                    continue
+
+                if event_type != "reopened":
+                    continue
+
+                created_at = _parse_iso8601(event.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+
+                # Resolve assignee from timeline-derived state around reopen (not current issue snapshot).
+                resolved_assignee = active_assignees[0] if active_assignees else assignee_login
+                if not resolved_assignee:
+                    continue
+
+                payload = _issue_payload(issue)
+                payload["reopened_at"] = event.get("created_at")
+                payload["assignee"] = resolved_assignee
+                yield ContributionEvent(
+                    github_user=resolved_assignee,
+                    event_type="issue_reopened",
+                    repo=repo,
+                    created_at=created_at,
+                    payload=payload,
+                )
         except Exception as e:
             # If timeline call fails, omit reopened events to avoid wrong timestamps
             self._logger.debug(

@@ -58,8 +58,8 @@ MEDIUM: 10 issues — mostly docs + UX polish
 LOW:    7 issues — polish and automation opportunities
 ```
 
-**If only one thing is fixed:** commit and release Week 4 work (H1).
+**If only one thing is fixed:** commit and release Week 4 work (H1) — owner: onboarding/docs maintainer, target: PR 1.
 
-**If two things:** H1 + H3 (friendly bot token failure).
+**If two things:** H1 + H3 (friendly bot token failure) — owners: onboarding/docs maintainer (H1) + validation/CLI maintainer (H3), targets: PR 1 + PR 2.
 
-**If three things:** H1 + H3 + M2 (clean example config template).
+**If three things:** H1 + H3 + M2 (clean example config template) — owners: onboarding/docs maintainer (H1), validation/CLI maintainer (H3), config owner (M2), targets: PR 1 + PR 2 + PR 3 before Week 4 closure.

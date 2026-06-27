@@ -194,6 +194,14 @@ def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
         state = event.payload.get("state", "").upper()
         if review_id:
             return f"{event.event_type}:{event.repo}:{target}:{user_key}:{review_id}:{state}"
+
+    if event.event_type == "pr_closed":
+        closed_at = event.payload.get("closed_at") or event.created_at.isoformat()
+        return f"{event.event_type}:{event.repo}:{target}:{user_key}:{closed_at}"
+
+    if event.event_type in {"issue_reopened", "pr_reopened"}:
+        reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
+        return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reopened_at}"
     
     return f"{event.event_type}:{event.repo}:{target}:{user_key}"
 
@@ -273,7 +281,6 @@ def _build_notification_message(
     elif event_type_key == "pr_review_requested":
         pr_number = payload.get("pr_number")
         pr_title = payload.get("title", "Untitled")[:100]
-        requested_by = payload.get("requested_by")  # May need to fetch from PR
         return (
             f"👀 **PR Review Requested**\n\n"
             f"**PR:** #{pr_number} – {pr_title}\n"

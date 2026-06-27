@@ -50,6 +50,12 @@ class TestXProfileValidator:
         
         assert result["normalized"] == "twitter_user"
         assert result["display"] == "https://x.com/twitter_user"
+
+    def test_reject_spoofed_url_host(self):
+        """Should not extract username from non-X/Twitter host URLs."""
+        validator = XProfileValidator()
+        with pytest.raises(ValueError):
+            validator.validate("https://example.com/twitter.com/twitter_user")
     
     def test_validate_url_with_query_params(self):
         """Should strip query parameters from URL"""
@@ -171,6 +177,12 @@ class TestLinkedInProfileValidator:
         
         with pytest.raises(ValueError):
             validator.validate("https://linkedin.com/profile/john-doe")
+
+    def test_reject_non_linkedin_hostname(self):
+        """Should reject spoofed domains that only contain linkedin.com in the URL."""
+        validator = LinkedInProfileValidator()
+        with pytest.raises(ValueError):
+            validator.validate("https://linkedin.com.evil.example/in/john-doe")
     
     def test_reject_empty_profile_id(self):
         """Should reject URLs with empty profile ID"""

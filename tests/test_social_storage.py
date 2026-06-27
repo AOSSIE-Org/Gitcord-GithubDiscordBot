@@ -4,10 +4,7 @@ Tests for Social Profile Storage CRUD Operations
 Unit tests for sqlite.py social profile methods
 """
 
-import sqlite3
 import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -64,6 +61,8 @@ class TestSetSocialProfile:
         assert result2["display_value"] == "https://x.com/new_user"
         # ID should be the same (updated, not new)
         assert result1["id"] == result2["id"]
+        # created_at must be preserved across updates
+        assert result1["created_at"] == result2["created_at"]
     
     def test_different_platforms_same_user(self, storage):
         """Should allow multiple platforms for same user"""

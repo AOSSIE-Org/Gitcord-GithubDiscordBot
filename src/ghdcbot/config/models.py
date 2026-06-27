@@ -212,18 +212,23 @@ class BotConfig(BaseModel):
         """Accept legacy scoring blocks; map period_days to runtime.activity_period_days."""
         if not isinstance(data, dict):
             return data
-        scoring = data.pop("scoring", None)
-        runtime = data.get("runtime")
+        migrated = dict(data)
+        scoring = migrated.pop("scoring", None)
+        runtime = migrated.get("runtime")
         if isinstance(scoring, dict) and isinstance(runtime, dict):
+            runtime_copy = dict(runtime)
             if "activity_period_days" not in runtime:
                 period_days = scoring.get("period_days")
                 if period_days is not None:
-                    runtime["activity_period_days"] = period_days
-            runtime.pop("enable_scoring", None)
+                    runtime_copy["activity_period_days"] = period_days
+            runtime_copy.pop("enable_scoring", None)
+            migrated["runtime"] = runtime_copy
         elif isinstance(runtime, dict):
-            runtime.pop("enable_scoring", None)
-        data.setdefault("role_mappings", [])
-        return data
+            runtime_copy = dict(runtime)
+            runtime_copy.pop("enable_scoring", None)
+            migrated["runtime"] = runtime_copy
+        migrated.setdefault("role_mappings", [])
+        return migrated
 
     @field_validator("repo_contributor_roles")
     @classmethod

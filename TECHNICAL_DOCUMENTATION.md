@@ -107,19 +107,19 @@ The current codebase provides these major Gitcord features:
 - **PR review assignment planning:** Gitcord can plan review requests for eligible reviewers.
 - **Mentor-controlled issue assignment:** Contributors can request an issue, and mentors can approve, reject, or replace the assignee from Discord.
 - **PR context previews:** The bot can show PR status, author, reviews, CI state, idle time, and mentor signal from a PR URL.
-- **GitHub notifications:** Eight notification types cover the full lifecycle (issue assigned, PR review states, PR merged, PR closed, issue reopened, PR reopened), all gated by independent config flags
+- **GitHub notifications:** Nine notification types cover the full lifecycle (issue assigned, PR review states, review comments, PR merged, PR closed, issue reopened, PR reopened), all gated by independent config flags
 - **Verified-only notifications:** All notifications are sent only to verified Discord users and are deduplicated to prevent duplicates
 - **CodeRabbit reminders:** Optional reminders can notify PR authors about old CodeRabbit review comments
 - **Audit reports:** Dry runs generate JSON and Markdown reports of planned Discord and GitHub actions
 - **Activity reports:** Gitcord writes a human-readable activity feed for mentor visibility.
 - **Audit event export:** CLI export supports JSON, CSV, and Markdown with filters for user, event type, and date range.
-- **SQLite local state:** Contributions, scores, cursors, identity links, issue requests, notifications, and audit events are stored locally.
-- **GitHub snapshots:** Optional snapshot writing exports identities, scores, contributors, roles, issue requests, and notifications to a GitHub repository.
+- **SQLite local state:** Contributions, cursors, identity links, issue requests, notifications, social profiles, and audit events are stored locally.
+- **GitHub snapshots:** Optional snapshot writing exports identities, contributors, roles, issue requests, and notifications to a GitHub repository.
 - **Docker support:** The project includes Docker and Docker Compose files for deployment.
 
 ### 1.6 Notification Types (GitHub → Discord)
 
-Gitcord supports **8 notification types** that cover the full GitHub contribution lifecycle. All notifications are:
+Gitcord supports **9 notification types** that cover the full GitHub contribution lifecycle. All notifications are:
 - **Verified-only:** Sent only to users who have verified their Discord-GitHub identity
 - **Configurable:** Each type can be independently enabled/disabled via `NotificationConfig`
 - **Deduplicated:** Prevents duplicate notifications for the same event using deduplication keys
@@ -142,6 +142,7 @@ Gitcord supports **8 notification types** that cover the full GitHub contributio
 - Fallback: Send to configured `channel_id` if DM fails and channel is specified
 
 **Configuration:**
+
 ```yaml
 discord:
   notifications:

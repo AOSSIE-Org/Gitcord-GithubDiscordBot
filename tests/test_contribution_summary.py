@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.core.models import ContributionEvent
 
@@ -73,3 +75,18 @@ def test_list_contribution_summaries_counts_activity(tmp_path) -> None:
     assert bob.prs_reviewed == 0
     assert bob.comments == 1
     assert bob.total_score == 0
+
+
+def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    with pytest.raises(ValueError):
+        storage.list_contribution_summaries(period_start, period_end, weights={"pr_merged": 10})
+
+    with pytest.raises(ValueError):
+        storage.list_contribution_summaries(
+            period_start, period_end, difficulty_weights={"easy": 5}
+        )

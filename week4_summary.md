@@ -34,7 +34,7 @@
 - New `environment_variables.md`
 - README user journey includes preflight validate step
 - `.env.example` comments for both tokens
-- Resolved doc split (`my-org-config.yaml` vs `config/config.yaml`)
+- Workspace-local resolution of doc split (`my-org-config.yaml` vs `config/config.yaml`); upstream status remains pending until PR 1 merges
 
 ---
 
@@ -109,7 +109,7 @@ Simulated new-org install from documentation only. Reports:
 
 ### Key Day 5 finding
 
-Fresh `git clone` of **`HEAD`** only includes Day 1. Days 2–5 are **local until PRs merge**. Cold-start readiness: **5.2/10** on clone, **~7.6/10** after merge (see deployment report).
+Fresh `git clone` of **`HEAD`** only includes Day 1. Days 2–5 are **local until PRs merge**. Cold-start readiness: **5.2/10** on clone, **~7.6/10** after merge (see deployment report). Re-measure these scores within 24 hours after PR 1–3 merge (or at first post-merge release cut) and update this section from the latest deployment report.
 
 ### Re-test after Day 5 fixes (workspace)
 
@@ -198,7 +198,7 @@ See [week4_commit_audit.md](week4_commit_audit.md) for full file lists per PR.
 1. Open **PR 1 → PR 2 → PR 3** using [week4_pr_descriptions.md](week4_pr_descriptions.md)
 2. Open **PR 4** for notifications separately
 3. After merge, repeat [fresh_install_test.md](fresh_install_test.md) against GitHub clone
-4. Announce **`ghdcbot validate`** as required step in org onboarding checklist
+4. **Onboarding maintainer owner:** announce **`ghdcbot validate`** as a required step in the org onboarding checklist
 
 ---
 

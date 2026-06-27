@@ -44,17 +44,23 @@ class XProfileValidator(PlatformValidator):
         if value.startswith("@"):
             value = value[1:]
         
-        # Extract username from URL
-        if "x.com/" in value or "twitter.com/" in value:
-            # Parse URL
-            parts = value.split("/")
-            # Find the part after x.com or twitter.com
-            for i, part in enumerate(parts):
-                if part in ("x.com", "twitter.com"):
-                    if i + 1 < len(parts):
-                        username = parts[i + 1].split("?")[0]  # Remove query params
-                        return username
-            raise ValueError("Could not extract username from URL")
+        url_candidate = value
+        lowered = value.lower()
+        if "://" not in url_candidate and lowered.startswith(
+            ("x.com/", "twitter.com/", "www.x.com/", "www.twitter.com/")
+        ):
+            url_candidate = f"https://{url_candidate}"
+
+        if "://" in url_candidate:
+            parsed = urlparse(url_candidate)
+            host = (parsed.hostname or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if host in {"x.com", "twitter.com"}:
+                username = parsed.path.strip("/").split("/", 1)[0]
+                if username:
+                    return username
+                raise ValueError("Could not extract username from URL")
         
         # Direct username
         return value

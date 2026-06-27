@@ -192,6 +192,11 @@ class SqliteStorage:
         weights: dict[str, int] | None = None,
         difficulty_weights: dict[str, int] | None = None,
     ) -> Sequence[ContributionSummary]:
+        if weights is not None or difficulty_weights is not None:
+            raise ValueError(
+                "Score arguments are deprecated in SqliteStorage.list_contribution_summaries; "
+                "pass no scoring arguments."
+            )
         start_utc = _ensure_utc(period_start)
         end_utc = _ensure_utc(period_end)
         with self._connect() as conn:
@@ -756,35 +761,19 @@ class SqliteStorage:
         now = datetime.now(timezone.utc).isoformat()
         
         with self._connect() as conn:
-            # Check if profile already exists
-            existing = conn.execute(
+            conn.execute(
                 """
-                SELECT id, created_at FROM social_profiles
-                WHERE discord_user_id = ? AND platform = ?
+                INSERT INTO social_profiles
+                (discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(discord_user_id, platform)
+                DO UPDATE SET
+                    profile_handle = excluded.profile_handle,
+                    display_value = excluded.display_value,
+                    updated_at = excluded.updated_at
                 """,
-                (discord_user_id, platform.lower()),
-            ).fetchone()
-            
-            if existing:
-                # Update existing profile, preserve created_at
-                conn.execute(
-                    """
-                    UPDATE social_profiles
-                    SET profile_handle = ?, display_value = ?, updated_at = ?
-                    WHERE discord_user_id = ? AND platform = ?
-                    """,
-                    (profile_handle, display_value, now, discord_user_id, platform.lower()),
-                )
-            else:
-                # Insert new profile
-                conn.execute(
-                    """
-                    INSERT INTO social_profiles
-                    (discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, 0, ?, ?)
-                    """,
-                    (discord_user_id, platform.lower(), profile_handle, display_value, now, now),
-                )
+                (discord_user_id, platform.lower(), profile_handle, display_value, now, now),
+            )
             
             # Get the inserted/updated row
             row = conn.execute(
