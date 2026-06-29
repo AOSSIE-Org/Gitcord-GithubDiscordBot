@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from ghdcbot.config.models import BotConfig
+from ghdcbot.config.validation import (
+    config_not_found_message,
+    empty_env_var_message,
+    invalid_yaml_message,
+    missing_env_var_message,
+    validate_active_mode,
+)
 from ghdcbot.core.errors import ConfigError
 
 _ACTIVE_CONFIG: BotConfig | None = None
@@ -20,26 +27,27 @@ def load_config(path: str) -> BotConfig:
     load_dotenv()
     config_path = Path(path)
     if not config_path.exists() or not config_path.is_file():
-        raise ConfigError(f"Config file does not exist: {path}")
+        raise ConfigError(config_not_found_message(path))
     try:
         raw_text = config_path.read_text(encoding="utf-8")
         raw: Any = yaml.safe_load(raw_text)
     except OSError as exc:
         raise ConfigError(f"Failed to read config file: {path}") from exc
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse YAML: {exc}") from exc
+        raise ConfigError(invalid_yaml_message(path, str(exc))) from exc
 
     if raw is None:
-        raise ConfigError("Config file is empty")
+        raise ConfigError(f"Config file is empty: {path}")
 
     try:
         expanded = _expand_env_vars(raw)
         config = BotConfig.model_validate(expanded)
+        validate_active_mode(config)
         global _ACTIVE_CONFIG
         _ACTIVE_CONFIG = config
         return config
     except ValidationError as exc:
-        raise ConfigError(f"Invalid configuration: {exc}") from exc
+        raise ConfigError(_format_validation_error(path, exc)) from exc
 
 
 def get_active_config() -> BotConfig | None:
@@ -62,5 +70,16 @@ def _replace_env_var(match: re.Match[str]) -> str:
     env_key = match.group(1)
     env_value = os.getenv(env_key)
     if env_value is None:
-        raise ConfigError(f"Missing required environment variable: {env_key}")
+        raise ConfigError(missing_env_var_message(env_key))
+    if not env_value.strip():
+        raise ConfigError(empty_env_var_message(env_key))
     return env_value
+
+
+def _format_validation_error(path: str, exc: ValidationError) -> str:
+    lines = [f"Invalid configuration in {path}:"]
+    for err in exc.errors():
+        loc = ".".join(str(part) for part in err.get("loc", ()))
+        msg = err.get("msg", "invalid value")
+        lines.append(f"  - {loc}: {msg}" if loc else f"  - {msg}")
+    return "\n".join(lines)

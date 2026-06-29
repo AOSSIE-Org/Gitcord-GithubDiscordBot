@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import logging
+import sys
 from pathlib import Path
 
 from ghdcbot.config.loader import load_config
@@ -83,6 +84,10 @@ def main() -> None:
     identity_status_p.add_argument("--discord-user-id", required=True, help="Discord user ID (numeric)")
     identity_sub.add_parser("list", help="List all verified contributors (Discord ID ↔ GitHub username)")
     sub.add_parser("bot", help="Run Discord bot with /link and /verify-link slash commands")
+    sub.add_parser(
+        "validate",
+        help="Check config, tokens, and API access without starting the bot",
+    )
     export_p = sub.add_parser("export-audit", help="Export append-only audit events (JSON, CSV, or Markdown)")
     export_p.add_argument("--format", choices=("json", "csv", "md"), default="json", help="Output format")
     export_p.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
@@ -95,6 +100,10 @@ def main() -> None:
     orchestrator = None
     try:
         identity_reader = None
+        if args.command == "validate":
+            from ghdcbot.config.setup_validate import run_validate
+
+            raise SystemExit(run_validate(args.config))
         if args.command == "run-once":
             orchestrator = build_orchestrator(args.config)
             orchestrator.run_once()
@@ -262,7 +271,10 @@ def main() -> None:
                     else:
                         print("Not verified yet. Add the code to your bio or a public gist and try again.")
     except (ConfigError, AdapterError) as exc:
-        logging.getLogger("CLI").error("Fatal error: %s", exc)
+        if isinstance(exc, ConfigError):
+            print(exc, file=sys.stderr)
+        else:
+            logging.getLogger("CLI").error("Fatal error: %s", exc)
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("CLI").exception("Unhandled error")
