@@ -133,21 +133,49 @@ PR 2 (validate command exists).
 
 ---
 
-## Optional PR 4 — Notification expansion (separate from onboarding)
+## Optional PR 4 — Lifecycle notifications and social profiles
 
-**Title:** `feat: expand GitHub lifecycle notifications (pr_closed, pr_reopened, …)`
+**Title:** `feat: expand GitHub lifecycle notifications and social profile linking`
 
 Not part of Week 4 onboarding scope. Merge after PR 1–3 or in parallel if reviewers prefer.
 
+### Summary
+
+- GitHub lifecycle ingestion and Discord notifications (`pr_closed`, `pr_reopened`, `issue_reopened`, `pr_review_comment`, …)
+- Social profile models, validators, storage, service, and `/profile` Discord commands
+- Scoring removal in favor of `activity_period_days` and merge/repo role rules
+- Docs, design notes, and tests for notification flow and social profile validation
+
+### Files
+
 ```
 src/ghdcbot/adapters/github/rest.py
+src/ghdcbot/adapters/discord/social_commands.py
+src/ghdcbot/bot.py
 src/ghdcbot/config/models.py
+src/ghdcbot/core/social_models.py
+src/ghdcbot/core/social_validators.py
 src/ghdcbot/engine/notifications.py
 src/ghdcbot/engine/orchestrator.py
+src/ghdcbot/engine/social_profiles.py
+src/ghdcbot/adapters/storage/sqlite.py
 config/examples/aussie.yaml
+config/example.yaml
+config/docker-example.yaml
+docs/IDENTITY_VERIFICATION.md
+notification_flow_notes.md
+pr_closed_design.md
+social_commands_design.md
+social_identity_design.md
+social_profiles_design.md
 tests/test_notifications.py
 tests/test_github_ingestion_lifecycle_events.py
+tests/test_social_validators.py
+tests/test_social_service.py
+tests/test_social_storage.py
+tests/test_social_commands.py
 event_coverage.md
+week5_day6_summary.md
 ```
 
 ---

@@ -62,6 +62,14 @@ class TestXProfileValidator:
         validator = XProfileValidator()
         with pytest.raises(ValueError, match="http or https"):
             validator.validate("ftp://x.com/twitter_user")
+
+    def test_reject_non_profile_url_path(self):
+        """Should reject X URLs that are not a single /username profile path."""
+        validator = XProfileValidator()
+        with pytest.raises(ValueError):
+            validator.validate("https://x.com/i/user/123")
+        with pytest.raises(ValueError):
+            validator.validate("https://x.com/intent/user")
     
     def test_validate_url_with_query_params(self):
         """Should strip query parameters from URL"""

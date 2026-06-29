@@ -60,7 +60,10 @@ class XProfileValidator(PlatformValidator):
             if host.startswith("www."):
                 host = host[4:]
             if host in {"x.com", "twitter.com"}:
-                username = parsed.path.strip("/").split("/", 1)[0]
+                profile_path = parsed.path.strip("/")
+                if not profile_path or "/" in profile_path:
+                    raise ValueError("Could not extract username from URL")
+                username = profile_path
                 if username:
                     return username
                 raise ValueError("Could not extract username from URL")

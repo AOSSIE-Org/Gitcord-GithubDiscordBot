@@ -220,6 +220,67 @@ def test_issue_reopened_emitted_when_reopened(monkeypatch) -> None:
     assert reopened[0].payload["reopened_at"] == "2024-01-10T10:30:00Z"
 
 
+def test_issue_reopened_emitted_for_each_active_assignee(monkeypatch) -> None:
+    """Test that issue_reopened emits one event per active assignee at reopen time."""
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [
+            {
+                "number": 32,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-10T00:00:00Z",
+                "closed_at": None,
+                "title": "Multi-assignee issue",
+                "html_url": "https://github.com/owner/repo/issues/32",
+                "user": {"login": "alice"},
+                "assignees": [{"login": "charlie"}, {"login": "dana"}],
+            }
+        ],
+        "/repos/owner/repo/pulls": [],
+        "/repos/owner/repo/issues/32/comments": [],
+        "/repos/owner/repo/issues/32/timeline": [
+            {
+                "event": "assigned",
+                "created_at": "2024-01-09T09:00:00Z",
+                "assignee": {"login": "charlie"},
+                "actor": {"login": "mentor"},
+            },
+            {
+                "event": "assigned",
+                "created_at": "2024-01-09T10:00:00Z",
+                "assignee": {"login": "dana"},
+                "actor": {"login": "mentor"},
+            },
+            {
+                "event": "reopened",
+                "created_at": "2024-01-10T10:30:00Z",
+                "actor": {"login": "someone"},
+            },
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    reopened = [event for event in events if event.event_type == "issue_reopened"]
+
+    assert len(reopened) == 2
+    assert {event.github_user for event in reopened} == {"charlie", "dana"}
+    assert all(event.payload["issue_number"] == 32 for event in reopened)
+
+
 def test_pr_reopened_emitted_when_reopened(monkeypatch) -> None:
     """Test that pr_reopened event is emitted when a PR is reopened."""
     adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")

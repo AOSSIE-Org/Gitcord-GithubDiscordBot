@@ -1187,21 +1187,24 @@ class GitHubRestAdapter:
             if not created_at or created_at < since:
                 continue
 
-            # Resolve assignee from timeline-derived state around reopen (not current issue snapshot).
-            resolved_assignee = active_assignees[0] if active_assignees else assignee_login
-            if not resolved_assignee:
+            # Resolve assignees from timeline-derived state around reopen (not current issue snapshot).
+            assignees_to_notify = list(active_assignees) if active_assignees else (
+                [assignee_login] if assignee_login else []
+            )
+            if not assignees_to_notify:
                 continue
 
-            payload = _issue_payload(issue)
-            payload["reopened_at"] = event.get("created_at")
-            payload["assignee"] = resolved_assignee
-            yield ContributionEvent(
-                github_user=resolved_assignee,
-                event_type="issue_reopened",
-                repo=repo,
-                created_at=created_at,
-                payload=payload,
-            )
+            for resolved_assignee in assignees_to_notify:
+                payload = _issue_payload(issue)
+                payload["reopened_at"] = event.get("created_at")
+                payload["assignee"] = resolved_assignee
+                yield ContributionEvent(
+                    github_user=resolved_assignee,
+                    event_type="issue_reopened",
+                    repo=repo,
+                    created_at=created_at,
+                    payload=payload,
+                )
 
     def _list_repo_open_issues(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
