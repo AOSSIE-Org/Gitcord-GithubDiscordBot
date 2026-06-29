@@ -1,7 +1,7 @@
 runtime:
   mode: "dry-run"
   log_level: "INFO"
-  data_dir: "/tmp/ghdcbot-state"
+  data_dir: "./data"
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
@@ -51,6 +51,7 @@ discord:
   #   issue_assignment: true
   #   pr_review_requested: true
   #   pr_review_result: true
+  #   pr_review_comment: true
   #   pr_merged: true
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
@@ -84,8 +85,9 @@ assignments:
 
 # Optional: when a contributor has a PR merged in a repo, grant them the corresponding Discord role
 # (repo name -> Discord role name). Roles are add-only and never auto-removed.
-repo_contributor_roles:
-  castro: "castro"
+# Example:
+# repo_contributor_roles:
+#   my-repo: "Contributor"
 
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"
