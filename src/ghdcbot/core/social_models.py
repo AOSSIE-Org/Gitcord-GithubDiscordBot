@@ -57,6 +57,8 @@ class SocialProfileInput(BaseModel):
         supported = tuple(SOCIAL_VALIDATORS.keys())
         if normalized not in SOCIAL_VALIDATORS:
             raise ValueError(f"Unknown platform: {value}. Supported: {', '.join(supported)}")
+        if normalized == "twitter":
+            return "x"
         return normalized
     
     @field_validator("value")

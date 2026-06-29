@@ -107,7 +107,7 @@ The current codebase provides these major Gitcord features:
 - **PR review assignment planning:** Gitcord can plan review requests for eligible reviewers.
 - **Mentor-controlled issue assignment:** Contributors can request an issue, and mentors can approve, reject, or replace the assignee from Discord.
 - **PR context previews:** The bot can show PR status, author, reviews, CI state, idle time, and mentor signal from a PR URL.
-- **GitHub notifications:** Nine notification types cover the full lifecycle (issue assigned, PR review states, review comments, PR merged, PR closed, issue reopened, PR reopened), all gated by independent config flags
+- **GitHub notifications:** Nine notification types cover the full lifecycle (issue assigned, PR review states, review comments, PR merged, PR closed, issue reopened, PR reopened), each gated by its own `NotificationConfig` flag except PR Approved and Changes Requested, which share `pr_review_result`
 - **Verified-only notifications:** All notifications are sent only to verified Discord users and are deduplicated to prevent duplicates
 - **CodeRabbit reminders:** Optional reminders can notify PR authors about old CodeRabbit review comments
 - **Audit reports:** Dry runs generate JSON and Markdown reports of planned Discord and GitHub actions
@@ -121,7 +121,7 @@ The current codebase provides these major Gitcord features:
 
 Gitcord supports **9 notification types** that cover the full GitHub contribution lifecycle. All notifications are:
 - **Verified-only:** Sent only to users who have verified their Discord-GitHub identity
-- **Configurable:** Each type can be independently enabled/disabled via `NotificationConfig`
+- **Configurable:** Each type can be enabled/disabled via `NotificationConfig` (`pr_review_result` covers both PR Approved and Changes Requested)
 - **Deduplicated:** Prevents duplicate notifications for the same event using deduplication keys
 - **Recipient-aware:** Each event type routes to the appropriate GitHub user (assignee, author, or reviewer)
 
@@ -133,9 +133,9 @@ Gitcord supports **9 notification types** that cover the full GitHub contributio
 | **Changes Requested** | `pr_review_result` | Changes requested on PR | PR Author | 🔁 Changes requested: `[title]` | `pr_reviewed:{repo}:{pr_number}:{user}:{review_id}:CHANGES_REQUESTED` |
 | **Review Comment** | `pr_review_comment` | Comment posted on PR review | PR Author | 💬 Review comment: `[title]` | `pr_reviewed:{repo}:{pr_number}:{user}:{review_id}:COMMENT` |
 | **PR Merged** | `pr_merged` | PR merged to main | PR Author | 🎉 Merged: `[title]` | `pr_merged:{repo}:{pr_number}:{user}` |
-| **PR Closed** | `pr_closed` | PR closed without merge | PR Author | 🚫 Closed: `[title]` | `pr_closed:{repo}:{pr_number}:{user}` |
-| **Issue Reopened** | `issue_reopened` | Issue reopened | Current Assignee | 📌 Reopened: `[title]` | `issue_reopened:{repo}:{issue_number}:{user}` |
-| **PR Reopened** | `pr_reopened` | PR reopened | PR Author | 🔄 Reopened: `[title]` | `pr_reopened:{repo}:{pr_number}:{user}` |
+| **PR Closed** | `pr_closed` | PR closed without merge | PR Author | 🚫 Closed: `[title]` | `pr_closed:{repo}:{pr_number}:{user}:{closed_at}` |
+| **Issue Reopened** | `issue_reopened` | Issue reopened | Current Assignee | 📌 Reopened: `[title]` | `issue_reopened:{repo}:{issue_number}:{user}:{reopened_at}` |
+| **PR Reopened** | `pr_reopened` | PR reopened | PR Author | 🔄 Reopened: `[title]` | `pr_reopened:{repo}:{pr_number}:{user}:{reopened_at}` |
 
 **Delivery Method:**
 - Default: DM to verified Discord user

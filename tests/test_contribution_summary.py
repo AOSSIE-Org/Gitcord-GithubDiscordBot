@@ -83,10 +83,10 @@ def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -
     period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
     period_start = period_end - timedelta(days=30)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Score arguments are deprecated"):
         storage.list_contribution_summaries(period_start, period_end, weights={"pr_merged": 10})
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Score arguments are deprecated"):
         storage.list_contribution_summaries(
             period_start, period_end, difficulty_weights={"easy": 5}
         )

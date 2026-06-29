@@ -41,6 +41,14 @@ def _adapter_with_repo(monkeypatch, pulls: list[dict]) -> GitHubRestAdapter:
         routes[f"/repos/owner/repo/pulls/{number}/reviews"] = []
         routes[f"/repos/owner/repo/pulls/{number}/comments"] = []
         routes[f"/repos/owner/repo/issues/{number}/comments"] = []
+        closed_at = pr.get("closed_at")
+        merged_at = pr.get("merged_at")
+        timeline: list[dict] = []
+        if closed_at and not merged_at:
+            timeline.append({"event": "closed", "created_at": closed_at})
+        if merged_at:
+            timeline.append({"event": "merged", "created_at": merged_at})
+        routes[f"/repos/owner/repo/issues/{number}/timeline"] = timeline
     adapter._client = _MockClient(routes)
     return adapter
 
@@ -103,6 +111,54 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
     assert len(merged) == 1
     assert merged[0].payload["pr_number"] == 21
     assert len(closed) == 0
+
+
+def test_pr_closed_emitted_when_closed_then_reopened_before_sync(monkeypatch) -> None:
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [],
+        "/repos/owner/repo/pulls": [
+            {
+                "number": 22,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-10T00:00:00Z",
+                "closed_at": None,
+                "merged_at": None,
+                "title": "Reopened PR",
+                "html_url": "https://github.com/owner/repo/pull/22",
+                "user": {"login": "carol"},
+            }
+        ],
+        "/repos/owner/repo/pulls/22/reviews": [],
+        "/repos/owner/repo/pulls/22/comments": [],
+        "/repos/owner/repo/issues/22/comments": [],
+        "/repos/owner/repo/issues/22/timeline": [
+            {"event": "closed", "created_at": "2024-01-08T00:00:00Z"},
+            {"event": "reopened", "created_at": "2024-01-10T00:00:00Z"},
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    closed = [event for event in events if event.event_type == "pr_closed"]
+
+    assert len(closed) == 1
+    assert closed[0].github_user == "carol"
+    assert closed[0].payload["pr_number"] == 22
+    assert closed[0].payload["closed_at"] == "2024-01-08T00:00:00Z"
 
 
 def test_issue_reopened_emitted_when_reopened(monkeypatch) -> None:

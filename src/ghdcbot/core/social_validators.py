@@ -53,6 +53,9 @@ class XProfileValidator(PlatformValidator):
 
         if "://" in url_candidate:
             parsed = urlparse(url_candidate)
+            scheme = (parsed.scheme or "").lower()
+            if scheme not in ("http", "https"):
+                raise ValueError("X profile URL must use http or https scheme")
             host = (parsed.hostname or "").lower()
             if host.startswith("www."):
                 host = host[4:]

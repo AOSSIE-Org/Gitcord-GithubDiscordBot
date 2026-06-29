@@ -32,9 +32,9 @@ installation_audit.md
 fresh_install_test.md
 onboarding_test.md
 deployment_readiness_report.md
-docs/week4/validate_command_test.md
-docs/week4/remaining_onboarding_issues.md
-docs/week4/week4_summary.md
+validate_command_test.md
+remaining_onboarding_issues.md
+week4_summary.md
 ```
 
 ### Test plan
