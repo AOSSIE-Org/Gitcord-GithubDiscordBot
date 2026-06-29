@@ -12,7 +12,8 @@ __pycache__/
 /tmp/
 
 data/
-# Local developer runtime configs (use config/example.yaml as template)
+# Local developer runtime configs (use config/example.yaml or docker-example.yaml as template)
+config/config.yaml
 config/*-local.yaml
 config/*.local.yaml
 src/ghdcbot.egg-info/
