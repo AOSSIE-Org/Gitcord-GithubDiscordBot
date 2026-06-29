@@ -8,6 +8,7 @@ services:
     build: .
     image: gitcord:latest
     user: "0"
+    entrypoint: []
     volumes:
       - gitcord_data:/data
     command: ["sh", "-c", "chown -R appuser:appuser /data"]
@@ -24,7 +25,7 @@ services:
       - ./config:/app/config:ro
       # Persist SQLite state, reports, and audit logs between restarts.
       - gitcord_data:/data
-    command: ["ghdcbot", "--config", "/app/config/aussie.yaml", "bot"]
+    command: ["--config", "/app/config/config.yaml", "bot"]
     restart: unless-stopped
 
 volumes:

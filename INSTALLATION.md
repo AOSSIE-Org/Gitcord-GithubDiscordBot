@@ -1,6 +1,8 @@
 # Gitcord Installation Guide
 
-**Complete step-by-step guide for organizations setting up Gitcord**
+**Step-by-step setup for organizations deploying Gitcord**
+
+Use this guide from start to finish. For a shorter overview, see [README.md](README.md). For Docker details, see [docs/DOCKER.md](docs/DOCKER.md). For environment variables, see [environment_variables.md](environment_variables.md).
 
 ---
 
@@ -10,10 +12,17 @@
 2. [Step 1: Create GitHub Token (PAT)](#step-1-create-github-token-pat)
 3. [Step 2: Create Discord Bot](#step-2-create-discord-bot)
 4. [Step 3: Invite Bot to Discord Server](#step-3-invite-bot-to-discord-server)
-5. [Step 4: Configure Gitcord](#step-4-configure-gitcord)
-6. [Step 5: Run Gitcord](#step-5-run-gitcord)
-7. [Security Best Practices](#security-best-practices)
-8. [Troubleshooting](#troubleshooting)
+5. [Step 4: Get the Code](#step-4-get-the-code)
+6. [Step 5: Choose Installation Method](#step-5-choose-installation-method)
+   - [Option A: Docker (recommended)](#option-a-docker-recommended)
+   - [Option B: Local Python](#option-b-local-python)
+   - [Windows and WSL](#windows-and-wsl)
+7. [Step 6: Configure Gitcord](#step-6-configure-gitcord)
+8. [Step 7: Run Gitcord](#step-7-run-gitcord)
+9. [Step 8: Enable Active Mode (after testing)](#step-8-enable-active-mode-after-testing)
+10. [Security Best Practices](#security-best-practices)
+11. [Troubleshooting](#troubleshooting)
+12. [Quick Reference](#quick-reference)
 
 ---
 
@@ -21,11 +30,16 @@
 
 Before starting, ensure you have:
 
-- ✅ Python 3.11+ installed
-- ✅ Access to your GitHub organization
-- ✅ Admin access to your Discord server
-- ✅ GitHub account with organization permissions
-- ✅ Discord Developer Portal access
+| Requirement | Docker install | Local install |
+|-------------|----------------|---------------|
+| **Git** | ✅ | ✅ |
+| **Docker Engine + Docker Compose v2** | ✅ | — |
+| **Python 3.11+** | — | ✅ |
+| **GitHub org** access and a fine-grained PAT | ✅ | ✅ |
+| **Discord server** admin access | ✅ | ✅ |
+| **[Discord Developer Portal](https://discord.com/developers/applications)** access | ✅ | ✅ |
+
+> **Windows users:** Use [WSL2](#windows-and-wsl) (Ubuntu) for the local Python path. Docker Desktop on Windows is supported when the project lives on the WSL filesystem.
 
 ---
 
@@ -39,35 +53,33 @@ Before starting, ensure you have:
 
 ### 1.2 Configure Token
 
-**Token Name:** `Gitcord Bot` (or your preferred name)
+**Token name:** `Gitcord Bot` (or your preferred name)
 
 **Expiration:** Set appropriate expiration (recommended: 90 days or custom)
 
-**Repository Access:**
-- Select **Only select repositories** (recommended) OR
-- Select **All repositories** (if you want org-wide access)
+**Resource owner:** Select your **organization** (not only your personal account) if Gitcord will scan org repositories.
+
+**Repository access:**
+
+- **Only select repositories** (recommended), or
+- **All repositories** (org-wide access)
 
 ### 1.3 Set Repository Permissions
 
-**Required Permissions:**
-
-| Permission | Access Level | Why |
+| Permission | Access level | Why |
 |------------|--------------|-----|
-| **Contents** | Read & Write | Needed for GitHub snapshots |
-| **Issues** | Read & Write | Assign issues to contributors |
-| **Pull requests** | Read & Write | Request reviews, check merge status |
+| **Contents** | Read (Write if using snapshots) | Repo metadata; Write for GitHub snapshots |
+| **Issues** | Read & Write | Issue assignment |
+| **Pull requests** | Read & Write | Review requests, merge status |
 | **Metadata** | Read | Required automatically by GitHub |
 
-**Note:** For testing locally, **Read** permissions are sufficient. **Write** permissions are needed for:
-- Issue assignments
-- Review requests
-- GitHub snapshots
+For initial dry-run testing, **Read** on Contents/Issues/PRs is enough. Enable **Write** before active mode if you need assignments or snapshots.
 
 ### 1.4 Generate and Save Token
 
 1. Click **Generate token**
-2. **⚠️ IMPORTANT:** Copy the token immediately (you won't see it again)
-3. Save it securely (we'll use it in Step 4)
+2. **Copy the token immediately** (you will not see it again)
+3. Save it securely — you will add it to `.env` in [Step 6](#step-6-configure-gitcord)
 
 ---
 
@@ -82,37 +94,29 @@ Before starting, ensure you have:
 
 ### 2.2 Create Bot
 
-1. Go to **Bot** section (left sidebar)
-2. Click **Add Bot**
-3. Click **Yes, do it!**
+1. Open the **Bot** section (left sidebar)
+2. Click **Add Bot** → **Yes, do it!**
 
 ### 2.3 Configure Bot Settings
 
-**Bot Username:** `Gitcord` (or your preferred name)
-
-**Public Bot:** ❌ Uncheck (unless you want others to invite it)
-
-**Requires OAuth2 Code Grant:** ❌ Uncheck
+- **Public Bot:** off (unless you want others to invite it)
+- **Requires OAuth2 Code Grant:** off
 
 ### 2.4 Set Privileged Gateway Intents
 
-Go to **Bot** → **Privileged Gateway Intents**
+Under **Bot** → **Privileged Gateway Intents**:
 
-**✅ REQUIRED:**
-- ✅ **Server Members Intent** (required for role management and member reading)
+| Intent | Required? |
+|--------|-----------|
+| **Server Members Intent** | ✅ **Yes** — member listing for role planning |
+| Presence Intent | ❌ No |
+| Message Content Intent | ❌ No (only if you enable `pr_preview_channels` in config) |
 
-**❌ NOT REQUIRED:**
-- ❌ Presence Intent
-- ❌ Message Content Intent (only needed if reading message text; Gitcord uses slash commands)
+### 2.5 Copy Bot Token
 
-**Note:** Since Gitcord primarily uses slash commands, Message Content Intent is **NOT required** unless you enable PR preview channels.
-
-### 2.5 Reset Token (Optional)
-
-If you need a new bot token:
-1. Click **Reset Token**
-2. **⚠️ IMPORTANT:** Copy the token immediately
-3. Save it securely (we'll use it in Step 4)
+1. Click **Reset Token** (or copy the existing token)
+2. **Copy the token immediately**
+3. Save it for `.env` in [Step 6](#step-6-configure-gitcord)
 
 ---
 
@@ -120,397 +124,408 @@ If you need a new bot token:
 
 ### 3.1 Generate Invite URL
 
-1. Go to **OAuth2** → **URL Generator** (left sidebar)
+1. Go to **OAuth2** → **URL Generator**
 
 ### 3.2 Select Scopes
 
-**✅ REQUIRED Scopes:**
-- ✅ **bot** (bot functionality)
-- ✅ **applications.commands** (slash commands)
-
-**❌ DO NOT SELECT:**
-- ❌ bot (with Administrator) - Never use Administrator!
+- ✅ `bot`
+- ✅ `applications.commands`
+- ❌ Do **not** use Administrator scope
 
 ### 3.3 Select Bot Permissions
 
-**✅ REQUIRED Permissions:**
+**Required:**
 
-#### General Permissions
-- ✅ **Manage Roles** (for role automation based on contributions)
-- ✅ **View Channels** (to read server structure)
+- Manage Roles, View Channels
+- Send Messages, Embed Links, Read Message History, Use Slash Commands
 
-#### Text Permissions
-- ✅ **Send Messages** (for notifications and responses)
-- ✅ **Embed Links** (for rich embeds in commands)
-- ✅ **Read Message History** (for PR preview detection if enabled)
-- ✅ **Use Slash Commands** (required for all commands)
-- ✅ **Add Reactions** (optional, for UI feedback)
+**Not needed:** Administrator, Manage Server, Kick/Ban Members, Manage Channels, Voice permissions
 
-**❌ DO NOT SELECT:**
-- ❌ **Administrator** (over-permission, security risk)
-- ❌ **Manage Server** (not needed)
-- ❌ **Kick Members** (not needed)
-- ❌ **Ban Members** (not needed)
-- ❌ **Manage Channels** (not needed)
-- ❌ **Manage Webhooks** (not needed)
-- ❌ **Voice Permissions** (not needed)
+### 3.4 Authorize
 
-### 3.4 Copy Invite URL
+1. Copy the generated URL and open it in a browser
+2. Select your Discord server → **Authorize**
 
-1. Copy the generated URL at the bottom
-2. Open the URL in your browser
-3. Select your Discord server
-4. Click **Authorize**
-5. Complete CAPTCHA if prompted
+### 3.5 Set Bot Role Position
 
-### 3.5 ⚠️ CRITICAL: Set Bot Role Position
+1. In Discord: **Server Settings** → **Roles**
+2. Drag the **bot role above** any roles it should assign (e.g. above `Contributor`)
 
-**After inviting the bot:**
+If the bot role is too low, role changes fail silently.
 
-1. Go to your Discord server
-2. **Server Settings** → **Roles**
-3. Find the **Gitcord** bot role
-4. **Drag it ABOVE** any roles it needs to manage
-5. Example: If bot assigns "Contributor" role, bot role must be above "Contributor"
+### 3.6 Copy Server ID (guild ID)
 
-**Why:** Discord requires roles to be higher in hierarchy to manage lower roles. If bot role is too low, role management will fail silently.
+1. Enable **Developer Mode**: User Settings → Advanced → Developer Mode
+2. Right-click your server icon → **Copy Server ID**
+
+You will paste this into `discord.guild_id` in config.
 
 ---
 
-## Step 4: Configure Gitcord
-
-### 4.1 Install Gitcord
+## Step 4: Get the Code
 
 ```bash
-# Clone the repository
 git clone https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot.git
 cd Gitcord-GithubDiscordBot
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install Gitcord
-pip install -e .
 ```
 
-### 4.2 Create Environment File
+Forks: clone your fork URL instead; the rest of the guide is the same.
 
-Create a `.env` file in the project root:
+---
+
+## Step 5: Choose Installation Method
+
+### Option A: Docker (recommended)
+
+Best if you want to skip Python setup. Requires Docker Engine and Compose v2.
+
+```bash
+cp .env.example .env
+cp config/docker-example.yaml config/config.yaml
+# Edit .env (tokens) and config/config.yaml (github.org, discord.guild_id)
+docker compose up -d
+docker compose logs -f bot
+```
+
+- **Config file:** `config/config.yaml` (from `config/docker-example.yaml`)
+- **`data_dir` must stay** `/data` (Docker volume)
+- **One-time sync:** `docker compose run --rm bot --config /app/config/config.yaml run-once`
+
+See [docs/DOCKER.md](docs/DOCKER.md) for pitfalls and audit workflow.
+
+### Option B: Local Python
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows WSL: same; native Windows: .venv\Scripts\activate
+pip install -e .
+cp .env.example .env
+cp config/example.yaml config/config.yaml
+# Edit .env and config/config.yaml (see Step 6)
+ghdcbot --config config/config.yaml run-once
+ghdcbot --config config/config.yaml bot
+```
+
+> Gitcord uses `pyproject.toml`, not `requirements.txt`. Install with `pip install -e .`.
+
+**Set a local data directory** in `config/config.yaml`:
+
+```yaml
+runtime:
+  data_dir: "./data"
+```
+
+Reports appear under `./data/reports/`.
+
+### Windows and WSL
+
+- **Recommended:** Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu, clone the repo inside WSL (`~/projects/...`), and follow **Option B** or **Option A** there.
+- **Docker Desktop:** Enable WSL2 integration; run `docker compose` from the WSL shell where the repo lives.
+- **Volume mounting:** Keep the repo on the Linux filesystem (`/home/...`), not `C:\...`, so bind mounts and file permissions work reliably.
+- **Native Windows Python** is possible but not officially tested; prefer WSL.
+
+---
+
+## Step 6: Configure Gitcord
+
+### 6.1 Environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your tokens:
+Edit `.env`:
 
 ```env
 GITHUB_TOKEN=your_github_token_here
 DISCORD_TOKEN=your_discord_bot_token_here
 ```
 
-**⚠️ SECURITY:** Never commit `.env` to git. It's already in `.gitignore`.
+Details: [environment_variables.md](environment_variables.md)
 
-### 4.3 Create Configuration File
+### 6.2 Configuration file
 
-Copy the example config:
+Your active config is always **`config/config.yaml`** (gitignored — create it from a template):
+
+| Install type | Copy from |
+|--------------|-----------|
+| Docker | `config/docker-example.yaml` |
+| Local Python | `config/example.yaml` |
+
+**Minimum edits:**
+
+1. `github.org` — your GitHub organization name
+2. `discord.guild_id` — server ID from [Step 3.6](#36-copy-server-id-guild-id)
+3. `role_mappings` / `assignments.issue_assignees` — use **exact Discord role names** that exist in your server
+4. Local only: `runtime.data_dir: "./data"`
+
+Start with defaults in the template:
+
+- `runtime.mode: "dry-run"`
+- `discord.permissions.write: false`
+- `github.permissions.write: false`
+
+Optional blocks (`notifications`, `snapshots`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
+
+**Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample).
+
+### 6.3 Validate setup (recommended)
+
+Before your first sync or bot start, run the read-only preflight check. It loads config, verifies tokens against GitHub and Discord, checks guild access, and (when `enable_discord_role_updates: true`) confirms configured Discord roles exist.
+
+**Docker:**
 
 ```bash
-cp config/example.yaml config/my-org-config.yaml
+docker compose run --rm bot --config /app/config/config.yaml validate
 ```
 
-Edit `config/my-org-config.yaml`:
+**Local:**
 
-```yaml
-runtime:
-  mode: "dry-run"  # Start with dry-run for safety
-  log_level: "INFO"
-  data_dir: "./data/my-org"
-  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
-  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
-  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
-  activity_period_days: 30  # Activity window for reports and merge-based roles
-
-github:
-  org: "your-org-name"  # Your GitHub organization name
-  token: "${GITHUB_TOKEN}"  # From .env file
-  api_base: "https://api.github.com"
-  permissions:
-    read: true
-    write: true  # Enable for issue assignments and snapshots
-
-discord:
-  guild_id: "YOUR_DISCORD_GUILD_ID"  # Right-click server → Copy Server ID
-  token: "${DISCORD_TOKEN}"  # From .env file
-  permissions:
-    read: true
-    write: true
-  notifications:
-    enabled: true
-    issue_assignment: true
-    pr_review_requested: true
-    pr_review_result: true
-    pr_merged: true
-    channel_id: null  # null = DM, or set channel ID for channel posting
-
-# Discord roles: use merge_role_rules and/or repo_contributor_roles (not score thresholds)
-merge_role_rules:
-  enabled: true
-  rules:
-    - discord_role: "Contributor"
-      min_merged_prs: 1
-    - discord_role: "Maintainer"
-      min_merged_prs: 5
-
-assignments:
-  review_roles:
-    - "Maintainer"
-  issue_assignees:
-    - "Mentor"  # Roles that can use /assign-issue, /sync, /issue-requests
-
-snapshots:
-  enabled: true
-  repo_path: "your-org/gitcord-data"  # Repository for GitHub snapshots
-  branch: "main"
+```bash
+ghdcbot --config config/config.yaml validate
 ```
 
-### 4.4 Find Discord Guild ID
+Example success output:
 
-**Method 1: Discord Desktop/Web**
-1. Enable Developer Mode: **User Settings** → **Advanced** → **Developer Mode** ✅
-2. Right-click your Discord server icon
-3. Click **Copy Server ID**
+```text
+✓ Config file loaded
+✓ YAML valid and schema OK
+✓ GITHUB_TOKEN configured
+✓ DISCORD_TOKEN configured
+✓ GitHub authentication successful
+✓ Discord authentication successful
+✓ Organization accessible
+✓ Repositories visible
+✓ Guild found
+✓ Role "Contributor" found
 
-**Method 2: Discord Mobile**
-1. Enable Developer Mode in settings
-2. Long-press server icon → **Copy Server ID**
+Validation passed.
+```
+
+Exit code `0` means ready to run; `1` means fix the reported issues first. No data is written and the bot does not start.
 
 ---
 
-## Step 5: Run Gitcord
+## Step 7: Run Gitcord
 
-### 5.1 Test Run (Dry-Run Mode)
+### 7.1 One-time sync (dry-run)
 
-**First, test in dry-run mode (safe, no changes):**
+Validates GitHub/Discord access and writes audit reports **without mutating** roles or issues.
 
-```bash
-python -m ghdcbot.cli --config config/my-org-config.yaml run-once
-```
-
-**Expected Output:**
-- ✅ Reads GitHub events
-- ✅ Reads Discord members/roles
-- ✅ Generates audit reports in `data/my-org/reports/`
-- ✅ **No mutations** (no role changes, no issue assignments)
-
-**Check Reports:**
-- `data/my-org/reports/audit.json` - Machine-readable report
-- `data/my-org/reports/audit.md` - Human-readable report
-
-Review the reports to see what changes would be made.
-
-### 5.2 Run Discord Bot
-
-**Start the Discord bot (for slash commands):**
+**Docker:**
 
 ```bash
-python -m ghdcbot.cli --config config/my-org-config.yaml bot
+docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
 
-**Expected Output:**
+**Local:**
+
+```bash
+ghdcbot --config config/config.yaml run-once
 ```
+
+**Expected:**
+
+- GitHub events ingested (may be zero on a quiet org)
+- Discord members/roles read (needs Server Members Intent)
+- Reports written to `<data_dir>/reports/audit.json` and `audit.md`
+
+Review `audit.md` before enabling active mode.
+
+### 7.2 Run Discord bot
+
+**Docker:**
+
+```bash
+docker compose up -d
+docker compose logs -f bot
+```
+
+**Local:**
+
+```bash
+ghdcbot --config config/config.yaml bot
+```
+
+**Expected log line:**
+
+```text
 Bot ready; slash commands synced for guild YOUR_GUILD_ID: ['link', 'verify-link', ...]
 ```
 
-The bot will stay online and respond to slash commands.
+Wait ~30 seconds after startup for slash commands to appear.
 
-**To run in background:**
+**Background (local Linux/macOS):**
+
 ```bash
-nohup python -m ghdcbot.cli --config config/my-org-config.yaml bot > bot.log 2>&1 &
+nohup ghdcbot --config config/config.yaml bot > bot.log 2>&1 &
 ```
 
-### 5.3 Enable Active Mode (After Testing)
+### 7.3 Smoke-test slash commands
 
-**Once you've verified everything works in dry-run:**
+**Contributors:** `/link`, `/verify-link`, `/verify`, `/status`, `/summary`
 
-1. Edit `config/my-org-config.yaml`
-2. Change `mode: "dry-run"` to `mode: "active"`
-3. Run `run-once` again to apply changes
+**Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`, `/assign-issue`, `/issue-requests`
 
-**⚠️ WARNING:** Active mode will:
-- Add/remove Discord roles
-- Assign GitHub issues
-- Request PR reviews
+See [docs/TESTING_DISCORD.md](docs/TESTING_DISCORD.md) for a full test sequence.
 
-Only enable after reviewing dry-run reports!
+---
+
+## Step 8: Enable Active Mode (after testing)
+
+Only after reviewing dry-run `audit.md`:
+
+1. Edit `config/config.yaml`:
+
+```yaml
+runtime:
+  mode: "active"
+  enable_discord_role_updates: true
+
+discord:
+  permissions:
+    write: true
+
+github:
+  permissions:
+    write: true   # if you use issue assignment or snapshots
+```
+
+2. Run `run-once` again (Docker or local command from [§7.1](#71-one-time-sync-dry-run))
+3. Confirm role changes in Discord and bot role hierarchy
+
+`enable_discord_role_updates: false` prevents Discord role changes even if mode is mis-set — keep it `false` until you are ready.
 
 ---
 
 ## Security Best Practices
 
-### ✅ DO:
+### Do
 
-- ✅ Use **fine-grained GitHub tokens** (not classic tokens)
-- ✅ Store tokens in `.env` file (never commit to git)
-- ✅ Use **minimal permissions** (only what's needed)
-- ✅ Start with **dry-run mode** before going active
-- ✅ Review audit reports before enabling writes
-- ✅ Rotate tokens regularly (every 90 days recommended)
-- ✅ Use **Server Members Intent** only (not all intents)
-- ✅ Keep bot role **above** managed roles in Discord
+- Use fine-grained GitHub tokens
+- Store tokens in `.env` only
+- Start in **dry-run**; review audit reports
+- Keep bot role above managed roles
+- Enable minimal Discord permissions (no Administrator)
 
-### ❌ DON'T:
+### Do not
 
-- ❌ **Never** commit tokens to GitHub
-- ❌ **Never** use **Administrator** permission
-- ❌ **Never** use classic GitHub tokens (use fine-grained)
-- ❌ **Never** share tokens in screenshots or public channels
-- ❌ **Never** enable active mode without testing dry-run first
-- ❌ **Never** give bot more permissions than needed
-
-### Token Security Checklist
-
-- [ ] Tokens stored in `.env` file
-- [ ] `.env` is in `.gitignore` (verify it's not tracked)
-- [ ] Tokens not hardcoded in config files
-- [ ] Fine-grained GitHub token (not classic)
-- [ ] Minimal Discord permissions (no Administrator)
-- [ ] Tokens have expiration dates set
-- [ ] Tokens are rotated regularly
+- Commit `.env` or `config/config.yaml` with secrets
+- Enable active mode without a dry-run review
+- Share tokens in chat or screenshots
 
 ---
 
 ## Troubleshooting
 
-### Bot Not Responding to Commands
+### Bot not responding to slash commands
 
-**Problem:** Slash commands don't appear or show "application did not respond"
+1. Confirm bot is running (`docker compose logs -f bot` or `ps aux | grep ghdcbot`)
+2. Wait 30s after startup for command sync
+3. Verify `applications.commands` scope on invite URL
+4. Confirm `discord.guild_id` matches your server
 
-**Solutions:**
-1. ✅ Verify bot is running: `ps aux | grep ghdcbot`
-2. ✅ Check bot logs for errors
-3. ✅ Wait 30 seconds after starting bot (commands need to sync)
-4. ✅ Verify `applications.commands` scope is selected in invite URL
-5. ✅ Re-invite bot with correct scopes
+### Role management not working
 
-### Role Management Not Working
+1. Bot role **above** target roles in Server Settings → Roles
+2. `runtime.mode: active` and `enable_discord_role_updates: true`
+3. `discord.permissions.write: true`
+4. Server Members Intent enabled in Developer Portal
 
-**Problem:** Bot can't add/remove roles
+### Missing environment variable
 
-**Solutions:**
-1. ✅ Verify bot role is **above** managed roles in Discord Role settings
-2. ✅ Check bot has **Manage Roles** permission
-3. ✅ Verify `discord.permissions.write: true` in config
-4. ✅ Check bot is in **active** mode (not dry-run)
-5. ✅ Check bot logs for permission errors
+```text
+Missing required environment variable: GITHUB_TOKEN
+```
 
-### GitHub API Errors
+Create `.env` in the project root with both tokens. Docker: same directory as `docker-compose.yml`.
 
-**Problem:** "GitHub permission or visibility issue"
+### Config file not found
 
-**Solutions:**
-1. ✅ Verify GitHub token has correct permissions
-2. ✅ Check token hasn't expired
-3. ✅ Verify token has access to organization repos
-4. ✅ Check rate limits (GitHub API has rate limits)
-5. ✅ Verify `github.permissions.read: true` in config
+```text
+Config file does not exist: ...
+```
 
-### Discord API Errors
+Run `cp config/docker-example.yaml config/config.yaml` (Docker) or `cp config/example.yaml config/config.yaml` (local).
 
-**Problem:** "Discord permission issue" or 403 errors
+### Validation command failures
 
-**Solutions:**
-1. ✅ Verify bot has required permissions (Manage Roles, View Channels)
-2. ✅ Check Server Members Intent is enabled
-3. ✅ Verify bot token is correct
-4. ✅ Check bot is still in server (not kicked)
-5. ✅ Verify guild_id is correct
+Run `ghdcbot --config config/config.yaml validate` (or the Docker equivalent) after editing `.env` and config.
 
-### Identity Linking Not Working
+| Message | Fix |
+|---------|-----|
+| `GITHUB_TOKEN is missing` | Add token to `.env` |
+| `GitHub authentication failed` | Regenerate PAT; confirm org access |
+| `Discord authentication failed` | Reset bot token in Developer Portal |
+| `Guild not found` | Re-invite bot; fix `discord.guild_id` |
+| `Role "…" not found` | Create role in Discord or fix YAML spelling |
 
-**Problem:** `/link` or `/verify-link` commands fail
+### Identity linking (`/link`, `/verify-link`)
 
-**Solutions:**
-1. ✅ Verify user has verified Discord ↔ GitHub link
-2. ✅ Check verification code is in GitHub bio or public gist
-3. ✅ Verify code hasn't expired (10 minutes default)
-4. ✅ Check storage is initialized: `storage.init_schema()`
-5. ✅ Review bot logs for specific errors
+1. Put verification code in GitHub **bio** or a **public gist**
+2. Code expires in 10 minutes — run `/link` again if needed
+3. See [docs/IDENTITY_VERIFICATION.md](docs/IDENTITY_VERIFICATION.md)
 
-### Snapshots Not Writing
+### GitHub 403 / permission errors
 
-**Problem:** GitHub snapshots not appearing in repo
+1. Token not expired; org resource owner selected correctly
+2. Token has access to target repositories
+3. `github.permissions.read: true` in config
 
-**Solutions:**
-1. ✅ Verify `snapshots.enabled: true` in config
-2. ✅ Check GitHub token has **Contents: Write** permission
-3. ✅ Verify `snapshots.repo_path` is correct format: `owner/repo`
-4. ✅ Check bot has write access to snapshot repo
-5. ✅ Review logs for snapshot errors (non-blocking, won't stop run-once)
+### Docker: state lost after restart
+
+Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 
 ---
 
 ## Quick Reference
 
-### Essential Commands
+### Essential commands
 
-```bash
-# Test run (dry-run, safe)
-python -m ghdcbot.cli --config config/my-org-config.yaml run-once
+| Action | Docker | Local |
+|--------|--------|-------|
+| Start bot | `docker compose up -d` | `ghdcbot --config config/config.yaml bot` |
+| Logs | `docker compose logs -f bot` | terminal output / `bot.log` |
+| Dry-run sync | `docker compose run --rm bot --config /app/config/config.yaml run-once` | `ghdcbot --config config/config.yaml run-once` |
+| Validate setup | `docker compose run --rm bot --config /app/config/config.yaml validate` | `ghdcbot --config config/config.yaml validate` |
+| Identity status | `docker compose run --rm bot --config /app/config/config.yaml identity status --discord-user-id ID` | `ghdcbot --config config/config.yaml identity status --discord-user-id ID` |
 
-# Run Discord bot
-python -m ghdcbot.cli --config config/my-org-config.yaml bot
+### Config files
 
-# Check identity status
-python -m ghdcbot.cli --config config/my-org-config.yaml identity status --discord-user-id USER_ID
+| File | Purpose |
+|------|---------|
+| `config/config.yaml` | **Your** active config (create from template; gitignored) |
+| `config/example.yaml` | Local template |
+| `config/docker-example.yaml` | Docker template (`data_dir: /data`) |
+| `config/examples/` | Reference configs only |
+| `.env` | Tokens (from `.env.example`) |
 
-# Export audit logs
-python -m ghdcbot.cli --config config/my-org-config.yaml export-audit --format md
-```
+### Next steps
 
-### Discord Slash Commands
+### Discord slash commands
 
-**For Contributors:**
-- `/link` - Link Discord to GitHub
-- `/verify-link` - Verify GitHub link
-- `/verify` - Check verification status
-- `/status` - Show status and roles
-- `/summary` - Show contribution metrics
-- `/request-issue` - Request issue assignment
+**Contributors:** `/link`, `/verify-link`, `/verify`, `/status`, `/summary`, `/request-issue`, `/profile`
 
-**For Mentors:**
-- `/assign-issue` - Assign issue to user
-- `/issue-requests` - Review pending requests
-- `/sync` - Manually sync GitHub events
+**Mentors:** `/assign-issue`, `/issue-requests`, `/sync`
 
-### Config File Locations
+### Next steps
 
-- **Example config:** `config/example.yaml`
-- **Your config:** `config/my-org-config.yaml` (create your own)
-- **Environment:** `.env` (create from `.env.example`)
-
----
-
-## Next Steps
-
-After installation:
-
-1. ✅ Run first `run-once` in dry-run mode
-2. ✅ Review `data/my-org/reports/audit.md`
-3. ✅ Test identity linking with `/link` and `/verify-link`
-4. ✅ Verify merge/repo role rules match your Discord roles
-5. ✅ Test issue assignment flow
-6. ✅ Enable active mode when ready
-7. ✅ Set up cron job or scheduled task for `run-once`
+1. Dry-run `run-once` → review `audit.md`
+2. Start bot → test `/link` and `/verify-link`
+3. Match `merge_role_rules` / `repo_contributor_roles` to your Discord roles
+4. Enable active mode when ready
+5. Schedule periodic `run-once` (cron/systemd) if needed
 
 ---
 
 ## Getting Help
 
-- **Documentation:** See [README.md](README.md) and [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)
-- **Issues:** [GitHub Issues](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/issues)
-- **Discord:** Join our Discord server for support
+- [README.md](README.md) — overview and architecture
+- [docs/DOCKER.md](docs/DOCKER.md) — Docker deployment
+- [environment_variables.md](environment_variables.md) — env var reference
+- [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) — architecture deep dive
+- [GitHub Issues](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/issues)
 
 ---
 
-**🎉 Congratulations!** You've successfully installed Gitcord. Start with dry-run mode and review reports before enabling active mode.
+**Start in dry-run mode, review reports, then go active.**

@@ -2,6 +2,8 @@
 
 Docker support is designed for **mentor-friendly deployment** and **reproducible runs** without changing Gitcord’s offline-first architecture. The bot and `run-once` both work; SQLite and reports persist across restarts.
 
+For GitHub PAT setup, Discord bot creation, and first-time configuration, start with **[INSTALLATION.md](../INSTALLATION.md)**. This document covers Docker-specific details.
+
 ---
 
 ## Why Docker?
@@ -13,9 +15,15 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 
 ---
 
-## Quick Start (3 steps)
+## Quick Start
 
 1. **Create `.env`** in the project root (copy from `.env.example`):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Edit `.env` and set your tokens:
 
    ```env
    GITHUB_TOKEN=your_fine_grained_pat
@@ -34,16 +42,26 @@ Docker support is designed for **mentor-friendly deployment** and **reproducible
 
    ```bash
    docker compose up -d
+   docker compose logs -f bot
    ```
 
    The Discord bot runs in the background. Slash commands sync within ~30 seconds.
+
+**Validate setup (read-only, before first sync):**
+
+```bash
+docker compose run --rm bot --config /app/config/config.yaml validate
+```
+
+Checks config, tokens, GitHub/Discord API access, guild, and role names. Exit code `0` = ready; `1` = fix reported issues.
 
 **Run a one-off sync (dry-run or active):**
 
 ```bash
 docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
-(Do not pass `ghdcbot` — the image default command is `ghdcbot`.)
+
+The image `ENTRYPOINT` is `ghdcbot`, so you only pass subcommand arguments after the service name.
 
 ---
 
@@ -54,9 +72,10 @@ Gitcord-GithubDiscordBot/
 ├── .env                    # Tokens (never commit; not in image)
 ├── .env.example
 ├── config/
-│   ├── config.yaml         # Your active config (data_dir: /data for Docker)
+│   ├── config.yaml         # Your active config (create from docker-example.yaml; gitignored)
 │   ├── docker-example.yaml # Template for Docker
-│   └── example.yaml        # Template for local install
+│   ├── example.yaml        # Template for local install
+│   └── examples/           # Reference configs (not used by compose)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -79,8 +98,9 @@ Gitcord-GithubDiscordBot/
 | `PYTHONDONTWRITEBYTECODE=1` | Avoids writing `.pyc` in the image; cleaner and slightly faster. |
 | `PYTHONUNBUFFERED=1` | Logs show up immediately in `docker compose logs`. |
 | Copy `pyproject.toml` + `src/` then `pip install -e .` | Dependency layer is cached; only code/setup changes trigger reinstall. |
-| `useradd appuser` / `USER appuser` | Process runs as non-root; no gosu/entrypoint at runtime. |
-| `CMD ["ghdcbot", "--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; override with `docker compose run ... run-once` etc. |
+| `useradd appuser` / `USER appuser` | Process runs as non-root. |
+| `ENTRYPOINT ["ghdcbot"]` | Lets `docker compose run bot --config … run-once` work without repeating the binary name. |
+| `CMD ["--config", "/app/config/config.yaml", "bot"]` | Default is Discord bot; override args for `run-once` etc. |
 
 ---
 
@@ -117,7 +137,7 @@ Gitcord-GithubDiscordBot/
    `docker compose run --rm bot --config /app/config/config.yaml run-once`
 3. Inspect reports in the volume (e.g. copy out or run a temporary container that mounts the same volume and cats the file):  
    Reports are under `/data/reports/` (e.g. `audit.md`, `audit.json`).
-4. When satisfied, set `runtime.mode: "active"` and `discord.permissions.write: true` in config, then run `run-once` again or let the bot apply changes on the next sync.
+4. When satisfied, set `runtime.mode: "active"`, `runtime.enable_discord_role_updates: true`, and `discord.permissions.write: true` in config, then run `run-once` again or let the bot apply changes on the next sync.
 
 ---
 
