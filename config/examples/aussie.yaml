@@ -9,8 +9,7 @@ runtime:
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
-  # Notifications still run; these only skip score computation and Discord role add/remove.
-  enable_scoring: false
+  activity_period_days: 7
   enable_discord_role_updates: false
 
 github:
@@ -51,30 +50,21 @@ discord:
   activity_channel_id: null
   pr_preview_channels: []
   # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
+  # Each notification type can be independently enabled/disabled to control notification volume.
+  # Notification recipients are: assignee (issue_assignment), reviewer (pr_review_requested), author (pr_review_result, pr_review_comment, pr_merged, pr_closed, pr_reopened), assignee (issue_reopened).
   notifications:
-    enabled: true
-    issue_assignment: true
-    pr_review_requested: true
-    pr_review_result: true
-    pr_merged: true
+    enabled: true                    # Master switch for all notifications
+    issue_assignment: true           # 📋 Issue assigned to a user
+    pr_review_requested: true        # 👀 Reviewer requested on a PR
+    pr_review_result: true           # ✅ PR approved or 🔁 changes requested
+    pr_review_comment: true          # 💬 Comment posted on PR review
+    pr_merged: true                  # 🎉 PR merged to main
+    pr_closed: true                  # 🚫 PR closed without merge
+    issue_reopened: true             # 📌 Issue reopened
+    pr_reopened: true                # 🔄 PR reopened
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
-    channel_id: null  # null = DM; set to a channel ID to post there instead
-
-scoring:
-  # Main planning/audit window; /summary still shows last 7 and 30 days from stored events.
-  period_days: 7
-  weights:
-    issue_opened: 3
-    pr_opened: 5
-    pr_reviewed: 2
-    comment: 1
-
-role_mappings:
-  - discord_role: "Contributor"
-    min_score: 10
-  - discord_role: "Maintainer"
-    min_score: 40
+    channel_id: null  # null = DM; set to a channel ID to post notifications there instead
 
 assignments:
   review_roles:

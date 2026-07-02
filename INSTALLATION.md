@@ -502,9 +502,17 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 
 ### Next steps
 
+### Discord slash commands
+
+**Contributors:** `/link`, `/verify-link`, `/verify`, `/status`, `/summary`, `/request-issue`, `/profile`
+
+**Mentors:** `/assign-issue`, `/issue-requests`, `/sync`
+
+### Next steps
+
 1. Dry-run `run-once` → review `audit.md`
 2. Start bot → test `/link` and `/verify-link`
-3. Match `role_mappings` to your Discord roles
+3. Match `merge_role_rules` / `repo_contributor_roles` to your Discord roles
 4. Enable active mode when ready
 5. Schedule periodic `run-once` (cron/systemd) if needed
 

@@ -58,10 +58,15 @@ def send_notification_for_event(
             event_type_key = "pr_changes_requested"
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
+        elif state == "COMMENT":
+            if not config.pr_review_comment:
+                return False
+            event_type_key = "pr_review_comment"
+            target_github_user = event.payload.get("pr_author")
         else:
-            # COMMENT, DISMISSED, or other states - no notification
+            # DISMISSED or other states - no notification
             logger.debug(
-                "Skipping notification: PR review state is not APPROVED or CHANGES_REQUESTED",
+                "Skipping notification: PR review state is not supported",
                 extra={
                     "state": state,
                     "pr_number": event.payload.get("pr_number"),
@@ -76,12 +81,21 @@ def send_notification_for_event(
             "issue_assigned": config.issue_assignment,
             "pr_review_requested": config.pr_review_requested,
             "pr_merged": config.pr_merged,
+            "pr_closed": config.pr_closed,
+            "issue_reopened": config.issue_reopened,
+            "pr_reopened": config.pr_reopened,
         }
         event_type_key = event.event_type
         if not event_config_map.get(event_type_key, False):
             return False
-        # For other events, notify the event.github_user (assignee, PR author, etc.)
-        target_github_user = event.github_user
+        if event.event_type == "pr_closed":
+            target_github_user = event.payload.get("pr_author") or event.github_user
+        elif event.event_type == "issue_reopened":
+            target_github_user = event.payload.get("assignee")
+        elif event.event_type == "pr_reopened":
+            target_github_user = event.payload.get("pr_author") or event.github_user
+        else:
+            target_github_user = event.github_user
     
     if not target_github_user:
         logger.warning(
@@ -180,6 +194,14 @@ def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
         state = event.payload.get("state", "").upper()
         if review_id:
             return f"{event.event_type}:{event.repo}:{target}:{user_key}:{review_id}:{state}"
+
+    if event.event_type == "pr_closed":
+        closed_at = event.payload.get("closed_at") or event.created_at.isoformat()
+        return f"{event.event_type}:{event.repo}:{target}:{user_key}:{closed_at}"
+
+    if event.event_type in {"issue_reopened", "pr_reopened"}:
+        reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
+        return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reopened_at}"
     
     return f"{event.event_type}:{event.repo}:{target}:{user_key}"
 
@@ -259,7 +281,6 @@ def _build_notification_message(
     elif event_type_key == "pr_review_requested":
         pr_number = payload.get("pr_number")
         pr_title = payload.get("title", "Untitled")[:100]
-        requested_by = payload.get("requested_by")  # May need to fetch from PR
         return (
             f"👀 **PR Review Requested**\n\n"
             f"**PR:** #{pr_number} – {pr_title}\n"
@@ -293,6 +314,20 @@ def _build_notification_message(
             f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
             f"💬 Please check the review comments on GitHub and address the feedback."
         )
+
+    elif event_type_key == "pr_review_comment":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("title", "Untitled")[:100]
+        reviewer = event.github_user
+        return (
+            f"💬 **New Review Comments**\n\n"
+            f"New review comments were added to your **PR #{pr_number}**.\n\n"
+            f"**Reviewer:** `{reviewer}`\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**PR:** {pr_title}\n"
+            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"Review the feedback and update your PR if needed."
+        )
     
     elif event_type_key == "pr_merged":
         pr_number = payload.get("pr_number")
@@ -302,6 +337,41 @@ def _build_notification_message(
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
             f"✨ Thank you for your contribution!"
+        )
+
+    elif event_type_key == "pr_closed":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("pr_title") or payload.get("title", "Untitled")[:100]
+        return (
+            f"🔒 **PR Closed**\n\n"
+            f'Your PR **#{pr_number}** — *{pr_title}* was closed without being merged.\n\n'
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"Review the discussion for more details."
+        )
+
+    elif event_type_key == "issue_reopened":
+        issue_number = payload.get("issue_number")
+        issue_title = payload.get("title", "Untitled")[:100]
+        return (
+            f"📌 **Issue Reopened**\n\n"
+            f"Issue #{issue_number} **{issue_title}**\n\n"
+            f"assigned to you has been reopened.\n\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/issues/{issue_number}'}\n\n"
+            f"Please review the latest discussion and continue working if needed."
+        )
+
+    elif event_type_key == "pr_reopened":
+        pr_number = payload.get("pr_number")
+        pr_title = payload.get("title", "Untitled")[:100]
+        return (
+            f"🔄 **PR Reopened**\n\n"
+            f"Your PR #{pr_number} **{pr_title}**\n\n"
+            f"has been reopened.\n\n"
+            f"**Repository:** `{github_org}/{repo}`\n"
+            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"Please review the discussion and continue updating your PR."
         )
     
     return None

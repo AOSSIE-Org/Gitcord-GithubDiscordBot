@@ -107,16 +107,58 @@ The current codebase provides these major Gitcord features:
 - **PR review assignment planning:** Gitcord can plan review requests for eligible reviewers.
 - **Mentor-controlled issue assignment:** Contributors can request an issue, and mentors can approve, reject, or replace the assignee from Discord.
 - **PR context previews:** The bot can show PR status, author, reviews, CI state, idle time, and mentor signal from a PR URL.
-- **Verified-only notifications:** GitHub activity notifications are sent only to verified Discord users and are deduplicated.
-- **CodeRabbit reminders:** Optional reminders can notify PR authors about old CodeRabbit review comments.
-- **Audit reports:** Dry runs generate JSON and Markdown reports of planned Discord and GitHub actions.
+- **GitHub notifications:** Nine notification types cover the full lifecycle (issue assigned, PR review states, review comments, PR merged, PR closed, issue reopened, PR reopened), each gated by its own `NotificationConfig` flag except PR Approved and Changes Requested, which share `pr_review_result`
+- **Verified-only notifications:** All notifications are sent only to verified Discord users and are deduplicated to prevent duplicates
+- **CodeRabbit reminders:** Optional reminders can notify PR authors about old CodeRabbit review comments
+- **Audit reports:** Dry runs generate JSON and Markdown reports of planned Discord and GitHub actions
 - **Activity reports:** Gitcord writes a human-readable activity feed for mentor visibility.
 - **Audit event export:** CLI export supports JSON, CSV, and Markdown with filters for user, event type, and date range.
-- **SQLite local state:** Contributions, scores, cursors, identity links, issue requests, notifications, and audit events are stored locally.
-- **GitHub snapshots:** Optional snapshot writing exports identities, scores, contributors, roles, issue requests, and notifications to a GitHub repository.
+- **SQLite local state:** Contributions, cursors, identity links, issue requests, notifications, social profiles, and audit events are stored locally.
+- **GitHub snapshots:** Optional snapshot writing exports identities, contributors, roles, issue requests, and notifications to a GitHub repository.
 - **Docker support:** The project includes Docker and Docker Compose files for deployment.
 
-### 1.6 Main Code Areas
+### 1.6 Notification Types (GitHub → Discord)
+
+Gitcord supports **9 notification types** that cover the full GitHub contribution lifecycle. All notifications are:
+- **Verified-only:** Sent only to users who have verified their Discord-GitHub identity
+- **Configurable:** Each type can be enabled/disabled via `NotificationConfig` (`pr_review_result` covers both PR Approved and Changes Requested)
+- **Deduplicated:** Prevents duplicate notifications for the same event using deduplication keys
+- **Recipient-aware:** Each event type routes to the appropriate GitHub user (assignee, author, or reviewer)
+
+| Notification Type | Config Flag | Trigger | Recipient | Message | Dedup Key |
+|---|---|---|---|---|---|
+| **Issue Assigned** | `issue_assignment` | Issue assigned to a user | Assignee | 📋 Assigned to you: `[title]` | `issue_assigned:{repo}:{issue_number}:{user}` |
+| **PR Review Requested** | `pr_review_requested` | Reviewer requested on PR | Reviewer | 👀 Review requested: `[title]` | `pr_review_requested:{repo}:{pr_number}:{user}:{reviewer_id}` |
+| **PR Approved** | `pr_review_result` | PR review approved | PR Author | ✅ Approved: `[title]` | `pr_reviewed:{repo}:{pr_number}:{user}:{review_id}:APPROVED` |
+| **Changes Requested** | `pr_review_result` | Changes requested on PR | PR Author | 🔁 Changes requested: `[title]` | `pr_reviewed:{repo}:{pr_number}:{user}:{review_id}:CHANGES_REQUESTED` |
+| **Review Comment** | `pr_review_comment` | Comment posted on PR review | PR Author | 💬 Review comment: `[title]` | `pr_reviewed:{repo}:{pr_number}:{user}:{review_id}:COMMENT` |
+| **PR Merged** | `pr_merged` | PR merged to main | PR Author | 🎉 Merged: `[title]` | `pr_merged:{repo}:{pr_number}:{user}` |
+| **PR Closed** | `pr_closed` | PR closed without merge | PR Author | 🚫 Closed: `[title]` | `pr_closed:{repo}:{pr_number}:{user}:{closed_at}` |
+| **Issue Reopened** | `issue_reopened` | Issue reopened | Current Assignee | 📌 Reopened: `[title]` | `issue_reopened:{repo}:{issue_number}:{user}:{reopened_at}` |
+| **PR Reopened** | `pr_reopened` | PR reopened | PR Author | 🔄 Reopened: `[title]` | `pr_reopened:{repo}:{pr_number}:{user}:{reopened_at}` |
+
+**Delivery Method:**
+- Default: DM to verified Discord user
+- Fallback: Send to configured `channel_id` if DM fails and channel is specified
+
+**Configuration:**
+
+```yaml
+discord:
+  notifications:
+    enabled: true                    # Master switch for all notifications
+    issue_assignment: true           # When issue is assigned
+    pr_review_requested: true        # When reviewer is requested
+    pr_review_result: true           # When review is approved or changes requested
+    pr_review_comment: true          # When comment posted on review
+    pr_merged: true                  # When PR is merged
+    pr_closed: true                  # When PR is closed without merge
+    issue_reopened: true             # When issue is reopened
+    pr_reopened: true                # When PR is reopened
+    channel_id: null                 # Optional fallback channel for notifications
+```
+
+### 1.7 Main Code Areas
 
 | Area | Files | Responsibility |
 | --- | --- | --- |

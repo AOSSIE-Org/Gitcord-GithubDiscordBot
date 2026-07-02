@@ -2,6 +2,7 @@ runtime:
   mode: "dry-run"
   log_level: "INFO"
   data_dir: "/tmp/ghdcbot-state"
+  activity_period_days: 30
   github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
   discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
@@ -45,29 +46,23 @@ discord:
     sync:
       role_names: ["Mentor"]
       allow_discord_administrators: true
-  # Optional: verified-only GitHub → Discord notifications (issue assigned, PR review, merged, etc.)
+  # Optional: verified-only GitHub → Discord notifications for the full issue/PR lifecycle
+  # Each notification type can be independently enabled/disabled
+  # All notifications are sent only to verified Discord users to prevent abuse
   # notifications:
-  #   enabled: true
-  #   issue_assignment: true
-  #   pr_review_requested: true
-  #   pr_review_result: true
-  #   pr_merged: true
+  #   enabled: true                    # Master switch for all notifications
+  #   issue_assignment: true           # 📋 Notify when issue is assigned to a user
+  #   pr_review_requested: true        # 👀 Notify when reviewer is requested on a PR
+  #   pr_review_result: true           # ✅ 🔁 Notify when PR review is approved or changes requested
+  #   pr_review_comment: true          # 💬 Notify when reviewer posts a comment on a PR review
+  #   pr_merged: true                  # 🎉 Notify when PR is merged to main
+  #   pr_closed: true                  # 🚫 Notify when PR is closed without merge
+  #   issue_reopened: true             # 📌 Notify when issue is reopened
+  #   pr_reopened: true                # 🔄 Notify when PR is reopened
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
   #   coderabbit_bot_logins: ["coderabbitai", "coderabbitai[bot]"]
-  #   channel_id: null  # null = DM; set to channel ID to post there
-
-scoring:
-  period_days: 30
-  weights:
-    # Base scoring currently uses merged PR events.
-    pr_merged: 5
-
-role_mappings:
-  - discord_role: "Contributor"
-    min_score: 10
-  - discord_role: "Maintainer"
-    min_score: 40
+  #   channel_id: null  # null = DM to user; set to channel ID to post notifications there instead
 
 assignments:
   review_roles:
@@ -78,14 +73,23 @@ assignments:
   # Optional: roles required for a contributor to be "eligible" for issue assignment (empty = any verified user)
   issue_request_eligible_roles: []
 
+# Optional: Discord roles granted by merged PR count (promotion-only; never auto-removed)
+# merge_role_rules:
+#   enabled: true
+#   rules:
+#     - discord_role: "Contributor"
+#       min_merged_prs: 1
+#     - discord_role: "Maintainer"
+#       min_merged_prs: 5
+
 # Optional: unlink cooldown (hours) after verification before /unlink or CLI unlink is allowed
 # identity:
 #   unlink_cooldown_hours: 24
 
 # Optional: when a contributor has a PR merged in a repo, grant them the corresponding Discord role
 # (repo name -> Discord role name). Roles are add-only and never auto-removed.
-repo_contributor_roles:
-  castro: "castro"
+# repo_contributor_roles:
+#   my-repo: "my-repo-contributor"
 
 identity_mappings:
   - github_user: "YOUR_GITHUB_USERNAME"

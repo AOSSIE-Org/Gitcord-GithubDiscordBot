@@ -226,7 +226,7 @@ Wait 30 seconds for commands to sync.
 
 **9. Enable Active Mode** (After Testing)
 
-1. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, scores GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
+1. **Dry-run (default):** Run `run-once` with your config. The bot reads your guild’s members and roles, ingests GitHub activity, and writes audit reports. No roles are changed in Discord; check `<data_dir>/reports/audit.md` to see planned role add/remove actions.
 2. **Live role updates:** To have the bot actually add/remove roles in Discord, set in `config/config.yaml`:
    - `runtime.mode: "active"`
    - `runtime.enable_discord_role_updates: true`
@@ -242,8 +242,9 @@ Wait 30 seconds for commands to sync.
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
 - `/verify` - Check your verification status
-- `/status` - Show verification state, activity window, and roles
+- `/status` - Show verification state, activity window, roles, and social profiles
 - `/unlink` - Unlink your GitHub identity
+- `/profile` - Link or view X/LinkedIn social profiles (`/profile set`, `/profile view`, `/profile remove`)
 
 ### Contribution & Metrics
 

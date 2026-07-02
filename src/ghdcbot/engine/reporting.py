@@ -123,7 +123,7 @@ def render_markdown_report(
     sections = [
         "\n".join(summary_lines),
         _render_contribution_summary_section(
-            contribution_summaries or [], config.scoring.period_days, config=config
+            contribution_summaries or [], config.runtime.activity_period_days
         ),
         _render_discord_section(discord_sorted),
         _render_issue_section(github_sorted),
@@ -133,40 +133,22 @@ def render_markdown_report(
 
 
 def _render_contribution_summary_section(
-    summaries: Sequence[ContributionSummary], period_days: int, config=None
+    summaries: Sequence[ContributionSummary], period_days: int
 ) -> str:
     lines = [f"## Contribution Summary (Last {period_days} days)"]
-    # Add note about difficulty-aware scoring if configured
-    if config and getattr(config.scoring, "difficulty_weights", None):
-        difficulty_weights = config.scoring.difficulty_weights
-        weights_str = ", ".join(f"{k}: {v}" for k, v in sorted(difficulty_weights.items()))
-        lines.append(f"*Note: Difficulty-aware scoring enabled ({weights_str}). Merged PRs are scored based on linked issue labels.*")
-    # Add note about quality adjustments if configured
-    if config and getattr(config.scoring, "quality_adjustments", None):
-        qa = config.scoring.quality_adjustments
-        adjustment_notes = []
-        if qa.penalties:
-            penalty_strs = [f"{k}: {v}" for k, v in sorted(qa.penalties.items())]
-            adjustment_notes.append(f"Penalties: {', '.join(penalty_strs)}")
-        if qa.bonuses:
-            bonus_strs = [f"{k}: {v}" for k, v in sorted(qa.bonuses.items())]
-            adjustment_notes.append(f"Bonuses: {', '.join(bonus_strs)}")
-        if adjustment_notes:
-            lines.append(f"*Quality adjustments enabled: {'; '.join(adjustment_notes)}.*")
     if not summaries:
         lines.append("No activity in period.")
         return "\n".join(lines)
-    lines.append("| User | Issues | PRs | Reviews | Comments | Score |")
-    lines.append("|------|--------|-----|---------|----------|-------|")
+    lines.append("| User | Issues | PRs | Reviews | Comments |")
+    lines.append("|------|--------|-----|---------|----------|")
     for summary in sorted(summaries, key=lambda entry: entry.github_user):
         lines.append(
-            "| {user} | {issues} | {prs} | {reviews} | {comments} | {score} |".format(
+            "| {user} | {issues} | {prs} | {reviews} | {comments} |".format(
                 user=summary.github_user,
                 issues=summary.issues_opened,
                 prs=summary.prs_opened,
                 reviews=summary.prs_reviewed,
                 comments=summary.comments,
-                score=summary.total_score,
             )
         )
     return "\n".join(lines)

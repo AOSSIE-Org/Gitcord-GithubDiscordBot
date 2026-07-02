@@ -123,6 +123,21 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_notifications_sent_github_user ON notifications_sent (github_user);
                 CREATE INDEX IF NOT EXISTS idx_notifications_sent_discord_user ON notifications_sent (discord_user_id);
+                CREATE TABLE IF NOT EXISTS social_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    discord_user_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    profile_handle TEXT NOT NULL,
+                    display_value TEXT NOT NULL,
+                    verified INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(discord_user_id, platform)
+                );
+                CREATE INDEX IF NOT EXISTS idx_social_profiles_discord_user 
+                    ON social_profiles (discord_user_id);
+                CREATE INDEX IF NOT EXISTS idx_social_profiles_platform 
+                    ON social_profiles (platform);
                 """
             )
 
@@ -174,17 +189,16 @@ class SqliteStorage:
         self,
         period_start: datetime,
         period_end: datetime,
-        weights: dict[str, int],
+        weights: dict[str, int] | None = None,
         difficulty_weights: dict[str, int] | None = None,
     ) -> Sequence[ContributionSummary]:
+        if weights is not None or difficulty_weights is not None:
+            raise ValueError(
+                "Score arguments are deprecated in SqliteStorage.list_contribution_summaries; "
+                "pass no scoring arguments."
+            )
         start_utc = _ensure_utc(period_start)
         end_utc = _ensure_utc(period_end)
-        # Normalize difficulty weights keys to lowercase for case-insensitive matching
-        normalized_difficulty_weights = None
-        if difficulty_weights:
-            normalized_difficulty_weights = {
-                k.lower(): v for k, v in difficulty_weights.items()
-            }
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -218,28 +232,6 @@ class SqliteStorage:
                 bucket["prs_reviewed"] += 1
             elif event_type == "comment":
                 bucket["comments"] += 1
-            # Scoring: merge-only to prevent spam and align incentives with mentor-approved contributions.
-            # Only pr_merged events contribute to scores. All other events remain visible in reports
-            # but do not affect scores.
-            if event_type == "pr_merged":
-                # Check if this is a merged PR with difficulty labels
-                if normalized_difficulty_weights:
-                    payload = json.loads(row["payload_json"])
-                    difficulty_labels = payload.get("difficulty_labels", [])
-                    if difficulty_labels:
-                        # Find matching difficulty labels (case-insensitive)
-                        matching_weights = []
-                        for label in difficulty_labels:
-                            label_lower = label.lower() if isinstance(label, str) else str(label).lower()
-                            if label_lower in normalized_difficulty_weights:
-                                matching_weights.append(normalized_difficulty_weights[label_lower])
-                        if matching_weights:
-                            # Use max weight if multiple labels exist
-                            bucket["total_score"] += max(matching_weights)
-                            continue
-                # Fallback to weight-based scoring for merged PRs
-                bucket["total_score"] += weights.get("pr_merged", 0)
-            # All other event types are ignored for scoring (but remain in counts/reports)
 
         return [
             ContributionSummary(
@@ -744,6 +736,162 @@ class SqliteStorage:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # Social Profile Methods (Week 5 Day 5)
+    
+    def set_social_profile(
+        self,
+        discord_user_id: str,
+        platform: str,
+        profile_handle: str,
+        display_value: str,
+    ) -> dict:
+        """Create or update a social profile for a Discord user.
+        
+        Args:
+            discord_user_id: Discord user ID
+            platform: Platform name (x, linkedin, bluesky, etc.)
+            profile_handle: Normalized identifier (username or URL)
+            display_value: User-friendly display value (URL or handle)
+            
+        Returns:
+            dict with id, discord_user_id, platform, profile_handle, display_value, created_at, updated_at
+        """
+        self.init_schema()
+        now = datetime.now(timezone.utc).isoformat()
+        
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO social_profiles
+                (discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(discord_user_id, platform)
+                DO UPDATE SET
+                    profile_handle = excluded.profile_handle,
+                    display_value = excluded.display_value,
+                    updated_at = excluded.updated_at
+                """,
+                (discord_user_id, platform.lower(), profile_handle, display_value, now, now),
+            )
+            
+            # Get the inserted/updated row
+            row = conn.execute(
+                """
+                SELECT id, discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at
+                FROM social_profiles
+                WHERE discord_user_id = ? AND platform = ?
+                """,
+                (discord_user_id, platform.lower()),
+            ).fetchone()
+        
+        return dict(row) if row else {}
+    
+    def get_social_profile(self, discord_user_id: str, platform: str) -> dict | None:
+        """Get a social profile for a Discord user.
+        
+        Args:
+            discord_user_id: Discord user ID
+            platform: Platform name
+            
+        Returns:
+            dict with profile data or None if not found
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at
+                FROM social_profiles
+                WHERE discord_user_id = ? AND platform = ?
+                """,
+                (discord_user_id, platform.lower()),
+            ).fetchone()
+        
+        return dict(row) if row else None
+    
+    def get_all_social_profiles(self, discord_user_id: str) -> list[dict]:
+        """Get all social profiles for a Discord user.
+        
+        Args:
+            discord_user_id: Discord user ID
+            
+        Returns:
+            List of profile dicts
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at
+                FROM social_profiles
+                WHERE discord_user_id = ?
+                ORDER BY platform ASC
+                """,
+                (discord_user_id,),
+            ).fetchall()
+        
+        return [dict(row) for row in rows]
+    
+    def remove_social_profile(self, discord_user_id: str, platform: str) -> bool:
+        """Remove a social profile.
+        
+        Args:
+            discord_user_id: Discord user ID
+            platform: Platform name
+            
+        Returns:
+            True if profile was removed, False if not found
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM social_profiles
+                WHERE discord_user_id = ? AND platform = ?
+                """,
+                (discord_user_id, platform.lower()),
+            )
+            return cursor.rowcount > 0
+    
+    def update_social_profile_display(
+        self,
+        discord_user_id: str,
+        platform: str,
+        display_value: str,
+    ) -> dict | None:
+        """Update the display value of a social profile.
+        
+        Args:
+            discord_user_id: Discord user ID
+            platform: Platform name
+            display_value: New display value
+            
+        Returns:
+            Updated profile dict or None if not found
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE social_profiles
+                SET display_value = ?, updated_at = ?
+                WHERE discord_user_id = ? AND platform = ?
+                """,
+                (display_value, now, discord_user_id, platform.lower()),
+            )
+            
+            if cursor.rowcount == 0:
+                return None
+            
+            row = conn.execute(
+                """
+                SELECT id, discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at
+                FROM social_profiles
+                WHERE discord_user_id = ? AND platform = ?
+                """,
+                (discord_user_id, platform.lower()),
+            ).fetchone()
+        
+        return dict(row) if row else None
 
 
 def _ensure_utc(value: datetime) -> datetime:

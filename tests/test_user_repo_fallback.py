@@ -10,7 +10,6 @@ from ghdcbot.config.models import (
     RepoFilterConfig,
     RoleMappingConfig,
     RuntimeConfig,
-    ScoringConfig,
 )
 
 
@@ -32,8 +31,6 @@ def test_user_repo_fallback_on_org_unauthorized(monkeypatch, caplog) -> None:
             user_fallback=True,
         ),
         discord=DiscordConfig(guild_id="1", token="t"),
-        scoring=ScoringConfig(period_days=30, weights={"issue_opened": 1}),
-        role_mappings=[RoleMappingConfig(discord_role="Contributor", min_score=1)],
         assignments=AssignmentConfig(),
         identity_mappings=[],
     )

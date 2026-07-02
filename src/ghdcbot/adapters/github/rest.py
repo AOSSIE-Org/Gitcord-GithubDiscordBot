@@ -695,6 +695,11 @@ class GitHubRestAdapter:
                 pr_events.extend(
                     self._pull_request_reviews(owner, repo, pr["number"], since, pr_author=pr_author_for_reviews)
                 )
+                pr_events.extend(
+                    self._pull_request_timeline_lifecycle_events(
+                        owner, repo, pr, pr_author=pr_author_for_reviews, since=since
+                    )
+                )
         return pr_events, pr_numbers, pr_opened_count, pr_authors
 
     def _fetch_issue_difficulty_labels(
@@ -773,6 +778,87 @@ class GitHubRestAdapter:
                     created_at=submitted_at,
                     payload=payload,
                 )
+
+    def _pull_request_timeline_lifecycle_events(
+        self, owner: str, repo: str, pr: dict, pr_author: str | None = None, since: datetime | None = None
+    ) -> Iterable[ContributionEvent]:
+        """Emit pr_closed and pr_reopened events from a single PR timeline fetch."""
+        if not since:
+            return
+        pr_number = pr.get("number")
+        if not pr_number:
+            return
+        try:
+            timeline_events = self._fetch_issue_timeline(owner, repo, pr_number)
+            author = pr_author or (pr.get("user") or {}).get("login")
+            if not author:
+                author = "<deleted>"
+
+            for index, event in enumerate(timeline_events):
+                event_type = event.get("event")
+                created_at = _parse_iso8601(event.get("created_at"))
+                if not created_at or created_at < since:
+                    continue
+
+                if event_type == "closed":
+                    if not _should_emit_pr_closed_for_timeline_close(timeline_events, index):
+                        continue
+                    yield ContributionEvent(
+                        github_user=author,
+                        event_type="pr_closed",
+                        repo=repo,
+                        created_at=created_at,
+                        payload={
+                            "pr_number": pr_number,
+                            "pr_title": pr.get("title"),
+                            "title": pr.get("title"),
+                            "pr_author": author,
+                            "repository": repo,
+                            "html_url": pr.get("html_url"),
+                            "closed_at": event.get("created_at"),
+                        },
+                    )
+                elif event_type == "reopened":
+                    yield ContributionEvent(
+                        github_user=author,
+                        event_type="pr_reopened",
+                        repo=repo,
+                        created_at=created_at,
+                        payload={
+                            "pr_number": pr_number,
+                            "title": pr.get("title"),
+                            "pr_title": pr.get("title"),
+                            "pr_author": author,
+                            "repository": repo,
+                            "html_url": pr.get("html_url"),
+                            "reopened_at": event.get("created_at"),
+                        },
+                    )
+        except Exception as e:
+            self._logger.debug(
+                "Failed to fetch PR timeline for lifecycle events",
+                exc_info=True,
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "error": str(e),
+                },
+            )
+
+    def _fetch_issue_timeline(self, owner: str, repo: str, issue_number: int) -> list[dict]:
+        params = {"per_page": 100}
+        timeline_events: list[dict] = []
+        for page in self._paginate(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
+        ):
+            timeline_events.extend(page)
+        return sorted(
+            timeline_events,
+            key=lambda item: (
+                _parse_iso8601(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+        )
 
     def _ingest_issue_comments(
         self, owner: str, repo: str, issue_numbers: Sequence[int], since: datetime
@@ -1013,50 +1099,21 @@ class GitHubRestAdapter:
                 created_at=closed_at,
                 payload=_issue_payload(issue),
             )
-        yield from self._issue_assignment_events(owner, repo, issue, since)
-
-    def _issue_assignment_events(
-        self, owner: str, repo: str, issue: dict, since: datetime
-    ) -> Iterable[ContributionEvent]:
-        """Fetch issue timeline events for 'assigned' and emit ContributionEvent for each."""
         issue_number = issue.get("number")
-        if not issue_number:
-            return
+        timeline_events = (
+            self._issue_timeline_events(owner, repo, issue_number) if issue_number else []
+        )
+        yield from self._issue_assignment_events(owner, repo, issue, since, timeline_events)
+        yield from self._issue_reopened_events(owner, repo, issue, since, timeline_events)
+
+    def _issue_timeline_events(
+        self, owner: str, repo: str, issue_number: int
+    ) -> list[dict]:
         try:
-            params = {"per_page": 100}
-            for page in self._paginate(
-                f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
-            ):
-                for event in page:
-                    if event.get("event") != "assigned":
-                        continue
-                    created_at = _parse_iso8601(event.get("created_at"))
-                    if not created_at or created_at < since:
-                        continue
-                    assignee = event.get("assignee")
-                    if not assignee or not isinstance(assignee, dict):
-                        continue
-                    assignee_login = assignee.get("login")
-                    if not assignee_login:
-                        continue
-                    payload = _issue_payload(issue)
-                    # Include assigned_by (actor) if available in timeline event
-                    actor = event.get("actor")
-                    if actor and isinstance(actor, dict):
-                        assigned_by = actor.get("login")
-                        if assigned_by:
-                            payload["assigned_by"] = assigned_by
-                    yield ContributionEvent(
-                        github_user=assignee_login,
-                        event_type="issue_assigned",
-                        repo=repo,
-                        created_at=created_at,
-                        payload=payload,
-                    )
+            return self._fetch_issue_timeline(owner, repo, issue_number)
         except Exception as e:
-            # If timeline call fails, omit assignment events to avoid wrong timestamps
             self._logger.debug(
-                "Failed to fetch issue timeline for assignment events",
+                "Failed to fetch issue timeline",
                 exc_info=True,
                 extra={
                     "owner": owner,
@@ -1065,6 +1122,89 @@ class GitHubRestAdapter:
                     "error": str(e),
                 },
             )
+            return []
+
+    def _issue_assignment_events(
+        self, owner: str, repo: str, issue: dict, since: datetime, timeline_events: list[dict]
+    ) -> Iterable[ContributionEvent]:
+        """Emit issue_assigned events from pre-fetched timeline data."""
+        issue_number = issue.get("number")
+        if not issue_number:
+            return
+        for event in timeline_events:
+            if event.get("event") != "assigned":
+                continue
+            created_at = _parse_iso8601(event.get("created_at"))
+            if not created_at or created_at < since:
+                continue
+            assignee = event.get("assignee")
+            if not assignee or not isinstance(assignee, dict):
+                continue
+            assignee_login = assignee.get("login")
+            if not assignee_login:
+                continue
+            payload = _issue_payload(issue)
+            actor = event.get("actor")
+            if actor and isinstance(actor, dict):
+                assigned_by = actor.get("login")
+                if assigned_by:
+                    payload["assigned_by"] = assigned_by
+            yield ContributionEvent(
+                github_user=assignee_login,
+                event_type="issue_assigned",
+                repo=repo,
+                created_at=created_at,
+                payload=payload,
+            )
+
+    def _issue_reopened_events(
+        self, owner: str, repo: str, issue: dict, since: datetime, timeline_events: list[dict]
+    ) -> Iterable[ContributionEvent]:
+        """Emit issue_reopened events from pre-fetched timeline data."""
+        issue_number = issue.get("number")
+        if not issue_number:
+            return
+        active_assignees: list[str] = []
+        for event in timeline_events:
+            event_type = event.get("event")
+            assignee = event.get("assignee") if isinstance(event.get("assignee"), dict) else None
+            assignee_login = assignee.get("login") if assignee else None
+
+            if event_type == "assigned":
+                if assignee_login and assignee_login not in active_assignees:
+                    active_assignees.append(assignee_login)
+                continue
+
+            if event_type == "unassigned":
+                if assignee_login:
+                    active_assignees = [login for login in active_assignees if login != assignee_login]
+                continue
+
+            if event_type != "reopened":
+                continue
+
+            created_at = _parse_iso8601(event.get("created_at"))
+            if not created_at or created_at < since:
+                continue
+
+            # Resolve assignees from timeline-derived state around reopen (not current issue snapshot).
+            assignees_to_notify = list(active_assignees) if active_assignees else (
+                [assignee_login] if assignee_login else []
+            )
+            if not assignees_to_notify:
+                continue
+
+            for resolved_assignee in assignees_to_notify:
+                payload = _issue_payload(issue)
+                payload["reopened_at"] = event.get("created_at")
+                payload["assignee"] = resolved_assignee
+                yield ContributionEvent(
+                    github_user=resolved_assignee,
+                    event_type="issue_reopened",
+                    repo=repo,
+                    created_at=created_at,
+                    payload=payload,
+                )
 
     def _list_repo_open_issues(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
@@ -1379,6 +1519,17 @@ class GitHubRestAdapter:
                 "response_message": response.text[:200],
             },
         )
+
+
+def _should_emit_pr_closed_for_timeline_close(timeline_events: list[dict], close_index: int) -> bool:
+    """Skip pr_closed when a close event was followed by merge rather than reopen."""
+    for event in timeline_events[close_index + 1 :]:
+        event_type = event.get("event")
+        if event_type == "reopened":
+            return True
+        if event_type == "merged":
+            return False
+    return True
 
 
 def _parse_rate_limit(headers: dict) -> RateLimitStatus:

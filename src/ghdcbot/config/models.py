@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from ghdcbot.core.modes import RunMode
 
@@ -36,8 +36,8 @@ class RuntimeConfig(BaseModel):
     github_adapter: str
     discord_adapter: str
     storage_adapter: str
-    # When false, skip score computation/upsert (ingestion and notifications still run).
-    enable_scoring: bool = True
+    # Activity window for ingestion reports, snapshots, and merge-based role rules.
+    activity_period_days: int = 30
     # When false, skip applying Discord role add/remove (notifications unaffected).
     enable_discord_role_updates: bool = True
 
@@ -47,6 +47,13 @@ class RuntimeConfig(BaseModel):
         if value.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("Unsupported log level")
         return value.upper()
+
+    @field_validator("activity_period_days")
+    @classmethod
+    def validate_activity_period_days(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("activity_period_days must be positive")
+        return value
 
 
 class GitHubConfig(BaseModel):
@@ -76,7 +83,11 @@ class NotificationConfig(BaseModel):
     issue_assignment: bool = True
     pr_review_requested: bool = True
     pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
+    pr_review_comment: bool = True  # COMMENT reviews on a PR
     pr_merged: bool = True
+    pr_closed: bool = True  # PR closed without merge
+    issue_reopened: bool = True  # Issue reopened (notifies assignee)
+    pr_reopened: bool = True  # PR reopened (notifies author)
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
@@ -107,44 +118,9 @@ class DiscordConfig(BaseModel):
     unrestricted_slash_commands: bool = False
 
 
-class QualityAdjustmentsConfig(BaseModel):
-    """Optional quality adjustments for contribution scoring."""
-    penalties: dict[str, int] = Field(default_factory=dict)
-    bonuses: dict[str, int] = Field(default_factory=dict)
-
-    @field_validator("penalties", "bonuses")
-    @classmethod
-    def validate_adjustments(cls, value: dict[str, int]) -> dict[str, int]:
-        for key, val in value.items():
-            if not isinstance(val, int):
-                raise ValueError(f"quality_adjustments.{key} must be an integer")
-        return value
-
-
-class ScoringConfig(BaseModel):
-    period_days: int = 30
-    weights: dict[str, int]
-    difficulty_weights: dict[str, int] | None = None
-    quality_adjustments: QualityAdjustmentsConfig | None = None
-
-    @field_validator("period_days")
-    @classmethod
-    def validate_period_days(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("period_days must be positive")
-        return value
-
-    @field_validator("difficulty_weights")
-    @classmethod
-    def validate_difficulty_weights(cls, value: dict[str, int] | None) -> dict[str, int] | None:
-        if value is not None:
-            for label, weight in value.items():
-                if weight < 0:
-                    raise ValueError(f"difficulty_weights[{label}] must be non-negative")
-        return value
-
-
 class RoleMappingConfig(BaseModel):
+    """Deprecated: score-based role thresholds. Ignored; use merge_role_rules or repo_contributor_roles."""
+
     discord_role: str
     min_score: int = 0
 
@@ -220,8 +196,7 @@ class BotConfig(BaseModel):
     runtime: RuntimeConfig
     github: GitHubConfig
     discord: DiscordConfig
-    scoring: ScoringConfig
-    role_mappings: list[RoleMappingConfig]
+    role_mappings: list[RoleMappingConfig] = Field(default_factory=list)
     assignments: AssignmentConfig = Field(default_factory=AssignmentConfig)
     identity_mappings: list[IdentityMapping] = Field(default_factory=list)
     identity: IdentityConfig | None = None
@@ -230,6 +205,30 @@ class BotConfig(BaseModel):
     snapshots: SnapshotConfig | None = None
     # Optional: repo name -> Discord role for "Contributor-X" (PR merged in repo X grants role)
     repo_contributor_roles: dict[str, str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_scoring(cls, data: object) -> object:
+        """Accept legacy scoring blocks; map period_days to runtime.activity_period_days."""
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        scoring = migrated.pop("scoring", None)
+        runtime = migrated.get("runtime")
+        if isinstance(scoring, dict) and isinstance(runtime, dict):
+            runtime_copy = dict(runtime)
+            if "activity_period_days" not in runtime:
+                period_days = scoring.get("period_days")
+                if period_days is not None:
+                    runtime_copy["activity_period_days"] = period_days
+            runtime_copy.pop("enable_scoring", None)
+            migrated["runtime"] = runtime_copy
+        elif isinstance(runtime, dict):
+            runtime_copy = dict(runtime)
+            runtime_copy.pop("enable_scoring", None)
+            migrated["runtime"] = runtime_copy
+        migrated.setdefault("role_mappings", [])
+        return migrated
 
     @field_validator("repo_contributor_roles")
     @classmethod
@@ -240,11 +239,4 @@ class BotConfig(BaseModel):
                     raise ValueError("repo_contributor_roles: repo names must be non-empty")
                 if not (role and str(role).strip()):
                     raise ValueError("repo_contributor_roles: discord_role must be non-empty")
-        return value
-
-    @field_validator("role_mappings")
-    @classmethod
-    def validate_role_mappings(cls, value: list[RoleMappingConfig]) -> list[RoleMappingConfig]:
-        if not value:
-            raise ValueError("role_mappings must not be empty")
         return value
