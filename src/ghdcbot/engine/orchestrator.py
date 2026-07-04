@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from ghdcbot.config.models import BotConfig, IdentityMapping, MergeRoleRulesConfig, RoleMappingConfig
+from ghdcbot.config.sync_safety import assert_sync_safe
 from ghdcbot.core.interfaces import (
     DiscordReader,
     DiscordWriter,
@@ -43,6 +44,7 @@ class Orchestrator:
                 raise
 
     def _run_once_body(self, logger: logging.Logger, sync: SyncSession) -> None:
+        assert_sync_safe(self.config)
         self.storage.init_schema()
 
         period_end = datetime.now(timezone.utc)

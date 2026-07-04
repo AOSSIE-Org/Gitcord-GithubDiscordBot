@@ -58,7 +58,7 @@ def send_notification_for_event(
             event_type_key = "pr_changes_requested"
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
-        elif state == "COMMENT":
+        elif state in ("COMMENT", "COMMENTED"):
             if not config.pr_review_comment:
                 return False
             event_type_key = "pr_review_comment"

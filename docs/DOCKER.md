@@ -141,9 +141,67 @@ Gitcord-GithubDiscordBot/
 
 ---
 
+## Scheduled sync (`run-once`)
+
+The Discord bot handles slash commands; **background sync** ingests GitHub activity, sends notifications, and (when enabled) updates roles. Run it on a schedule so mentors do not need `/sync` every time.
+
+**Prerequisites:** finish the [first-sync profile](../config/examples/aussie-first-sync.yaml) once, then use steady-state `config/config.yaml` (`cp config/aussie.yaml config/config.yaml`).
+
+**Safety:** every `run-once` (CLI, `/sync`, scheduler) runs a **preflight** that aborts if `assignments.issue_assignees` or `assignments.review_roles` are set while `github.permissions.write: true` — this blocks the bulk auto-assign incident. Check manually:
+
+```bash
+./scripts/preflight-sync.sh
+```
+
+### Option A — Docker scheduler (recommended)
+
+Runs `run-once` every **6 hours** in a sidecar container (same SQLite volume as the bot):
+
+```bash
+cp config/aussie.yaml config/config.yaml   # if not already done
+docker compose up -d                        # bot only
+docker compose --profile scheduler up -d    # bot + sync-scheduler
+docker compose logs -f sync-scheduler
+```
+
+Change interval in `.env` (seconds):
+
+```env
+GITCORD_SYNC_INTERVAL_SECONDS=43200   # 12 hours
+```
+
+Stop scheduler only: `docker compose --profile scheduler stop sync-scheduler`
+
+### Option B — Host cron
+
+For VPS hosts that already use cron:
+
+```bash
+chmod +x scripts/scheduled-run-once.sh
+# Edit path in deploy/cron/gitcord-sync.crontab, then:
+crontab -e
+```
+
+Example line (every 6 hours):
+
+```cron
+0 */6 * * * cd /path/to/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> /var/log/gitcord-sync.log 2>&1
+```
+
+Overlapping runs are skipped via a lock file on the `/data` volume.
+
+### Manual one-off
+
+```bash
+docker compose run --rm bot --config /app/config/config.yaml run-once
+```
+
+---
+
 ## Production and Maintainability Notes
 
 - **Reproducibility**: Same image and config produce the same behavior; use tagged images if you need to pin versions.
 - **Secrets**: Never bake tokens into the image; use `.env` or a secrets manager and `env_file` / env.
 - **Updates**: Rebuild with `docker compose build --no-cache` after dependency or code changes; config and data are unchanged.
 - **Logs**: Use `docker compose logs -f bot` for live logs; log level is controlled by config `runtime.log_level`.
+- **Scheduled sync**: Use `sync-scheduler` profile or host cron; with 15 AOSSIE repos expect **10–30+ minutes** per run.

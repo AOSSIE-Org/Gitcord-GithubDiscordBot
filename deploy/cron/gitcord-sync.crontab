@@ -1,0 +1,15 @@
+# Gitcord scheduled sync — install on the host that runs Docker Compose.
+#
+# 1. Edit the path below to your clone directory.
+# 2. Install:
+#      crontab -e
+#    Paste the line below (adjust path).
+# 3. Ensure config exists:
+#      cp config/aussie.yaml config/config.yaml
+# 4. Logs go to /var/log/gitcord-sync.log (create or change path).
+#
+# Every 6 hours (at minute 0):
+0 */6 * * * cd /home/shubham/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> /var/log/gitcord-sync.log 2>&1
+
+# Alternative: every 12 hours at 06:00 and 18:00 UTC
+# 0 6,18 * * * cd /home/shubham/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> /var/log/gitcord-sync.log 2>&1

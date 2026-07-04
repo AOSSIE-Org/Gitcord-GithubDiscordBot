@@ -639,9 +639,28 @@ class _FakeInteractionResponse:
     def __init__(self) -> None:
         self.edits: list[dict] = []
         self.messages: list[dict] = []
+        self.deferred = False
+        self._done = False
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def defer(self) -> None:
+        self.deferred = True
+        self._done = True
 
     async def edit_message(self, **kwargs) -> None:  # noqa: ANN003
         self.edits.append(kwargs)
+        self._done = True
+
+    async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+        self.messages.append({"content": content, "ephemeral": ephemeral})
+        self._done = True
+
+
+class _FakeFollowup:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
 
     async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
         self.messages.append({"content": content, "ephemeral": ephemeral})
@@ -651,6 +670,11 @@ class _FakeButtonInteraction:
     def __init__(self, discord_user_id: str) -> None:
         self.user = SimpleNamespace(id=discord_user_id)
         self.response = _FakeInteractionResponse()
+        self.followup = _FakeFollowup()
+        self.original_edits: list[dict] = []
+
+    async def edit_original_response(self, **kwargs) -> None:  # noqa: ANN003
+        self.original_edits.append(kwargs)
 
 
 def _view_children_disabled(view: IdentityVerificationView) -> bool:
@@ -723,14 +747,15 @@ def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     assert row is not None
     assert row["verified"] == 1
     assert row["verification_code"] is None
-    assert interaction.response.edits[0]["content"] == (
+    assert interaction.response.deferred is True
+    assert interaction.original_edits[0]["content"] == (
         "✅ Successfully verified GitHub account\n\n"
         "GitHub: octocat\n\n"
         f"Status: Verified\n\n"
         f"{VERIFICATION_CODE_REMOVAL_NOTE}"
     )
-    assert interaction.response.edits[0]["embed"] is None
-    assert interaction.response.edits[0]["view"] is view
+    assert interaction.original_edits[0]["embed"] is None
+    assert interaction.original_edits[0]["view"] is view
     assert embed.to_dict()["fields"][0]["value"] == "octocat"
     assert _view_children_disabled(view)
 
@@ -758,7 +783,8 @@ def test_identity_verify_button_reports_expired_claim(tmp_path: Path) -> None:
     row = storage.get_identity_link("d1", "octocat")
     assert row is not None
     assert row["verified"] == 0
-    assert interaction.response.edits[0]["content"] == (
+    assert interaction.response.deferred is True
+    assert interaction.original_edits[0]["content"] == (
         "❌ Verification expired.\n\n"
         "Run /link again to generate a new verification code."
     )
@@ -784,12 +810,44 @@ def test_identity_verify_button_reports_code_not_found(tmp_path: Path) -> None:
     row = storage.get_identity_link("d1", "octocat")
     assert row is not None
     assert row["verified"] == 0
-    assert interaction.response.messages[0]["content"] == (
+    assert interaction.response.deferred is True
+    assert interaction.followup.messages[0]["content"] == (
         "❌ Verification code not found.\n\n"
         "Please ensure the code is present in your GitHub bio or public gist and try again."
     )
-    assert interaction.response.messages[0]["ephemeral"] is True
+    assert interaction.followup.messages[0]["ephemeral"] is True
     assert not _view_children_disabled(view)
+
+
+def test_identity_verify_button_defers_before_slow_github_check(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+
+    class _SlowGitHubIdentity:
+        def search_verification_code(self, github_user: str, code: str):  # noqa: ARG002
+            import time
+
+            time.sleep(0.05)
+            from ghdcbot.adapters.github.identity import VerificationMatch
+
+            return VerificationMatch(found=True, location="bio")
+
+    svc = IdentityLinkService(storage=storage, github_identity=_SlowGitHubIdentity())
+    svc.create_claim("d1", "octocat")
+    view = IdentityVerificationView(
+        service=svc,
+        storage=storage,
+        discord_user_id="d1",
+        github_user="octocat",
+        profile_settings_url=github_profile_settings_url("https://api.github.com"),
+    )
+    interaction = _FakeButtonInteraction("d1")
+
+    asyncio.run(view.verify_identity(interaction))
+
+    assert interaction.response.deferred is True
+    assert interaction.original_edits
+    assert "Successfully verified" in interaction.original_edits[0]["content"]
 
 
 def test_identity_verify_cancel_button_disables_view() -> None:

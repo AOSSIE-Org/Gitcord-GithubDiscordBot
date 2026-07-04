@@ -70,7 +70,7 @@ discord:
   # Notification recipients are: assignee (issue_assignment), reviewer (pr_review_requested), author (pr_review_result, pr_review_comment, pr_merged, pr_closed, pr_reopened), assignee (issue_reopened).
   notifications:
     enabled: true                    # Master switch for all notifications
-    issue_assignment: true           # 📋 Issue assigned to a user
+    issue_assignment: false          # Off: avoids DM flood from assignment events (use /assign-issue manually)
     pr_review_requested: true        # 👀 Reviewer requested on a PR
     pr_review_result: true           # ✅ PR approved or 🔁 changes requested
     pr_review_comment: true          # 💬 Comment posted on PR review
@@ -85,7 +85,8 @@ discord:
 assignments:
   review_roles: []
   # Do NOT list Mentor here for scheduled sync — run_once auto-assigns every open
-  # unassigned issue in scanned repos. Mentors assign via /assign-issue instead.
+  # unassigned issue in scanned repos to users with the Discord Mentor role.
+  # Mentors assign via /assign-issue instead.
   issue_assignees: []
   issue_request_eligible_roles: []
 

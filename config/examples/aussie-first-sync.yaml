@@ -1,0 +1,91 @@
+# AOSSIE first-sync profile — use ONCE when expanding from 2 → 15 repos.
+#
+# Goal: ingest GitHub activity into SQLite without flooding Discord or mutating roles/GitHub.
+#
+# Usage:
+#   cp config/examples/aussie-first-sync.yaml config/config.yaml
+#   docker compose restart bot    # or restart your local bot process
+#   Run /sync once (expect 10–30+ minutes), watch logs for repos_total: 15
+#
+# After sync completes successfully, switch back to steady-state config:
+#   cp config/aussie.yaml config/config.yaml
+#   docker compose restart bot
+#
+# Steady-state turns notifications back on; role updates stay off until merge_role_rules are agreed.
+
+runtime:
+  mode: "active"
+  log_level: "INFO"
+  data_dir: "/data"
+  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
+  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
+  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  activity_period_days: 7
+  enable_discord_role_updates: false
+
+github:
+  org: "AOSSIE-Org"
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+  permissions:
+    read: true
+    write: false   # FIRST SYNC: no issue auto-assignment on GitHub
+  user_fallback: false
+  repos:
+    mode: allow
+    names:
+      - "Agora-Blockchain"
+      - "BabyNest"
+      - "DebateAI"
+      - "Devr.AI"
+      - "EduAid"
+      - "Ell-ena"
+      - "Gitcord-GithubDiscordBot"
+      - "Gitcord-Test"
+      - "InPactAI"
+      - "NeuroTrack"
+      - "Perspective"
+      - "PictoPy"
+      - "Rein"
+      - "Resonate"
+      - "Resonate-Website"
+
+discord:
+  guild_id: "1022871757289422898"
+  token: "${DISCORD_TOKEN}"
+  permissions:
+    read: true
+    write: true
+  unrestricted_slash_commands: false
+  command_permissions:
+    assign-issue:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    issue-requests:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+  activity_channel_id: null
+  pr_preview_channels: []
+  notifications:
+    enabled: false   # FIRST SYNC: no DM flood while catching up 13 new repos
+    issue_assignment: true
+    pr_review_requested: true
+    pr_review_result: true
+    pr_review_comment: true
+    pr_merged: true
+    pr_closed: true
+    issue_reopened: true
+    pr_reopened: true
+    coderabbit_reminders: false
+    coderabbit_reminder_after_hours: 48
+    channel_id: null
+
+assignments:
+  review_roles: []
+  issue_assignees: []
+  issue_request_eligible_roles: []
+
+repo_contributor_roles: {}
