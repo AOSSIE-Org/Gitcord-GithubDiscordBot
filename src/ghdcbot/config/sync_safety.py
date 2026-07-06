@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from ghdcbot.config.models import BotConfig
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.core.modes import RunMode
 
+logger = logging.getLogger(__name__)
 _OVERRIDE_ENV = "GITCORD_SYNC_SAFETY_OVERRIDE"
 
 
 def collect_sync_safety_violations(config: BotConfig) -> list[str]:
     """Return human-readable reasons sync would perform bulk GitHub mutations."""
     if os.environ.get(_OVERRIDE_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        logger.warning(
+            "%s is set; sync safety preflight checks are bypassed",
+            _OVERRIDE_ENV,
+        )
         return []
 
     if config.runtime.mode != RunMode.ACTIVE:

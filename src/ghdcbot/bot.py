@@ -152,6 +152,10 @@ class IdentityVerificationView(discord.ui.View):
         else:
             await interaction.response.edit_message(content=content, embed=None, view=self)
 
+    async def _lock_verification_ui(self, interaction: discord.Interaction) -> None:
+        self._disable()
+        await interaction.edit_original_response(view=self)
+
     async def verify_identity(self, interaction: discord.Interaction) -> None:
         clicker_id = str(interaction.user.id)
         if clicker_id != self.discord_user_id:
@@ -163,6 +167,7 @@ class IdentityVerificationView(discord.ui.View):
 
         # Acknowledge immediately; GitHub bio/gist checks can exceed Discord's 3s limit.
         await interaction.response.defer()
+        await self._lock_verification_ui(interaction)
 
         try:
             github_user = self._pending_github_user(clicker_id)
@@ -192,7 +197,7 @@ class IdentityVerificationView(discord.ui.View):
             )
             return
 
-        await interaction.followup.send_message(
+        await interaction.followup.send(
             (
                 "❌ Verification code not found.\n\n"
                 "Please ensure the code is present in your GitHub bio or public gist and try again."

@@ -1,3 +1,8 @@
+from pathlib import Path
+
+import pytest
+
+from ghdcbot.config.loader import load_config
 from ghdcbot.config.models import BotConfig
 
 
@@ -64,3 +69,14 @@ def test_legacy_scoring_migration_does_not_mutate_input_payload() -> None:
     assert "scoring" in payload
     assert payload["runtime"]["enable_scoring"] is False
     assert "activity_period_days" not in payload["runtime"]
+
+
+def test_aussie_config_loads_shared_repo_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token-github")
+    monkeypatch.setenv("DISCORD_TOKEN", "test-token-discord")
+    config_path = Path(__file__).resolve().parent.parent / "config" / "aussie.yaml"
+    config = load_config(str(config_path))
+    assert config.github.repos is not None
+    assert config.github.repos.mode == "allow"
+    assert len(config.github.repos.names) == 15
+    assert "EduAid" in config.github.repos.names

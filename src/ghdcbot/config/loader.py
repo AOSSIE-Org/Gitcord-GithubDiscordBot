@@ -16,19 +16,48 @@ _ACTIVE_CONFIG: BotConfig | None = None
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
+class _ConfigLoader(yaml.SafeLoader):
+    """YAML loader with !include relative to the config file directory."""
+
+    def __init__(self, stream, *, config_dir: Path) -> None:
+        super().__init__(stream)
+        self.config_dir = config_dir
+
+
+def _construct_include(loader: _ConfigLoader, node: yaml.Node) -> Any:
+    relative = loader.construct_scalar(node)
+    include_path = (loader.config_dir / relative).resolve()
+    if not include_path.is_file():
+        raise ConfigError(f"Included config file does not exist: {relative}")
+    return _load_yaml(include_path)
+
+
+_ConfigLoader.add_constructor("!include", _construct_include)
+
+
+def _load_yaml(config_path: Path) -> Any:
+    config_dir = config_path.parent
+
+    class Loader(_ConfigLoader):
+        def __init__(self, stream) -> None:
+            super().__init__(stream, config_dir=config_dir)
+
+    try:
+        with config_path.open(encoding="utf-8") as handle:
+            return yaml.load(handle, Loader=Loader)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Failed to parse YAML: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"Failed to read config file: {config_path}") from exc
+
+
 def load_config(path: str) -> BotConfig:
     load_dotenv()
     config_path = Path(path)
     if not config_path.exists() or not config_path.is_file():
         raise ConfigError(f"Config file does not exist: {path}")
-    try:
-        raw_text = config_path.read_text(encoding="utf-8")
-        raw: Any = yaml.safe_load(raw_text)
-    except OSError as exc:
-        raise ConfigError(f"Failed to read config file: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse YAML: {exc}") from exc
 
+    raw = _load_yaml(config_path)
     if raw is None:
         raise ConfigError("Config file is empty")
 

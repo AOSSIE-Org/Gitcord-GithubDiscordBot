@@ -104,12 +104,9 @@ def main() -> None:
             config = load_config(args.config)
             configure_logging(config.runtime.log_level)
             violations = collect_sync_safety_violations(config)
-            if violations:
-                for item in violations:
-                    logging.getLogger("CLI").error("sync preflight: %s", item)
-                raise ConfigError(
-                    "Sync preflight failed — fix config or set GITCORD_SYNC_SAFETY_OVERRIDE=1"
-                )
+            for item in violations:
+                logging.getLogger("CLI").error("sync preflight: %s", item)
+            assert_sync_safe(config)
             logging.getLogger("CLI").info("Sync preflight OK")
         elif args.command == "run-once":
             orchestrator = build_orchestrator(args.config)

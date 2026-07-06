@@ -37,7 +37,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Rollback Gitcord auto issue assignments")
     parser.add_argument("--list", type=Path, required=True, help="TSV: repo, issue_number, assignee")
     parser.add_argument("--execute", action="store_true", help="Apply changes (default: dry-run)")
-    parser.add_argument("--delay", type=float, default=0.4, help="Seconds between API calls")
+    parser.add_argument("--delay", type=float, default=1.0, help="Seconds between API calls")
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -79,8 +79,12 @@ def main() -> int:
                 continue
 
             if resp.status_code in {200, 201}:
-                assignees = [a.get("login") for a in resp.json().get("assignees", []) if isinstance(a, dict)]
-                if user in assignees:
+                assignees = [
+                    str(a.get("login", "")).lower()
+                    for a in resp.json().get("assignees", [])
+                    if isinstance(a, dict) and a.get("login")
+                ]
+                if user.lower() in assignees:
                     failed.append(f"{label}: still assigned after DELETE")
                     print(f"[{i}/{len(rows)}] FAIL {label}: assignee still present")
                 else:

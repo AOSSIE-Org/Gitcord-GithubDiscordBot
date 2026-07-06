@@ -1,15 +1,20 @@
 # Gitcord scheduled sync — install on the host that runs Docker Compose.
 #
-# 1. Edit the path below to your clone directory.
-# 2. Install:
+# 1. Replace /path/to/Gitcord-GithubDiscordBot with your clone directory.
+# 2. Ensure docker and docker compose are on PATH below (or use absolute paths in scheduled-run-once.sh).
+# 3. Install:
 #      crontab -e
-#    Paste the line below (adjust path).
-# 3. Ensure config exists:
+#    Paste the line below (adjust paths).
+# 4. Ensure config exists:
 #      cp config/aussie.yaml config/config.yaml
-# 4. Logs go to /var/log/gitcord-sync.log (create or change path).
+# 5. Logs: create the log file or directory first, or log under the project:
+#      mkdir -p logs && touch logs/gitcord-sync.log
 #
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # Every 6 hours (at minute 0):
-0 */6 * * * cd /home/shubham/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> /var/log/gitcord-sync.log 2>&1
+0 */6 * * * cd /path/to/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> logs/gitcord-sync.log 2>&1
 
 # Alternative: every 12 hours at 06:00 and 18:00 UTC
-# 0 6,18 * * * cd /home/shubham/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> /var/log/gitcord-sync.log 2>&1
+# 0 6,18 * * * cd /path/to/Gitcord-GithubDiscordBot && ./scripts/scheduled-run-once.sh >> logs/gitcord-sync.log 2>&1

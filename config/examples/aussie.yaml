@@ -1,7 +1,5 @@
-# Example config for AOSSIE-Org (reference only — not used by docker-compose).
-# Copy ideas into your own config/config.yaml; set GITHUB_TOKEN and DISCORD_TOKEN in .env.
-# For Docker: cp config/docker-example.yaml config/config.yaml and keep data_dir: "/data".
-#
+# Example AOSSIE steady-state config — copy to config/config.yaml for Docker.
+#   cp config/aussie.yaml config/config.yaml
 # First sync after expanding repos? Use config/examples/aussie-first-sync.yaml once, then revert here.
 
 runtime:
@@ -22,27 +20,8 @@ github:
     read: true
     write: true
   user_fallback: false
-  # Repo allowlist: only these repositories are scanned (sync/run-once). Uses short repo names under the org (not "org/name").
-  # Top 13 public AOSSIE repos by open issues + PRs (2026-07-03), plus Gitcord pilot repos (15 total).
-  # Omit this block entirely to include all org repos (slower on large orgs). mode "deny" excludes listed names instead.
-  repos:
-    mode: allow
-    names:
-      - "Agora-Blockchain"
-      - "BabyNest"
-      - "DebateAI"
-      - "Devr.AI"
-      - "EduAid"
-      - "Ell-ena"
-      - "Gitcord-GithubDiscordBot"
-      - "Gitcord-Test"
-      - "InPactAI"
-      - "NeuroTrack"
-      - "Perspective"
-      - "PictoPy"
-      - "Rein"
-      - "Resonate"
-      - "Resonate-Website"
+  # Repo allowlist — shared: config/aussie-repos.yaml
+  repos: !include ../aussie-repos.yaml
 
 discord:
   guild_id: "1022871757289422898"

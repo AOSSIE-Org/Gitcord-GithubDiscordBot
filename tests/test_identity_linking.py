@@ -662,7 +662,7 @@ class _FakeFollowup:
     def __init__(self) -> None:
         self.messages: list[dict] = []
 
-    async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+    async def send(self, content: str, *, ephemeral: bool = False) -> None:
         self.messages.append({"content": content, "ephemeral": ephemeral})
 
 
@@ -748,14 +748,15 @@ def test_identity_verify_button_marks_claim_verified(tmp_path: Path) -> None:
     assert row["verified"] == 1
     assert row["verification_code"] is None
     assert interaction.response.deferred is True
-    assert interaction.original_edits[0]["content"] == (
+    assert _view_children_disabled(view)
+    assert interaction.original_edits[-1]["content"] == (
         "✅ Successfully verified GitHub account\n\n"
         "GitHub: octocat\n\n"
         f"Status: Verified\n\n"
         f"{VERIFICATION_CODE_REMOVAL_NOTE}"
     )
-    assert interaction.original_edits[0]["embed"] is None
-    assert interaction.original_edits[0]["view"] is view
+    assert interaction.original_edits[-1]["embed"] is None
+    assert interaction.original_edits[-1]["view"] is view
     assert embed.to_dict()["fields"][0]["value"] == "octocat"
     assert _view_children_disabled(view)
 
@@ -784,7 +785,7 @@ def test_identity_verify_button_reports_expired_claim(tmp_path: Path) -> None:
     assert row is not None
     assert row["verified"] == 0
     assert interaction.response.deferred is True
-    assert interaction.original_edits[0]["content"] == (
+    assert interaction.original_edits[-1]["content"] == (
         "❌ Verification expired.\n\n"
         "Run /link again to generate a new verification code."
     )
@@ -816,7 +817,7 @@ def test_identity_verify_button_reports_code_not_found(tmp_path: Path) -> None:
         "Please ensure the code is present in your GitHub bio or public gist and try again."
     )
     assert interaction.followup.messages[0]["ephemeral"] is True
-    assert not _view_children_disabled(view)
+    assert _view_children_disabled(view)
 
 
 def test_identity_verify_button_defers_before_slow_github_check(tmp_path: Path) -> None:
@@ -847,7 +848,7 @@ def test_identity_verify_button_defers_before_slow_github_check(tmp_path: Path) 
 
     assert interaction.response.deferred is True
     assert interaction.original_edits
-    assert "Successfully verified" in interaction.original_edits[0]["content"]
+    assert "Successfully verified" in interaction.original_edits[-1]["content"]
 
 
 def test_identity_verify_cancel_button_disables_view() -> None:

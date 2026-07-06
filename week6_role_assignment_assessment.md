@@ -218,7 +218,11 @@ From `storage.list_contributions(period_start)`:
 
 1. **Define Active Contributor** as: verified user with ≥1 `pr_merged` in `activity_period_days` (or stricter: merge + review/comment threshold).
 2. **Define Contributor** as: ≥1 all-time `pr_merged` OR first-time merge role (promotion-only).
-3. Add config block, e.g.:
+3. Add a `contributor_roles` config block (example below).
+4. Implement in **`plan_discord_roles` only**, then route `apply_discord_roles` through `DiscordPlanWriter.apply_plans` for single source of truth.
+5. **Removal policy:** Active Contributor could be removed when activity drops (unlike merge/repo promotion-only rules) — requires explicit design decision.
+
+Example `contributor_roles` config:
 
 ```yaml
 contributor_roles:
@@ -228,9 +232,6 @@ contributor_roles:
     min_merged_prs_in_period: 1
     period_days: 30  # or inherit activity_period_days
 ```
-
-4. Implement in **`plan_discord_roles` only**, then route `apply_discord_roles` through `DiscordPlanWriter.apply_plans` for single source of truth.
-5. **Removal policy:** Active Contributor could be removed when activity drops (unlike merge/repo promotion-only rules) — requires explicit design decision.
 
 ---
 

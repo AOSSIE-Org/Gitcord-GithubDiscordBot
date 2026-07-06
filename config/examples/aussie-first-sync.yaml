@@ -31,24 +31,7 @@ github:
     read: true
     write: false   # FIRST SYNC: no issue auto-assignment on GitHub
   user_fallback: false
-  repos:
-    mode: allow
-    names:
-      - "Agora-Blockchain"
-      - "BabyNest"
-      - "DebateAI"
-      - "Devr.AI"
-      - "EduAid"
-      - "Ell-ena"
-      - "Gitcord-GithubDiscordBot"
-      - "Gitcord-Test"
-      - "InPactAI"
-      - "NeuroTrack"
-      - "Perspective"
-      - "PictoPy"
-      - "Rein"
-      - "Resonate"
-      - "Resonate-Website"
+  repos: !include ../aussie-repos.yaml
 
 discord:
   guild_id: "1022871757289422898"

@@ -45,7 +45,9 @@ def _config(
 
 
 def test_preflight_ok_when_bulk_rules_empty() -> None:
-    assert collect_sync_safety_violations(_config()) == []
+    cfg = _config()
+    assert collect_sync_safety_violations(cfg) == []
+    assert_sync_safe(cfg)
 
 
 def test_preflight_ok_when_github_write_disabled() -> None:
