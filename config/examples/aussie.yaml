@@ -1,6 +1,7 @@
-# Example AOSSIE steady-state config — copy to config/config.yaml for Docker.
+# Example/reference copy of the AOSSIE steady-state config (mirrors config/aussie.yaml).
+# For production Docker deployments, copy the canonical file:
 #   cp config/aussie.yaml config/config.yaml
-# First sync after expanding repos? Use config/examples/aussie-first-sync.yaml once, then revert here.
+# First sync after expanding repos? Use config/examples/aussie-first-sync.yaml once, then revert to config/aussie.yaml.
 
 runtime:
   mode: "active"

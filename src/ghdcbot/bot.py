@@ -156,6 +156,11 @@ class IdentityVerificationView(discord.ui.View):
         self._disable()
         await interaction.edit_original_response(view=self)
 
+    async def _unlock_verification_ui(self, interaction: discord.Interaction) -> None:
+        for item in self.children:
+            item.disabled = False
+        await interaction.edit_original_response(view=self)
+
     async def verify_identity(self, interaction: discord.Interaction) -> None:
         clicker_id = str(interaction.user.id)
         if clicker_id != self.discord_user_id:
@@ -197,6 +202,7 @@ class IdentityVerificationView(discord.ui.View):
             )
             return
 
+        await self._unlock_verification_ui(interaction)
         await interaction.followup.send(
             (
                 "❌ Verification code not found.\n\n"

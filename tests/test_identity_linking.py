@@ -817,7 +817,7 @@ def test_identity_verify_button_reports_code_not_found(tmp_path: Path) -> None:
         "Please ensure the code is present in your GitHub bio or public gist and try again."
     )
     assert interaction.followup.messages[0]["ephemeral"] is True
-    assert _view_children_disabled(view)
+    assert not _view_children_disabled(view)
 
 
 def test_identity_verify_button_defers_before_slow_github_check(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ while true; do
   set +e
   (
     flock -n 9 || exit "$LOCK_BUSY_EXIT"
+    set -e
     ghdcbot --config "$CONFIG" preflight-sync
     ghdcbot --config "$CONFIG" run-once
   ) 9>"$LOCK_FILE"

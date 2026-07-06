@@ -44,7 +44,8 @@ def _load_yaml(config_path: Path) -> Any:
 
     try:
         with config_path.open(encoding="utf-8") as handle:
-            return yaml.load(handle, Loader=Loader)
+            # Loader subclasses yaml.SafeLoader; !include only resolves relative paths.
+            return yaml.load(handle, Loader=Loader)  # nosec B506
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to parse YAML: {exc}") from exc
     except OSError as exc:
