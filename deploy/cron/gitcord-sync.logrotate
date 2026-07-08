@@ -1,0 +1,13 @@
+# Log rotation for host cron sync (see gitcord-sync.crontab).
+# Install (adjust clone path):
+#   sudo cp deploy/cron/gitcord-sync.logrotate /etc/logrotate.d/gitcord-sync
+#   sudo sed -i 's|/path/to/Gitcord-GithubDiscordBot|/your/clone/path|g' /etc/logrotate.d/gitcord-sync
+#
+/path/to/Gitcord-GithubDiscordBot/logs/gitcord-sync.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

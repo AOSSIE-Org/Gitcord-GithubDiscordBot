@@ -147,7 +147,19 @@ class IdentityVerificationView(discord.ui.View):
 
     async def _edit_response(self, interaction: discord.Interaction, content: str) -> None:
         self._disable()
-        await interaction.response.edit_message(content=content, embed=None, view=self)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=content, embed=None, view=self)
+        else:
+            await interaction.response.edit_message(content=content, embed=None, view=self)
+
+    async def _lock_verification_ui(self, interaction: discord.Interaction) -> None:
+        self._disable()
+        await interaction.edit_original_response(view=self)
+
+    async def _unlock_verification_ui(self, interaction: discord.Interaction) -> None:
+        for item in self.children:
+            item.disabled = False
+        await interaction.edit_original_response(view=self)
 
     async def verify_identity(self, interaction: discord.Interaction) -> None:
         clicker_id = str(interaction.user.id)
@@ -158,9 +170,15 @@ class IdentityVerificationView(discord.ui.View):
             )
             return
 
+        # Acknowledge immediately; GitHub bio/gist checks can exceed Discord's 3s limit.
+        await interaction.response.defer()
+        await self._lock_verification_ui(interaction)
+
         try:
             github_user = self._pending_github_user(clicker_id)
-            ok, location = self.service.verify_claim(clicker_id, github_user)
+            ok, location = await asyncio.to_thread(
+                self.service.verify_claim, clicker_id, github_user
+            )
         except ValueError as e:
             await self._edit_response(interaction, f"Verification failed: {e}")
             return
@@ -184,7 +202,8 @@ class IdentityVerificationView(discord.ui.View):
             )
             return
 
-        await interaction.response.send_message(
+        await self._unlock_verification_ui(interaction)
+        await interaction.followup.send(
             (
                 "❌ Verification code not found.\n\n"
                 "Please ensure the code is present in your GitHub bio or public gist and try again."

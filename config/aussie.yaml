@@ -1,7 +1,9 @@
-# Example/reference copy of the AOSSIE steady-state config (mirrors config/aussie.yaml).
-# For production Docker deployments, copy the canonical file:
+# AOSSIE steady-state Gitcord config for Docker + sync-scheduler deployment.
+# Copy to config/config.yaml for production:
 #   cp config/aussie.yaml config/config.yaml
-# First sync after expanding repos? Use config/examples/aussie-first-sync.yaml once, then revert to config/aussie.yaml.
+# Set GITHUB_TOKEN and DISCORD_TOKEN in .env.
+#
+# First sync after expanding repos? Use config/examples/aussie-first-sync.yaml once, then revert here.
 
 runtime:
   mode: "active"
@@ -21,8 +23,9 @@ github:
     read: true
     write: true
   user_fallback: false
-  # Repo allowlist — shared: config/aussie-repos.yaml
-  repos: !include ../aussie-repos.yaml
+  # Repo allowlist: only these repositories are scanned (sync/run-once). Uses short repo names under the org (not "org/name").
+  # Shared list: config/aussie-repos.yaml (15 AOSSIE repos).
+  repos: !include aussie-repos.yaml
 
 discord:
   guild_id: "1022871757289422898"
@@ -46,21 +49,19 @@ discord:
   activity_channel_id: null
   pr_preview_channels: []
   # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
-  # Each notification type can be independently enabled/disabled to control notification volume.
-  # Notification recipients are: assignee (issue_assignment), reviewer (pr_review_requested), author (pr_review_result, pr_review_comment, pr_merged, pr_closed, pr_reopened), assignee (issue_reopened).
   notifications:
-    enabled: true                    # Master switch for all notifications
-    issue_assignment: true           # 📋 Issue assigned to a user
-    pr_review_requested: true        # 👀 Reviewer requested on a PR
-    pr_review_result: true           # ✅ PR approved or 🔁 changes requested
-    pr_review_comment: true          # 💬 Comment posted on PR review
-    pr_merged: true                  # 🎉 PR merged to main
-    pr_closed: true                  # 🚫 PR closed without merge
-    issue_reopened: true             # 📌 Issue reopened
-    pr_reopened: true                # 🔄 PR reopened
+    enabled: true
+    issue_assignment: false          # Off: avoids DM flood from assignment events (use /assign-issue manually)
+    pr_review_requested: true
+    pr_review_result: true
+    pr_review_comment: true
+    pr_merged: true
+    pr_closed: true
+    issue_reopened: true
+    pr_reopened: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
-    channel_id: null  # null = DM; set to a channel ID to post notifications there instead
+    channel_id: null
 
 assignments:
   review_roles: []

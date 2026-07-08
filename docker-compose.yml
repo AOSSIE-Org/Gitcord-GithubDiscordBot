@@ -2,6 +2,10 @@
 # Usage: copy .env and config, then run: docker compose up -d
 # Data (SQLite, reports, identity links) persists in named volume gitcord_data.
 # init_data ensures /data is owned by appuser (image runs as non-root); runs once then exits.
+#
+# Optional scheduled sync (every 6h by default):
+#   docker compose --profile scheduler up -d
+# Or use host cron: deploy/cron/gitcord-sync.crontab + scripts/scheduled-run-once.sh
 
 services:
   init_data:
@@ -26,6 +30,29 @@ services:
       # Persist SQLite state, reports, and audit logs between restarts.
       - gitcord_data:/data
     command: ["--config", "/app/config/config.yaml", "bot"]
+    restart: unless-stopped
+
+  # Optional: periodic run-once in the same image/volume as the bot (no host cron).
+  # Enable: docker compose --profile scheduler up -d
+  sync-scheduler:
+    build: .
+    image: gitcord:latest
+    env_file: .env
+    profiles:
+      - scheduler
+    depends_on:
+      init_data:
+        condition: service_completed_successfully
+    volumes:
+      - ./config:/app/config:ro
+      - ./scripts:/app/scripts:ro
+      - gitcord_data:/data
+    environment:
+      GITCORD_CONFIG: /app/config/config.yaml
+      GITCORD_SYNC_INTERVAL_SECONDS: ${GITCORD_SYNC_INTERVAL_SECONDS:-21600}
+    entrypoint: []
+    user: appuser
+    command: ["bash", "/app/scripts/sync-loop.sh"]
     restart: unless-stopped
 
 volumes:

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from ghdcbot.config.loader import load_config
+from ghdcbot.config.sync_safety import assert_sync_safe, collect_sync_safety_violations
 from ghdcbot.core.errors import AdapterError, ConfigError
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.engine.identity_linking import IdentityLinkService
@@ -69,6 +70,10 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Path to config YAML file")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-once", help="Run a single orchestration cycle")
+    sub.add_parser(
+        "preflight-sync",
+        help="Validate config is safe for run-once (blocks bulk issue assign / PR review requests)",
+    )
     link_p = sub.add_parser("link", help="Create a GitHub identity link claim (phase-1 verification)")
     link_p.add_argument("--discord-user-id", required=True, help="Discord user ID (numeric)")
     link_p.add_argument("github_user", help="GitHub username to claim")
@@ -95,7 +100,15 @@ def main() -> None:
     orchestrator = None
     try:
         identity_reader = None
-        if args.command == "run-once":
+        if args.command == "preflight-sync":
+            config = load_config(args.config)
+            configure_logging(config.runtime.log_level)
+            violations = collect_sync_safety_violations(config)
+            for item in violations:
+                logging.getLogger("CLI").error("sync preflight: %s", item)
+            assert_sync_safe(config)
+            logging.getLogger("CLI").info("Sync preflight OK")
+        elif args.command == "run-once":
             orchestrator = build_orchestrator(args.config)
             orchestrator.run_once()
         elif args.command == "bot":
