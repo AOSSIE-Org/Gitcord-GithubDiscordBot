@@ -78,5 +78,6 @@ def test_aussie_config_loads_shared_repo_allowlist(monkeypatch: pytest.MonkeyPat
     config = load_config(str(config_path))
     assert config.github.repos is not None
     assert config.github.repos.mode == "allow"
-    assert len(config.github.repos.names) == 15
+    assert len(config.github.repos.names) == 19
     assert "EduAid" in config.github.repos.names
+    assert "SkillBot" in config.github.repos.names

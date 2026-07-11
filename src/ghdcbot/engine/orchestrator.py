@@ -18,7 +18,11 @@ from ghdcbot.core.interfaces import (
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
-from ghdcbot.engine.notifications import run_coderabbit_reminders, send_notification_for_event
+from ghdcbot.engine.notifications import (
+    run_coderabbit_reminders,
+    send_notification_for_event,
+    send_pr_opened_channel_notification,
+)
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.snapshots import write_snapshots_to_github
@@ -93,6 +97,7 @@ class Orchestrator:
         # Send verified-only notifications for new events (if enabled)
         notification_config = getattr(self.config.discord, "notifications", None)
         if notification_config and notification_config.enabled:
+            pr_open_channels = getattr(self.config.discord, "pr_open_channels", None) or {}
             _send_notifications_for_new_events(
                 contributions,
                 self.storage,
@@ -100,6 +105,7 @@ class Orchestrator:
                 policy,
                 notification_config,
                 self.config.github.org,
+                pr_open_channels,
             )
             # CodeRabbit reminders: one reminder per PR for verified contributors (opt-in, non-blocking)
             if getattr(notification_config, "coderabbit_reminders", False):
@@ -267,12 +273,20 @@ def _send_notifications_for_new_events(
     policy: MutationPolicy,
     config: Any,
     github_org: str,
+    pr_open_channels: dict[str, str] | None = None,
 ) -> None:
     """Send Discord notifications for notification-worthy events (verified users only)."""
     logger = logging.getLogger("Notifications")
     sent_count = 0
     pr_reviewed_count = 0
+    channels = pr_open_channels or {}
     for event in contributions:
+        if event.event_type == "pr_opened":
+            if send_pr_opened_channel_notification(
+                event, storage, discord_writer, policy, config, channels, github_org
+            ):
+                sent_count += 1
+            continue
         if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened"}:
             if event.event_type == "pr_reviewed":
                 pr_reviewed_count += 1

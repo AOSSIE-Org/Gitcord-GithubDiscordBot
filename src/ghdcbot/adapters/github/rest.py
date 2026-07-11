@@ -793,6 +793,7 @@ class GitHubRestAdapter:
             author = pr_author or (pr.get("user") or {}).get("login")
             if not author:
                 author = "<deleted>"
+            merged_at = _parse_iso8601(pr.get("merged_at"))
 
             for index, event in enumerate(timeline_events):
                 event_type = event.get("event")
@@ -801,7 +802,9 @@ class GitHubRestAdapter:
                     continue
 
                 if event_type == "closed":
-                    if not _should_emit_pr_closed_for_timeline_close(timeline_events, index):
+                    if not _should_emit_pr_closed_for_timeline_close(
+                        timeline_events, index, merged_at
+                    ):
                         continue
                     yield ContributionEvent(
                         github_user=author,
@@ -1228,7 +1231,14 @@ class GitHubRestAdapter:
         for page in self._paginate(f"/repos/{owner}/{repo_name}/pulls", params=params):
             for pr in page:
                 author = (pr.get("user") or {}).get("login") if pr.get("user") else None
-                yield {"repo": repo["name"], "number": pr["number"], "author": author}
+                yield {
+                    "repo": repo["name"],
+                    "number": pr["number"],
+                    "author": author,
+                    "title": pr.get("title"),
+                    "html_url": pr.get("html_url"),
+                    "created_at": pr.get("created_at"),
+                }
 
     def _paginate(self, path: str, params: dict) -> Iterator[list]:
         page = 1
@@ -1521,8 +1531,19 @@ class GitHubRestAdapter:
         )
 
 
-def _should_emit_pr_closed_for_timeline_close(timeline_events: list[dict], close_index: int) -> bool:
-    """Skip pr_closed when a close event was followed by merge rather than reopen."""
+def _should_emit_pr_closed_for_timeline_close(
+    timeline_events: list[dict], close_index: int, merged_at: datetime | None = None
+) -> bool:
+    """Skip pr_closed when the close corresponds to a merge rather than a real close.
+
+    A merged PR emits both ``merged`` and ``closed`` timeline events at the same
+    timestamp; their relative sort order is not guaranteed. Treat any close at or
+    after the merge time as the merge-close (no pr_closed). Earlier closes (before
+    the merge) are genuine close-without-merge events and still emit.
+    """
+    close_at = _parse_iso8601(timeline_events[close_index].get("created_at"))
+    if merged_at and close_at and close_at >= merged_at:
+        return False
     for event in timeline_events[close_index + 1 :]:
         event_type = event.get("event")
         if event_type == "reopened":

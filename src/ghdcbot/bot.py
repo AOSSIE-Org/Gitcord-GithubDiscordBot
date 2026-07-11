@@ -43,6 +43,7 @@ from ghdcbot.engine.notifications import (
     send_notification_for_event,
 )
 from ghdcbot.core.models import ContributionEvent
+from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -624,8 +625,8 @@ def run_bot(config_path: str) -> None:
         
         # Fetch PR context
         try:
-            pr, reviews, ci_status, last_commit_time = fetch_pr_context(
-                github_adapter, owner, repo, pr_number
+            pr, reviews, ci_status, last_commit_time = await asyncio.to_thread(
+                fetch_pr_context, github_adapter, owner, repo, pr_number
             )
         except Exception as exc:
             logger.exception("Failed to fetch PR context", extra={"owner": owner, "repo": repo, "pr_number": pr_number})
@@ -669,6 +670,50 @@ def run_bot(config_path: str) -> None:
         
         embed = discord.Embed.from_dict(embed_dict)
         await interaction.followup.send(embed=embed, ephemeral=False)
+
+    @tree.command(
+        name="open-prs",
+        description="List a contributor's currently open PRs in configured repos (read-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(contributor="Discord member whose open PRs to list")
+    async def open_prs_cmd(interaction: discord.Interaction, contributor: discord.Member) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        github_user = resolve_discord_to_github(storage, str(contributor.id))
+        if not github_user:
+            await interaction.followup.send(
+                (
+                    f"❌ {contributor.mention} has not verified their GitHub identity. "
+                    "Use `/link` and `/verify-link` first."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            open_prs = await asyncio.to_thread(
+                lambda: list(github_adapter.list_open_pull_requests())
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to list open pull requests",
+                extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+            )
+            await interaction.followup.send(
+                f"❌ Error fetching open PRs: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        prs = list_open_prs_for_author(open_prs, github_user)
+        message = format_open_prs_report(
+            contributor_mention=contributor.mention,
+            github_user=github_user,
+            prs=prs,
+            org=config.github.org,
+        )
+        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
 
     # Issue assignment confirmation view
     class IssueAssignmentView(discord.ui.View):
@@ -1875,8 +1920,8 @@ def run_bot(config_path: str) -> None:
         
         # Fetch and send PR preview
         try:
-            pr, reviews, ci_status, last_commit_time = fetch_pr_context(
-                github_adapter, owner, repo, pr_number
+            pr, reviews, ci_status, last_commit_time = await asyncio.to_thread(
+                fetch_pr_context, github_adapter, owner, repo, pr_number
             )
         except Exception:
             logger.exception(

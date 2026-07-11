@@ -9,6 +9,7 @@ from ghdcbot.engine.notifications import (
     _build_dedupe_key,
     _build_notification_message,
     send_notification_for_event,
+    send_pr_opened_channel_notification,
 )
 
 
@@ -851,3 +852,64 @@ def test_issue_reopened_without_assignee() -> None:
 
     assert result is False
     assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_opened_channel_notification_posts_to_mapped_channel() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(timezone.utc),
+        payload={"pr_number": 42, "title": "Test PR"},
+    )
+
+    result = send_pr_opened_channel_notification(
+        event,
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    assert len(discord_writer.messages_sent) == 1
+    channel_id, message = discord_writer.messages_sent[0]
+    assert channel_id == "1465995983791063140"
+    assert "New PR opened" in message
+    assert "<@999>" in message
+    assert "pull/42" in message
+
+
+def test_pr_opened_channel_notification_skips_unmapped_repo() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="EduAid",
+        created_at=datetime.now(timezone.utc),
+        payload={"pr_number": 1, "title": "Other"},
+    )
+
+    result = send_pr_opened_channel_notification(
+        event,
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []

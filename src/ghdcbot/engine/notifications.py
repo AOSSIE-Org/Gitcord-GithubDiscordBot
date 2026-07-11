@@ -160,6 +160,97 @@ def send_notification_for_event(
     return sent
 
 
+def send_pr_opened_channel_notification(
+    event: ContributionEvent,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    pr_open_channels: dict[str, str],
+    github_org: str,
+) -> bool:
+    """Post a PR-opened announcement to a repo-mapped Discord channel/thread.
+
+    Only fires for verified PR authors when notifications.pr_opened is enabled and the
+    repo has an entry in pr_open_channels.
+    """
+    if not config.enabled or not config.pr_opened:
+        return False
+    if event.event_type != "pr_opened":
+        return False
+
+    channel_id = pr_open_channels.get(event.repo)
+    if not channel_id:
+        return False
+
+    author_github = event.github_user
+    if not author_github:
+        return False
+
+    discord_user_id = _resolve_github_to_discord(storage, author_github)
+    if not discord_user_id:
+        logger.info(
+            "Skipping pr_opened channel post: author not verified",
+            extra={"github_user": author_github, "repo": event.repo},
+        )
+        return False
+
+    dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
+    if _was_notification_sent(storage, dedupe_key):
+        return False
+
+    message = _build_pr_opened_channel_message(
+        event, github_org, author_github, discord_user_id
+    )
+    if not message:
+        return False
+
+    if not policy.allow_discord_mutations:
+        return False
+
+    send_msg = getattr(discord_writer, "send_message", None)
+    if not callable(send_msg):
+        return False
+
+    try:
+        sent = bool(send_msg(channel_id, message))
+    except Exception as exc:
+        logger.warning(
+            "Failed to send pr_opened channel notification",
+            exc_info=True,
+            extra={"error": str(exc), "channel_id": channel_id, "repo": event.repo},
+        )
+        return False
+
+    if sent:
+        _mark_notification_sent(
+            storage, dedupe_key, event, discord_user_id, channel_id, author_github
+        )
+        _audit_notification(storage, event, discord_user_id, channel_id, author_github)
+    return sent
+
+
+def _build_pr_opened_channel_message(
+    event: ContributionEvent,
+    github_org: str,
+    author_github: str,
+    discord_user_id: str,
+) -> str | None:
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return None
+    pr_title = (event.payload.get("title") or "Untitled")[:100]
+    url = f"https://github.com/{github_org}/{event.repo}/pull/{pr_number}"
+    author_display = f"<@{discord_user_id}> (`{author_github}`)"
+    return (
+        f"🆕 **New PR opened**\n\n"
+        f"**Author:** {author_display}\n"
+        f"**PR:** #{pr_number} — {pr_title}\n"
+        f"**Repository:** `{github_org}/{event.repo}`\n"
+        f"**Link:** {url}"
+    )
+
+
 def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None:
     """Resolve verified GitHub user to Discord user ID. Returns None if not verified.
     GitHub usernames are case-insensitive; comparison is done case-insensitively.
