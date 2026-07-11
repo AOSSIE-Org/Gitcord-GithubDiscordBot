@@ -692,9 +692,14 @@ def run_bot(config_path: str) -> None:
             return
 
         try:
-            open_prs = await asyncio.to_thread(
-                lambda: list(github_adapter.list_open_pull_requests())
-            )
+            # Prefer author-scoped Search API (one query) over scanning every configured repo.
+            list_for_author = getattr(github_adapter, "list_open_pull_requests_for_author", None)
+            if callable(list_for_author):
+                open_prs = await asyncio.to_thread(list_for_author, github_user)
+            else:
+                open_prs = await asyncio.to_thread(
+                    lambda: list(github_adapter.list_open_pull_requests())
+                )
         except Exception as exc:
             logger.exception(
                 "Failed to list open pull requests",

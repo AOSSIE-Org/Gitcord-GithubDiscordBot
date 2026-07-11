@@ -913,3 +913,101 @@ def test_pr_opened_channel_notification_skips_unmapped_repo() -> None:
 
     assert result is False
     assert discord_writer.messages_sent == []
+
+
+def _pr_opened_event(*, github_user: str = "alice", repo: str = "Gitcord-GithubDiscordBot") -> ContributionEvent:
+    return ContributionEvent(
+        github_user=github_user,
+        event_type="pr_opened",
+        repo=repo,
+        created_at=datetime.now(timezone.utc),
+        payload={"pr_number": 42, "title": "Test PR"},
+    )
+
+
+def test_pr_opened_channel_notification_skips_when_pr_opened_disabled() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+
+
+def test_pr_opened_channel_notification_skips_unverified_author() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = []
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+
+
+def test_pr_opened_channel_notification_skips_duplicate() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    storage.notifications_sent.add(
+        "pr_opened_channel:Gitcord-GithubDiscordBot:42:1465995983791063140"
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+
+
+def test_pr_opened_channel_notification_skips_when_discord_mutations_disallowed() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.DRY_RUN, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+    assert policy.allow_discord_mutations is False

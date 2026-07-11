@@ -136,6 +136,77 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)
 
+    def list_open_pull_requests_for_author(self, github_user: str) -> list[dict]:
+        """List open PRs by one author via Search API (avoids scanning every repo).
+
+        Results are limited to the configured org and filtered by the active repo
+        allowlist/denylist when present. Shape matches ``list_open_pull_requests``.
+        """
+        author = (github_user or "").strip()
+        if not author:
+            return []
+
+        repo_filter = _load_repo_filter()
+        allowed_names: set[str] | None = None
+        denied_names: set[str] = set()
+        if repo_filter is not None:
+            names = {name.strip() for name in repo_filter.names if name and name.strip()}
+            if repo_filter.mode == "allow":
+                allowed_names = names
+            else:
+                denied_names = names
+
+        # Search is author-scoped; one or two pages is enough for contributor lookups.
+        query = f"is:pr is:open author:{author} org:{self._org}"
+        results: list[dict] = []
+        page = 1
+        while page <= 5:
+            response = self._request(
+                "GET",
+                "/search/issues",
+                params={"q": query, "per_page": 100, "page": page},
+            )
+            if response is None or response.status_code != 200:
+                if response is not None:
+                    self._logger.warning(
+                        "GitHub search for open PRs failed",
+                        extra={
+                            "status_code": response.status_code,
+                            "github_user": author,
+                            "org": self._org,
+                        },
+                    )
+                break
+            payload = response.json()
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                repo_name = _repo_name_from_search_issue(item, self._org)
+                if not repo_name:
+                    continue
+                if allowed_names is not None and repo_name not in allowed_names:
+                    continue
+                if repo_name in denied_names:
+                    continue
+                user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                results.append(
+                    {
+                        "repo": repo_name,
+                        "number": item.get("number"),
+                        "author": user.get("login") or author,
+                        "title": item.get("title"),
+                        "html_url": item.get("html_url"),
+                        "created_at": item.get("created_at"),
+                    }
+                )
+            if len(items) < 100:
+                break
+            page += 1
+        return results
+
     def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
         """Assign a GitHub issue to a user.
 
@@ -1723,6 +1794,25 @@ def _issue_payload(issue: dict) -> dict:
         "state": issue.get("state"),
         "labels": [label.get("name") for label in issue.get("labels") or []],
     }
+
+
+def _repo_name_from_search_issue(item: dict, org: str) -> str | None:
+    """Extract short repo name from a Search API issue/PR item."""
+    repository_url = item.get("repository_url")
+    if isinstance(repository_url, str) and repository_url:
+        # https://api.github.com/repos/{org}/{repo}
+        parts = repository_url.rstrip("/").split("/")
+        if len(parts) >= 2:
+            return parts[-1]
+    html_url = item.get("html_url")
+    if isinstance(html_url, str) and html_url:
+        # https://github.com/{org}/{repo}/pull/{n}
+        marker = f"github.com/{org}/"
+        idx = html_url.find(marker)
+        if idx >= 0:
+            rest = html_url[idx + len(marker) :]
+            return rest.split("/", 1)[0] or None
+    return None
 
 
 def _load_repo_filter() -> RepoFilterConfig | None:
