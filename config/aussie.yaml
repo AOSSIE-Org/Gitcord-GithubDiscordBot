@@ -49,7 +49,9 @@ discord:
   activity_channel_id: null
   pr_preview_channels: []
   pr_open_channels:
-    # #projects forum threads — repo short name → thread ID (verified authors only).
+    # #projects forum threads — repo short name → thread ID.
+    # Posts for all PR opens in mapped repos; verified authors are @mentioned,
+    # unverified authors show "Contributor is not verified on gitcord".
     Agora-Blockchain: "1331983948175380581"       # Agora Blockchain
     BabyNest: "1339225155481763882"              # BabyNest
     DebateAI: "1312986807914463252"              # AI for Debates

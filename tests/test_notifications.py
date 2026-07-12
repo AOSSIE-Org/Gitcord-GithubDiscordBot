@@ -946,7 +946,7 @@ def test_pr_opened_channel_notification_skips_when_pr_opened_disabled() -> None:
     assert discord_writer.messages_sent == []
 
 
-def test_pr_opened_channel_notification_skips_unverified_author() -> None:
+def test_pr_opened_channel_notification_posts_unverified_author() -> None:
     storage = MockStorage()
     storage.verified_mappings = []
     discord_writer = MockDiscordWriter()
@@ -963,8 +963,12 @@ def test_pr_opened_channel_notification_skips_unverified_author() -> None:
         "AOSSIE-Org",
     )
 
-    assert result is False
-    assert discord_writer.messages_sent == []
+    assert result is True
+    assert len(discord_writer.messages_sent) == 1
+    _, message = discord_writer.messages_sent[0]
+    assert "Contributor is not verified on gitcord" in message
+    assert "`stranger`" in message
+    assert "<@" not in message
 
 
 def test_pr_opened_channel_notification_skips_duplicate() -> None:

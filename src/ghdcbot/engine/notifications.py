@@ -171,8 +171,8 @@ def send_pr_opened_channel_notification(
 ) -> bool:
     """Post a PR-opened announcement to a repo-mapped Discord channel/thread.
 
-    Only fires for verified PR authors when notifications.pr_opened is enabled and the
-    repo has an entry in pr_open_channels.
+    Posts for every mapped-repo PR open when notifications.pr_opened is enabled.
+    Verified authors are @mentioned; unverified authors show a verification notice.
     """
     if not config.enabled or not config.pr_opened:
         return False
@@ -188,12 +188,6 @@ def send_pr_opened_channel_notification(
         return False
 
     discord_user_id = _resolve_github_to_discord(storage, author_github)
-    if not discord_user_id:
-        logger.info(
-            "Skipping pr_opened channel post: author not verified",
-            extra={"github_user": author_github, "repo": event.repo},
-        )
-        return False
 
     dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
     if _was_notification_sent(storage, dedupe_key):
@@ -223,10 +217,11 @@ def send_pr_opened_channel_notification(
         return False
 
     if sent:
+        notify_discord_id = discord_user_id or ""
         _mark_notification_sent(
-            storage, dedupe_key, event, discord_user_id, channel_id, author_github
+            storage, dedupe_key, event, notify_discord_id, channel_id, author_github
         )
-        _audit_notification(storage, event, discord_user_id, channel_id, author_github)
+        _audit_notification(storage, event, notify_discord_id, channel_id, author_github)
     return sent
 
 
@@ -244,7 +239,7 @@ def _build_pr_opened_channel_message(
     event: ContributionEvent,
     github_org: str,
     author_github: str,
-    discord_user_id: str,
+    discord_user_id: str | None,
 ) -> str | None:
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
@@ -253,7 +248,10 @@ def _build_pr_opened_channel_message(
     url = _suppress_discord_embed(
         f"https://github.com/{github_org}/{event.repo}/pull/{pr_number}"
     )
-    author_display = f"<@{discord_user_id}> (`{author_github}`)"
+    if discord_user_id:
+        author_display = f"<@{discord_user_id}> (`{author_github}`)"
+    else:
+        author_display = f"Contributor is not verified on gitcord (`{author_github}`)"
     return (
         f"🆕 **New PR opened**\n\n"
         f"**Author:** {author_display}\n"
