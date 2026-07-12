@@ -230,6 +230,16 @@ def send_pr_opened_channel_notification(
     return sent
 
 
+def _suppress_discord_embed(url: str) -> str:
+    """Wrap a URL so Discord clients do not generate a link preview card."""
+    text = (url or "").strip()
+    if not text:
+        return text
+    if text.startswith("<") and text.endswith(">"):
+        return text
+    return f"<{text}>"
+
+
 def _build_pr_opened_channel_message(
     event: ContributionEvent,
     github_org: str,
@@ -240,7 +250,9 @@ def _build_pr_opened_channel_message(
     if pr_number is None:
         return None
     pr_title = (event.payload.get("title") or "Untitled")[:100]
-    url = f"https://github.com/{github_org}/{event.repo}/pull/{pr_number}"
+    url = _suppress_discord_embed(
+        f"https://github.com/{github_org}/{event.repo}/pull/{pr_number}"
+    )
     author_display = f"<@{discord_user_id}> (`{author_github}`)"
     return (
         f"🆕 **New PR opened**\n\n"
@@ -365,7 +377,7 @@ def _build_notification_message(
             f"**#{issue_number} – {issue_title}**\n\n"
             f"**Repository:** `{github_org}/{repo}`\n"
             f"{f'**Assigned{assigned_by_str}**' if assigned_by else ''}\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/issues/{issue_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/issues/{issue_number}')}\n\n"
             f"💡 You're now responsible for this issue. Good luck!"
         )
     
@@ -376,7 +388,7 @@ def _build_notification_message(
             f"👀 **PR Review Requested**\n\n"
             f"**PR:** #{pr_number} – {pr_title}\n"
             f"**Repository:** {github_org}/{repo}\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"Please review when you have time."
         )
     
@@ -389,7 +401,7 @@ def _build_notification_message(
             f"Great news! Your **PR #{pr_number}** has been approved by `{reviewer}`.\n\n"
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Status:** 🟢 Ready to merge\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"🎉 Excellent work!"
         )
     
@@ -402,7 +414,7 @@ def _build_notification_message(
             f"**PR #{pr_number}** needs some updates before it can be merged.\n\n"
             f"**Reviewer:** `{reviewer}`\n"
             f"**Repository:** `{github_org}/{repo}`\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"💬 Please check the review comments on GitHub and address the feedback."
         )
 
@@ -416,7 +428,7 @@ def _build_notification_message(
             f"**Reviewer:** `{reviewer}`\n"
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**PR:** {pr_title}\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"Review the feedback and update your PR if needed."
         )
     
@@ -426,42 +438,45 @@ def _build_notification_message(
             f"🚀 **PR Merged Successfully!**\n\n"
             f"Congratulations! Your **PR #{pr_number}** has been merged into the main branch. 🎉\n\n"
             f"**Repository:** `{github_org}/{repo}`\n"
-            f"**Link:** https://github.com/{github_org}/{repo}/pull/{pr_number}\n\n"
+            f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"✨ Thank you for your contribution!"
         )
 
     elif event_type_key == "pr_closed":
         pr_number = payload.get("pr_number")
         pr_title = payload.get("pr_title") or payload.get("title", "Untitled")[:100]
+        closed_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔒 **PR Closed**\n\n"
             f'Your PR **#{pr_number}** — *{pr_title}* was closed without being merged.\n\n'
             f"**Repository:** `{github_org}/{repo}`\n"
-            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"**Link:** {_suppress_discord_embed(str(closed_url))}\n\n"
             f"Review the discussion for more details."
         )
 
     elif event_type_key == "issue_reopened":
         issue_number = payload.get("issue_number")
         issue_title = payload.get("title", "Untitled")[:100]
+        issue_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
         return (
             f"📌 **Issue Reopened**\n\n"
             f"Issue #{issue_number} **{issue_title}**\n\n"
             f"assigned to you has been reopened.\n\n"
             f"**Repository:** `{github_org}/{repo}`\n"
-            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/issues/{issue_number}'}\n\n"
+            f"**Link:** {_suppress_discord_embed(str(issue_url))}\n\n"
             f"Please review the latest discussion and continue working if needed."
         )
 
     elif event_type_key == "pr_reopened":
         pr_number = payload.get("pr_number")
         pr_title = payload.get("title", "Untitled")[:100]
+        reopen_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔄 **PR Reopened**\n\n"
             f"Your PR #{pr_number} **{pr_title}**\n\n"
             f"has been reopened.\n\n"
             f"**Repository:** `{github_org}/{repo}`\n"
-            f"**Link:** {payload.get('html_url') or f'https://github.com/{github_org}/{repo}/pull/{pr_number}'}\n\n"
+            f"**Link:** {_suppress_discord_embed(str(reopen_url))}\n\n"
             f"Please review the discussion and continue updating your PR."
         )
     
@@ -600,7 +615,7 @@ def _is_coderabbit_comment(comment: dict, bot_logins_lower: list[str], cutoff: d
 def _build_coderabbit_reminder_message(
     github_org: str, repo: str, pr_number: int, after_hours: int
 ) -> str:
-    url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
+    url = _suppress_discord_embed(f"https://github.com/{github_org}/{repo}/pull/{pr_number}")
     return (
         f"📋 **CodeRabbit reminder**\n\n"
         f"You have CodeRabbit review comments on **{repo}#{pr_number}** that are over **{after_hours} hours** old.\n\n"
