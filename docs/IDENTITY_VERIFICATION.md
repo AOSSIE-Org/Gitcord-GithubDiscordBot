@@ -682,7 +682,7 @@ The manual fallback remains:
 
 Contributors can optionally link X and LinkedIn by entering their username / profile URL manually. No external app registration or OAuth is required.
 
-### Commands
+## Commands
 
 - `/connect-social platform:` — choose **X** or **LinkedIn**, then enter your username or profile URL
 - `/disconnect-social platform:` — remove that platform from Gitcord storage
@@ -690,7 +690,7 @@ Contributors can optionally link X and LinkedIn by entering their username / pro
 
 Input is normalized and validated (e.g. `@name`, `name`, or `https://x.com/name` for X; a LinkedIn profile URL for LinkedIn).
 
-### Code map
+## Code map
 
 | Path | Role |
 |------|------|

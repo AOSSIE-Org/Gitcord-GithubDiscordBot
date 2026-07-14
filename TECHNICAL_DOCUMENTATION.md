@@ -334,7 +334,8 @@ User: /verify-link github_username
 ```
 
 **Profile & Metrics:**
-```
+
+```text
 User: /profile [contributor]
   └─> get_identity_status() from SQLite
   └─> social_service.get_profiles()
@@ -650,7 +651,7 @@ discord:
 - Linked social profiles (X, LinkedIn)
 - Discord roles
 
-**`/connect-social`** accepts a platform (`x` or `linkedin`) and username/URL. Re-running the command for the same platform updates the stored value (upsert). No OAuth or external app registration is required.
+**`/connect-social`** accepts a platform (`x` or `LinkedIn`) and username/URL. Re-running the command for the same platform updates the stored value (upsert). No OAuth or external app registration is required.
 
 **`/disconnect-social`** removes a linked social profile.
 

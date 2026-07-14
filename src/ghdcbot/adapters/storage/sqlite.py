@@ -535,7 +535,7 @@ class SqliteStorage:
 
     def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
         """Return all identity link rows for a Discord user (verified and pending).
-        Optional method; not part of the Storage protocol. Used for /status and identity commands.
+        Optional method; not part of the Storage protocol. Used for /profile and identity commands.
         """
         with self._connect() as conn:
             rows = conn.execute(
@@ -755,7 +755,7 @@ class SqliteStorage:
             platform: Platform name (x, linkedin, bluesky, etc.)
             profile_handle: Normalized identifier (username or URL)
             display_value: User-friendly display value (URL or handle)
-            verified: True when linked via OAuth
+            verified: True when explicitly marking the profile verified
             
         Returns:
             dict with id, discord_user_id, platform, profile_handle, display_value, created_at, updated_at
@@ -765,6 +765,7 @@ class SqliteStorage:
         verified_int = 1 if verified else 0
         
         with self._connect() as conn:
+            # Preserve existing verified=1 on update unless caller sets verified=True.
             conn.execute(
                 """
                 INSERT INTO social_profiles
@@ -774,7 +775,10 @@ class SqliteStorage:
                 DO UPDATE SET
                     profile_handle = excluded.profile_handle,
                     display_value = excluded.display_value,
-                    verified = excluded.verified,
+                    verified = CASE
+                        WHEN excluded.verified = 1 THEN 1
+                        ELSE social_profiles.verified
+                    END,
                     updated_at = excluded.updated_at
                 """,
                 (

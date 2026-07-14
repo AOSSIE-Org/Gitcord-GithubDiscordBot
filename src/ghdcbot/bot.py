@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 import discord
@@ -16,28 +15,9 @@ from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.metrics import build_contribution_summary_message
-from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.issue_assignment import (
-    build_assignment_confirmation_embed,
-    fetch_issue_context,
-    get_assignee_activity,
-    parse_issue_url,
     resolve_discord_to_github,
-    resolve_github_to_discord,
 )
-from ghdcbot.engine.issue_request_flow import (
-    build_mentor_request_embed,
-    build_repo_selection_embed,
-    compute_eligibility,
-    get_merged_pr_count_and_last_time,
-    group_pending_requests_by_repo,
-)
-from ghdcbot.engine.notifications import (
-    _build_dedupe_key,
-    _mark_notification_sent,
-    send_notification_for_event,
-)
-from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
@@ -60,6 +40,94 @@ VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
     "It was only required to prove ownership during the verification process."
 )
+
+
+def _identity_status_lines(
+    storage: Any,
+    config: Any,
+    discord_user_id: str,
+    viewing_self: bool,
+    *,
+    stale_action: str = "Use `/verify-link` to refresh.",
+) -> list[str]:
+    """Format GitHub verification status lines for /profile (and stale warnings)."""
+    get_status = getattr(storage, "get_identity_status", None)
+    if not callable(get_status):
+        return ["**GitHub:** (link status unavailable)."]
+
+    max_age_days = None
+    if getattr(config, "identity", None) is not None:
+        max_age_days = getattr(config.identity, "verified_max_age_days", None)
+    status = get_status(discord_user_id, max_age_days=max_age_days)
+    github_user = status.get("github_user") or "—"
+    st = status.get("status") or "not_linked"
+    if st == "verified":
+        status_label = "Verified ✅"
+    elif st == "verified_stale":
+        status_label = "Verified ⚠️ (Stale)"
+    elif st == "pending":
+        status_label = "Pending ⏳"
+    else:
+        status_label = "Not linked ❌"
+
+    lines = [
+        f"**GitHub:** {github_user}",
+        f"**Verification:** {status_label}",
+    ]
+    verified_at = status.get("verified_at")
+    if verified_at:
+        verified_at_str = verified_at
+        try:
+            dt = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+            verified_at_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError):
+            pass
+        lines.append(f"**Verified at:** {verified_at_str}")
+    if status.get("is_stale"):
+        if viewing_self:
+            lines.append(f"⚠️ **Warning:** Identity verification is stale. {stale_action}")
+        else:
+            lines.append("⚠️ **Warning:** Their identity verification is stale.")
+    return lines
+
+
+async def _format_social_profiles_line(
+    social_service: SocialProfileService,
+    discord_user_id: str,
+    viewing_self: bool,
+) -> str:
+    try:
+        social_profiles = await social_service.get_profiles(discord_user_id)
+        if social_profiles:
+            profiles_text = []
+            for platform, profile in social_profiles.items():
+                suffix = " ✔️" if profile.verified else ""
+                profiles_text.append(f"  • {platform.upper()}: {profile.display_value}{suffix}")
+            return "**Social Profiles:**\n" + "\n".join(profiles_text)
+        if viewing_self:
+            return "**Social Profiles:** Not linked yet. Use `/connect-social`."
+        return "**Social Profiles:** none linked."
+    except Exception as e:
+        logging.getLogger("ghdcbot.bot").debug(
+            "Error fetching social profiles for /profile: %s", e
+        )
+        return "**Social Profiles:** (unavailable)"
+
+
+async def _format_roles_line(discord_reader: Any, discord_user_id: str) -> str:
+    try:
+        fetch_one = getattr(discord_reader, "list_roles_for_member", None)
+        if callable(fetch_one):
+            target_roles = await asyncio.to_thread(fetch_one, discord_user_id)
+        else:
+            member_roles = await asyncio.to_thread(discord_reader.list_member_roles)
+            target_roles = member_roles.get(discord_user_id, [])
+    except Exception as e:
+        logging.getLogger("ghdcbot.bot").debug("Error fetching roles for /profile: %s", e)
+        target_roles = []
+    if target_roles:
+        return f"**Roles:** {', '.join(target_roles)}."
+    return "**Roles:** (none or unable to read)."
 
 
 def github_profile_settings_url(api_base: str) -> str:
@@ -264,18 +332,6 @@ def run_bot(config_path: str) -> None:
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
     guild_id = int(config.discord.guild_id)
-    
-    # Wrapper to adapt discord_reader (has send_dm/send_message) to DiscordWriter interface for notifications
-    class DiscordWriterAdapter:
-        def __init__(self, reader: Any) -> None:
-            self._reader = reader
-        def send_dm(self, discord_user_id: str, content: str) -> bool:
-            send_dm = getattr(self._reader, "send_dm", None)
-            return send_dm(discord_user_id, content) if callable(send_dm) else False
-        def send_message(self, channel_id: str, content: str) -> bool:
-            send_msg = getattr(self._reader, "send_message", None)
-            return send_msg(channel_id, content) if callable(send_msg) else False
-    discord_writer_adapter = DiscordWriterAdapter(discord_reader)
 
     @tree.command(
         name="link",
@@ -373,75 +429,13 @@ def run_bot(config_path: str) -> None:
         if not viewing_self:
             lines.append(f"**Profile for {target.mention}**")
 
-        get_status = getattr(storage, "get_identity_status", None)
-        if callable(get_status):
-            max_age_days = None
-            if getattr(config, "identity", None) is not None:
-                max_age_days = getattr(config.identity, "verified_max_age_days", None)
-            status = get_status(discord_user_id, max_age_days=max_age_days)
-            github_user = status.get("github_user") or "—"
-            st = status.get("status") or "not_linked"
-            if st == "verified":
-                status_label = "Verified ✅"
-            elif st == "verified_stale":
-                status_label = "Verified ⚠️ (Stale)"
-            elif st == "pending":
-                status_label = "Pending ⏳"
-            else:
-                status_label = "Not linked ❌"
-            lines.append(f"**GitHub:** {github_user}")
-            lines.append(f"**Verification:** {status_label}")
-            verified_at = status.get("verified_at")
-            if verified_at:
-                verified_at_str = verified_at
-                try:
-                    dt = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
-                    verified_at_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-                except (ValueError, TypeError):
-                    pass
-                lines.append(f"**Verified at:** {verified_at_str}")
-            if status.get("is_stale"):
-                if viewing_self:
-                    lines.append(
-                        "⚠️ **Warning:** Identity verification is stale. "
-                        "Use `/verify-link` to refresh."
-                    )
-                else:
-                    lines.append("⚠️ **Warning:** Their identity verification is stale.")
-        else:
-            lines.append("**GitHub:** (link status unavailable).")
-
-        try:
-            social_profiles = await social_service.get_profiles(discord_user_id)
-            if social_profiles:
-                profiles_text = []
-                for platform, profile in social_profiles.items():
-                    suffix = " ✔️" if profile.verified else ""
-                    profiles_text.append(f"  • {platform.upper()}: {profile.display_value}{suffix}")
-                lines.append("**Social Profiles:**\n" + "\n".join(profiles_text))
-            elif viewing_self:
-                lines.append("**Social Profiles:** Not linked yet. Use `/connect-social`.")
-            else:
-                lines.append("**Social Profiles:** none linked.")
-        except Exception as e:
-            logger.debug("Error fetching social profiles for /profile: %s", e)
-            lines.append("**Social Profiles:** (unavailable)")
-
-        try:
-            fetch_one = getattr(discord_reader, "list_roles_for_member", None)
-            if callable(fetch_one):
-                target_roles = await asyncio.to_thread(fetch_one, discord_user_id)
-            else:
-                member_roles = await asyncio.to_thread(discord_reader.list_member_roles)
-                target_roles = member_roles.get(discord_user_id, [])
-        except Exception as e:
-            logger.debug("Error fetching roles for /profile: %s", e)
-            target_roles = []
-        roles_label = "Roles"
-        if target_roles:
-            lines.append(f"**{roles_label}:** {', '.join(target_roles)}.")
-        else:
-            lines.append(f"**{roles_label}:** (none or unable to read).")
+        lines.extend(
+            _identity_status_lines(storage, config, discord_user_id, viewing_self)
+        )
+        lines.append(
+            await _format_social_profiles_line(social_service, discord_user_id, viewing_self)
+        )
+        lines.append(await _format_roles_line(discord_reader, discord_user_id))
         await interaction.followup.send(
             "\n".join(lines), ephemeral=True, suppress_embeds=True
         )
@@ -484,17 +478,16 @@ def run_bot(config_path: str) -> None:
             if not github_user:
                 await interaction.followup.send("Linked user unknown.", ephemeral=True)
                 return
-            get_status = getattr(storage, "get_identity_status", None)
-            if callable(get_status):
-                max_age_days = None
-                if getattr(config, "identity", None) is not None:
-                    max_age_days = getattr(config.identity, "verified_max_age_days", None)
-                status = get_status(discord_user_id, max_age_days=max_age_days)
-                if status.get("is_stale"):
-                    stale_warning = (
-                        "\n\n⚠️ **Warning:** Identity verification is stale. "
-                        "Use `/verify-link` to refresh it."
-                    )
+            for line in _identity_status_lines(
+                storage,
+                config,
+                discord_user_id,
+                viewing_self=True,
+                stale_action="Use `/verify-link` to refresh it.",
+            ):
+                if line.startswith("⚠️"):
+                    stale_warning = f"\n\n{line}"
+                    break
             rank_subject = "you're"
         else:
             assert contributor is not None

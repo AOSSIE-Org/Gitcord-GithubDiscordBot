@@ -149,14 +149,17 @@ def build_contribution_summary_message(
     """Build the multi-window /summary body for a GitHub user (rank among all activity)."""
     end = now or datetime.now(timezone.utc)
     parts: list[str] = []
+    metrics_30: list[UserMetrics] | None = None
     for days in window_days:
         start = end - timedelta(days=days)
         metrics_list = get_contribution_metrics(storage, start, end)
+        if days == 30:
+            metrics_30 = metrics_list
         user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
         parts.append(f"**Last {days} days:**\n{format_metrics_summary(user_metrics)}")
-    ranked_30 = rank_by_activity(
-        get_contribution_metrics(storage, end - timedelta(days=30), end)
-    )
+    if metrics_30 is None:
+        metrics_30 = get_contribution_metrics(storage, end - timedelta(days=30), end)
+    ranked_30 = rank_by_activity(metrics_30)
     rank = get_rank_for_user(ranked_30, github_user)
     if rank is not None:
         parts.append(f"Top contributors by activity (last 30 days): {rank_subject} #{rank}.")
