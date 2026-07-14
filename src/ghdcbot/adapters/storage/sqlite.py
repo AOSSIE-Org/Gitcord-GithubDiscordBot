@@ -535,7 +535,7 @@ class SqliteStorage:
 
     def get_identity_links_for_discord_user(self, discord_user_id: str) -> list[dict]:
         """Return all identity link rows for a Discord user (verified and pending).
-        Optional method; not part of the Storage protocol. Used for /verify and /status.
+        Optional method; not part of the Storage protocol. Used for /status and identity commands.
         """
         with self._connect() as conn:
             rows = conn.execute(
@@ -745,6 +745,8 @@ class SqliteStorage:
         platform: str,
         profile_handle: str,
         display_value: str,
+        *,
+        verified: bool = False,
     ) -> dict:
         """Create or update a social profile for a Discord user.
         
@@ -753,26 +755,37 @@ class SqliteStorage:
             platform: Platform name (x, linkedin, bluesky, etc.)
             profile_handle: Normalized identifier (username or URL)
             display_value: User-friendly display value (URL or handle)
+            verified: True when linked via OAuth
             
         Returns:
             dict with id, discord_user_id, platform, profile_handle, display_value, created_at, updated_at
         """
         self.init_schema()
         now = datetime.now(timezone.utc).isoformat()
+        verified_int = 1 if verified else 0
         
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO social_profiles
                 (discord_user_id, platform, profile_handle, display_value, verified, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(discord_user_id, platform)
                 DO UPDATE SET
                     profile_handle = excluded.profile_handle,
                     display_value = excluded.display_value,
+                    verified = excluded.verified,
                     updated_at = excluded.updated_at
                 """,
-                (discord_user_id, platform.lower(), profile_handle, display_value, now, now),
+                (
+                    discord_user_id,
+                    platform.lower(),
+                    profile_handle,
+                    display_value,
+                    verified_int,
+                    now,
+                    now,
+                ),
             )
             
             # Get the inserted/updated row
@@ -786,7 +799,7 @@ class SqliteStorage:
             ).fetchone()
         
         return dict(row) if row else {}
-    
+
     def get_social_profile(self, discord_user_id: str, platform: str) -> dict | None:
         """Get a social profile for a Discord user.
         

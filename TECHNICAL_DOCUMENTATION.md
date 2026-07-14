@@ -1,7 +1,7 @@
 # Gitcord Technical Documentation
 
 **Version:** 1.0  
-**Last Updated:** May 2026  
+**Last Updated:** July 2026  
 **Author:** Technical Architecture Review
 
 ---
@@ -28,7 +28,7 @@ Gitcord solves the challenge of automating contributor recognition and task assi
 
 - **Automated role management** based on GitHub contribution activity
 - **Identity verification** between Discord and GitHub accounts without OAuth complexity
-- **Issue assignment workflows** that respect contributor eligibility and mentor oversight
+- **Contributor visibility** — profiles, metrics, open PRs, and verified-only notifications
 - **Transparent audit trails** for all automated actions
 - **GitHub-backed data persistence** without external databases (per Bruno's requirement)
 
@@ -222,11 +222,12 @@ discord:
 
 #### **Discord Bot (`src/ghdcbot/bot.py`)**
 - Long-running Discord bot with slash commands
-- Handles identity linking (`/link`, `/verify-link`, `/verify`, `/unlink`)
-- Provides contribution metrics (`/summary`, `/status`)
-- Issue management (`/request-issue`, `/assign-issue`, `/issue-requests`)
-- PR previews (`/pr-info` and passive URL detection)
-- Mentor-only commands (`/sync`, `/assign-issue`, `/issue-requests`)
+- Handles identity linking (`/link`, `/verify-link`, `/unlink`)
+- Shows contributor profiles (`/profile` — GitHub, verification, socials, roles)
+- Social profile linking (`/connect-social`, `/disconnect-social` — manual username/URL)
+- Contribution metrics (`/summary`, `/open-prs`)
+- Passive PR URL previews in configured channels
+- Mentor-only sync (`/sync`)
 
 #### **Orchestrator (`src/ghdcbot/engine/orchestrator.py`)**
 - Core execution engine for `run-once` cycle
@@ -332,25 +333,22 @@ User: /verify-link github_username
       └─> Audit event: identity_verified
 ```
 
-**Issue Request Flow:**
+**Profile & Metrics:**
 ```
-Contributor: /request-issue <issue_url>
-  └─> Parse issue URL
-  └─> Verify user is linked (Discord → GitHub)
-  └─> Store in SQLite `issue_requests` (status='pending')
-  └─> Audit event: issue_request_created
+User: /profile [contributor]
+  └─> get_identity_status() from SQLite
+  └─> social_service.get_profiles()
+  └─> list_roles_for_member() via Discord API (offloaded to thread)
+  └─> Return ephemeral profile message
 
-Mentor: /issue-requests
-  └─> List pending requests from SQLite
-  └─> Group by repo
-  └─> Show embed with eligibility info
+User: /summary [contributor]
+  └─> Resolve verified GitHub user
+  └─> build_contribution_summary_message() (offloaded to thread)
+  └─> Return 7-day and 30-day metrics + rank
 
-Mentor: Clicks "Approve & Assign"
-  └─> Fetch issue context (GitHub API)
-  └─> Assign issue via GitHubWriter.assign_issue()
-  └─> Update `issue_requests` (status='approved')
-  └─> Send DM to contributor
-  └─> Audit event: issue_request_approved
+User: /open-prs contributor
+  └─> Resolve Discord member → GitHub user
+  └─> List open PRs across configured repos (offloaded to thread)
 ```
 
 **Sync Command:**
@@ -603,9 +601,11 @@ Gitcord's approach:
 
 **Commands:**
 - `/link` - Create claim
-- `/verify-link` - Verify claim
-- `/verify` - Check status
-- `/status` - Show status + roles
+- `/verify-link` - Verify claim (GitHub bio/gist check; offloaded to thread)
+- `/profile` - Show GitHub, verification, socials, and roles (self or another member)
+- `/connect-social` / `/disconnect-social` - Link or remove X/LinkedIn (manual entry)
+- `/summary` - Contribution metrics (self or another verified contributor)
+- `/open-prs` - List a contributor's open PRs
 - `/unlink` - Remove verified link (cooldown applies)
 
 ### 4.2 Notifications (Verified-Only)
@@ -643,47 +643,20 @@ discord:
     channel_id: null  # null = DM, or set channel ID
 ```
 
-### 4.3 Issue Assignment Flow
+### 4.3 Contributor Profiles & Social Links
 
-**Two Flows:**
+**`/profile`** shows for a Discord member (or self):
+- GitHub username and verification status (verified, stale, pending, not linked)
+- Linked social profiles (X, LinkedIn)
+- Discord roles
 
-#### **Flow 1: Contributor Requests Assignment**
-1. Contributor runs `/request-issue <issue_url>`
-2. Bot verifies user is linked (Discord → GitHub)
-3. Bot stores request in `issue_requests` (status='pending')
-4. Mentor runs `/issue-requests`
-5. Bot shows list grouped by repo
-6. Mentor selects repo → sees requests with eligibility info
-7. Mentor approves/rejects/replaces assignee
-8. Bot assigns issue on GitHub (if approved)
-9. Bot sends DM to contributor
+**`/connect-social`** accepts a platform (`x` or `linkedin`) and username/URL. Re-running the command for the same platform updates the stored value (upsert). No OAuth or external app registration is required.
 
-#### **Flow 2: Mentor Direct Assignment**
-1. Mentor runs `/assign-issue <issue_url> <discord_user>`
-2. Bot resolves Discord user → GitHub username
-3. Bot shows confirmation embed with issue details
-4. Mentor confirms → Bot assigns issue on GitHub
-5. Bot sends DM to assignee (if notifications enabled)
+**`/disconnect-social`** removes a linked social profile.
 
-**Eligibility Check:**
-- Role-based: contributor must have role in `assignments.issue_request_eligible_roles`
-- Activity-based: shows merged PR count and last merged time
-- Verdict: "eligible", "eligible_low_activity", or "not_eligible"
+### 4.4 Passive PR Previews
 
-### 4.4 PR Info Previews
-
-**Two Modes:**
-
-#### **Mode 1: Slash Command**
-- User runs `/pr-info <pr_url>`
-- Bot fetches PR context: title, status, reviews, CI status, last commit
-- Bot shows rich embed with all details
-- Includes Discord mention if PR author is linked
-
-#### **Mode 2: Passive Detection**
-- Bot monitors configured channels (`discord.pr_preview_channels`)
-- When PR URL detected in message → auto-fetch and post embed
-- No command needed, just paste URL
+When `discord.pr_preview_channels` is configured, the bot monitors those channels. When a PR URL is detected in a message, it auto-fetches and posts an embed preview. No slash command is required.
 
 **PR Context Includes:**
 - Repository, PR number, title, state (open/closed/merged)
@@ -719,23 +692,9 @@ discord:
 - Only in active mode (mutations allowed)
 - Fails gracefully if DMs disabled
 
-### 4.6 Issue Requests
+### 4.6 Legacy Storage (`issue_requests`)
 
-**Purpose:** Contributors request issue assignment, mentors review with full context.
-
-**Storage:** `issue_requests` table
-
-**Statuses:**
-- `pending` - Awaiting mentor review
-- `approved` - Mentor approved, issue assigned
-- `rejected` - Mentor rejected
-- `cancelled` - Cancelled (timeout or manual)
-
-**Mentor Review UI:**
-- Shows contributor Discord mention, roles, merged PR count
-- Shows issue title, labels, assignees
-- Shows eligibility verdict and reason
-- Buttons: Approve & Assign, Replace Existing Assignee, Reject, Cancel
+The `issue_requests` SQLite table remains for historical data and snapshots. Discord slash commands for issue requests and assignment (`/request-issue`, `/issue-requests`, `/assign-issue`) were removed; issue assignment is handled directly on GitHub.
 
 ### 4.7 Audit Logs
 
@@ -1217,14 +1176,6 @@ discord:
   pr_preview_channels: []
   # Optional: Per-command permission rules (if omitted, falls back to assignments.issue_assignees)
   command_permissions:
-    assign-issue:
-      role_ids: []
-      role_names: ["Mentor"]
-      allow_discord_administrators: true
-    issue-requests:
-      role_ids: []
-      role_names: ["Mentor"]
-      allow_discord_administrators: true
     sync:
       role_ids: []
       role_names: ["Mentor"]

@@ -28,8 +28,9 @@ This guide explains how to safely validate Gitcord role automation in a Discord 
 
 ## Bot Command Smoke Tests
 
-- Identity: `/link`, `/verify-link`, `/verify`, `/status`, `/unlink`
-- Metrics: `/summary`, `/pr-info`
-- Mentor actions (with configured role): `/request-issue`, `/assign-issue`, `/issue-requests`, `/sync`
+- Identity: `/link`, `/verify-link`, `/profile` (optional Discord member), `/unlink`
+- Social: `/connect-social`, `/disconnect-social`
+- Metrics: `/summary` (optional Discord member), `/open-prs` (required Discord member)
+- Mentor actions (with configured role): `/sync`
 
 If slash commands do not appear immediately, wait for command sync and ensure the configured `discord.guild_id` is correct.

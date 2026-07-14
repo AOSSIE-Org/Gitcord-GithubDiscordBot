@@ -1,277 +1,170 @@
 """
-Discord slash commands for managing social profiles (X, LinkedIn).
+Discord slash commands for connecting / disconnecting X and LinkedIn.
 
-Week 5 Day 6 – Social profile integration.
-Provides: /profile set x, /profile set linkedin, /profile view, /profile remove
-Extends: /status to show linked social profiles
+Contributors enter their username / profile URL manually.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Optional
 
 import discord
 from discord import app_commands
 
+from ghdcbot.engine.social_profiles import SocialProfileService
+
 logger = logging.getLogger(__name__)
 
-
-def create_success_embed(platform: str, profile_handle: str) -> discord.Embed:
-    """Create success embed for profile linking."""
-    platform_display = {
-        "x": "X",
-        "linkedin": "LinkedIn",
-        "bluesky": "Bluesky",
-        "mastodon": "Mastodon",
-    }.get(platform, platform)
-    
-    embed = discord.Embed(
-        title=f"✅ {platform_display} profile linked",
-        description=f"Your {platform_display} profile has been linked successfully.",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Profile", value=profile_handle, inline=False)
-    embed.set_footer(text="Use /profile view to see all profiles")
-    return embed
+PLATFORM_CHOICES = [
+    app_commands.Choice(name="X", value="x"),
+    app_commands.Choice(name="LinkedIn", value="linkedin"),
+]
 
 
-def create_error_embed(platform: str, error_msg: str) -> discord.Embed:
-    """Create error embed for invalid input."""
-    platform_display = {
-        "x": "X",
-        "linkedin": "LinkedIn",
-        "bluesky": "Bluesky",
-        "mastodon": "Mastodon",
-    }.get(platform, platform)
-    
+def _platform_label(platform: str) -> str:
+    return "X" if platform == "x" else "LinkedIn"
+
+
+def _manual_profile_hint(platform: str) -> str:
     if platform == "x":
-        valid_formats = "• @username\n• username\n• https://x.com/username\n• https://twitter.com/username"
-        rules = "Length: 1–15 characters, alphanumeric + underscore only."
-    elif platform == "linkedin":
-        valid_formats = "• https://linkedin.com/in/profile-name\n• https://www.linkedin.com/in/profile-name"
-        rules = "Note: Company pages and school profiles are not supported."
-    else:
-        valid_formats = "• Check platform documentation"
-        rules = ""
-    
-    embed = discord.Embed(
-        title=f"❌ Invalid {platform_display} input",
-        description="Please check the format.",
-        color=discord.Color.red()
-    )
-    embed.add_field(name="Valid formats", value=valid_formats, inline=False)
-    if rules:
-        embed.add_field(name="Rules", value=rules, inline=False)
-    return embed
+        return "Examples: `@username`, `username`, or `https://x.com/username`"
+    return "Example: `https://linkedin.com/in/your-name`"
 
 
-def create_profile_list_embed(profiles: dict) -> discord.Embed:
-    """Create embed showing all user's social profiles."""
-    embed = discord.Embed(
-        title="Your Social Profiles",
-        color=discord.Color.blue()
-    )
-    
-    platforms = ["x", "linkedin", "bluesky", "mastodon"]
-    platform_display = {
-        "x": "X (Twitter)",
-        "linkedin": "LinkedIn",
-        "bluesky": "Bluesky",
-        "mastodon": "Mastodon",
-    }
-    
-    has_any = False
-    for platform in platforms:
-        if platform in profiles:
-            profile = profiles[platform]
-            value = f"{profile.display_value} ✔️"
-            embed.add_field(name=platform_display[platform], value=value, inline=False)
-            has_any = True
-        else:
-            embed.add_field(name=platform_display[platform], value="Not linked", inline=False)
-    
-    if not has_any:
-        embed.description = "No social profiles linked yet.\n\nLink your profiles:\n• `/profile set x <username>`\n• `/profile set linkedin <url>`"
-    
-    return embed
-
-
-def register_social_commands(tree: app_commands.CommandTree, guild_id: int, service, storage) -> None:
-    """Register /profile commands group (idempotent; call once before client.run)."""
+def register_social_commands(
+    tree: app_commands.CommandTree,
+    guild_id: int,
+    social_service: SocialProfileService,
+) -> None:
+    """Register /connect-social and /disconnect-social (idempotent)."""
     guild = discord.Object(id=guild_id)
-    if tree.get_command("profile", guild=guild) is not None:
+    if tree.get_command("connect-social", guild=guild) is not None:
         return
-    
-    # Create profile command group
-    profile_group = app_commands.Group(
-        name="profile",
-        description="Manage your social profiles (X, LinkedIn, etc.)"
-    )
-    
-    # /profile set subcommand group
-    set_group = app_commands.Group(
-        name="set",
-        description="Link a social profile"
-    )
-    
-    @set_group.command(
-        name="x",
-        description="Link your X (Twitter) profile"
+
+    @tree.command(
+        name="connect-social",
+        description="Connect your X or LinkedIn account (enter username or URL)",
+        guild=guild,
     )
     @app_commands.describe(
-        username="X username, @mention, or URL"
+        platform="Social platform to connect",
+        profile="X username or LinkedIn profile URL",
     )
-    async def profile_set_x(interaction: discord.Interaction, username: str) -> None:
-        """Set X profile."""
+    @app_commands.choices(platform=PLATFORM_CHOICES)
+    async def connect_social_cmd(
+        interaction: discord.Interaction,
+        platform: app_commands.Choice[str],
+        profile: str,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
+        platform_value = platform.value
+        label = _platform_label(platform_value)
         discord_user_id = str(interaction.user.id)
-        
+
+        if not profile or not profile.strip():
+            await interaction.followup.send(
+                (
+                    f"Please provide your {label} username or profile URL.\n"
+                    f"{_manual_profile_hint(platform_value)}"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        existing = await social_service.get_profile(discord_user_id, platform_value)
+
         try:
-            profile = await service.set_profile(
+            linked = await social_service.set_profile(
                 discord_user_id,
-                "x",
-                username
+                platform_value,
+                profile.strip(),
             )
-            embed = create_success_embed("x", profile.display_value)
+        except ValueError as exc:
+            embed = discord.Embed(
+                title=f"❌ Invalid {label} input",
+                description=str(exc),
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Valid formats",
+                value=_manual_profile_hint(platform_value),
+                inline=False,
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
-        except ValueError as e:
-            embed = create_error_embed("x", str(e))
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.exception(f"Error setting X profile: {e}")
+            return
+        except Exception:
+            logger.exception(
+                "Failed to set social profile",
+                extra={"platform": platform_value},
+            )
             await interaction.followup.send(
-                "❌ An error occurred. Please try again later.",
-                ephemeral=True
+                "❌ Could not save your profile. Please try again later.",
+                ephemeral=True,
             )
-    
-    @set_group.command(
-        name="linkedin",
-        description="Link your LinkedIn profile"
+            return
+
+        if existing is not None:
+            title = f"✅ {label} updated"
+            description = (
+                f"Changed from **{existing.display_value}** to **{linked.display_value}**.\n\n"
+                "Use `/profile` to view your social profiles."
+            )
+        else:
+            title = f"✅ {label} connected"
+            description = (
+                f"Linked **{linked.display_value}**.\n\n"
+                "Made a mistake? Just run `/connect-social` again to update it.\n"
+                "Use `/profile` to view your social profiles."
+            )
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.green(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @tree.command(
+        name="disconnect-social",
+        description="Disconnect your X or LinkedIn account from Gitcord",
+        guild=guild,
     )
-    @app_commands.describe(
-        url="LinkedIn profile URL"
-    )
-    async def profile_set_linkedin(interaction: discord.Interaction, url: str) -> None:
-        """Set LinkedIn profile."""
+    @app_commands.describe(platform="Social platform to disconnect")
+    @app_commands.choices(platform=PLATFORM_CHOICES)
+    async def disconnect_social_cmd(
+        interaction: discord.Interaction,
+        platform: app_commands.Choice[str],
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
+        platform_value = platform.value
+        label = _platform_label(platform_value)
         discord_user_id = str(interaction.user.id)
-        
+
         try:
-            profile = await service.set_profile(
+            removed = await social_service.remove_profile(
                 discord_user_id,
-                "linkedin",
-                url
+                platform_value,
             )
-            embed = create_success_embed("linkedin", profile.display_value)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except ValueError as e:
-            embed = create_error_embed("linkedin", str(e))
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.exception(f"Error setting LinkedIn profile: {e}")
+        except Exception:
+            logger.exception(
+                "Failed to disconnect social profile",
+                extra={"platform": platform_value, "discord_user_id": discord_user_id},
+            )
             await interaction.followup.send(
-                "❌ An error occurred. Please try again later.",
-                ephemeral=True
+                "❌ Could not disconnect. Please try again later.",
+                ephemeral=True,
             )
-    
-    profile_group.add_command(set_group)
-    
-    @profile_group.command(
-        name="view",
-        description="View all your linked social profiles"
-    )
-    async def profile_view(interaction: discord.Interaction) -> None:
-        """View all profiles."""
-        await interaction.response.defer(ephemeral=True)
-        discord_user_id = str(interaction.user.id)
-        
-        try:
-            profiles_dict = await service.get_profiles(
-                discord_user_id
+            return
+
+        if removed:
+            embed = discord.Embed(
+                title=f"✅ {label} disconnected",
+                description=f"Your {label} account was removed from Gitcord.",
+                color=discord.Color.green(),
             )
-            embed = create_profile_list_embed(profiles_dict)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.exception(f"Error viewing profiles: {e}")
-            await interaction.followup.send(
-                "❌ An error occurred. Please try again later.",
-                ephemeral=True
+        else:
+            embed = discord.Embed(
+                title=f"❌ {label} not connected",
+                description=f"No {label} account was linked to your Discord user.",
+                color=discord.Color.red(),
             )
-    
-    # /profile remove subcommand group
-    remove_group = app_commands.Group(
-        name="remove",
-        description="Remove a linked social profile"
-    )
-    
-    @remove_group.command(
-        name="x",
-        description="Remove your X profile"
-    )
-    async def profile_remove_x(interaction: discord.Interaction) -> None:
-        """Remove X profile."""
-        await interaction.response.defer(ephemeral=True)
-        discord_user_id = str(interaction.user.id)
-        
-        try:
-            removed = await service.remove_profile(
-                discord_user_id,
-                "x"
-            )
-            
-            if removed:
-                embed = discord.Embed(
-                    title="✅ X profile removed",
-                    color=discord.Color.green()
-                )
-            else:
-                embed = discord.Embed(
-                    title="❌ X profile not found",
-                    description="This profile was not linked to your account.",
-                    color=discord.Color.red()
-                )
-            
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.exception(f"Error removing X profile: {e}")
-            await interaction.followup.send(
-                "❌ An error occurred. Please try again later.",
-                ephemeral=True
-            )
-    
-    @remove_group.command(
-        name="linkedin",
-        description="Remove your LinkedIn profile"
-    )
-    async def profile_remove_linkedin(interaction: discord.Interaction) -> None:
-        """Remove LinkedIn profile."""
-        await interaction.response.defer(ephemeral=True)
-        discord_user_id = str(interaction.user.id)
-        
-        try:
-            removed = await service.remove_profile(
-                discord_user_id,
-                "linkedin"
-            )
-            
-            if removed:
-                embed = discord.Embed(
-                    title="✅ LinkedIn profile removed",
-                    color=discord.Color.green()
-                )
-            else:
-                embed = discord.Embed(
-                    title="❌ LinkedIn profile not found",
-                    description="This profile was not linked to your account.",
-                    color=discord.Color.red()
-                )
-            
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.exception(f"Error removing LinkedIn profile: {e}")
-            await interaction.followup.send(
-                "❌ An error occurred. Please try again later.",
-                ephemeral=True
-            )
-    
-    profile_group.add_command(remove_group)
-    tree.add_command(profile_group, guild=guild)
+        await interaction.followup.send(embed=embed, ephemeral=True)
