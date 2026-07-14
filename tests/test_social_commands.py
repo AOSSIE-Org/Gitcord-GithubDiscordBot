@@ -1,296 +1,136 @@
-"""
-Tests for social profile Discord commands.
+"""Tests for social connect/disconnect Discord command handlers."""
 
-Week 5 Day 6 – Command integration testing.
-Tests: /profile set x, /profile set linkedin, /profile view, /profile remove, /status integration
-"""
+from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from ghdcbot.adapters.discord.social_commands import (
-    create_success_embed,
-    create_error_embed,
-    create_profile_list_embed,
-)
+from ghdcbot.adapters.discord import social_commands
 from ghdcbot.core.social_models import SocialProfile
 
 
-class TestEmbedGeneration:
-    """Test embed creation for various scenarios."""
-    
-    def test_create_success_embed_x(self):
-        """Test success embed for X profile."""
-        embed = create_success_embed("x", "@shubham5080")
-        assert "X profile linked" in embed.title
-        assert "@shubham5080" in str(embed.fields[0].value)
-        assert embed.color.value == 0x2ECC71  # Green
-    
-    def test_create_success_embed_linkedin(self):
-        """Test success embed for LinkedIn profile."""
-        embed = create_success_embed("linkedin", "linkedin.com/in/shubham-shinde")
-        assert "LinkedIn profile linked" in embed.title
-        assert "linkedin.com/in/shubham-shinde" in str(embed.fields[0].value)
-    
-    def test_create_error_embed_x_invalid_username(self):
-        """Test error embed for invalid X username."""
-        embed = create_error_embed("x", "Invalid X username")
-        assert "Invalid X" in embed.title
-        assert "x.com/username" in str(embed.fields[0].value)
-        assert embed.color.value == 0xE74C3C  # Red
-    
-    def test_create_error_embed_linkedin_invalid_url(self):
-        """Test error embed for invalid LinkedIn URL."""
-        embed = create_error_embed("linkedin", "Invalid URL")
-        assert "Invalid LinkedIn" in embed.title
-        assert "linkedin.com/in/" in str(embed.fields[0].value)
-    
-    def test_create_profile_list_embed_with_profiles(self):
-        """Test profile list embed with linked profiles."""
-        profiles_dict = {
-            "x": MagicMock(display_value="@shubham5080"),
-            "linkedin": MagicMock(display_value="linkedin.com/in/shubham-shinde"),
-        }
-        embed = create_profile_list_embed(profiles_dict)
-        assert "Your Social Profiles" in embed.title
-        # Embed should have fields for all platforms
-        assert len([f for f in embed.fields if f.name]) >= 2
-    
-    def test_create_profile_list_embed_empty(self):
-        """Test profile list embed with no profiles."""
-        profiles_dict = {}
-        embed = create_profile_list_embed(profiles_dict)
-        assert "Your Social Profiles" in embed.title
-        assert "No social profiles linked yet" in (embed.description or "")
+class _FakeFollowup:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    async def send(self, content: str | None = None, **kwargs) -> None:
+        self.messages.append({"content": content, **kwargs})
 
 
-class TestSocialCommandsIntegration:
-    """Integration tests for /profile commands."""
-    
-    @pytest.mark.asyncio
-    async def test_profile_set_x_valid_username(self):
-        """Test /profile set x with valid username."""
-        # Mock interaction
-        interaction = MagicMock()
-        interaction.user.id = 12345
-        interaction.response.defer = AsyncMock()
-        interaction.followup.send = AsyncMock()
-        
-        # Mock service
-        mock_service = MagicMock()
-        mock_profile = SocialProfile(
-            discord_user_id="12345",
-            platform="x",
-            profile_handle="shubham5080",
-            display_value="@shubham5080",
-        )
-        mock_service.set_profile = MagicMock(return_value=mock_profile)
-        
-        # Test: set_profile should be called with correct args
-        result = await asyncio.to_thread(
-            mock_service.set_profile,
-            "12345",
-            "x",
-            "@shubham5080"
-        )
-        assert result.display_value == "@shubham5080"
-    
-    @pytest.mark.asyncio
-    async def test_profile_set_linkedin_valid_url(self):
-        """Test /profile set linkedin with valid URL."""
-        # Mock service
-        mock_service = MagicMock()
-        mock_profile = SocialProfile(
-            discord_user_id="12345",
-            platform="linkedin",
-            profile_handle="shubham-shinde",
-            display_value="linkedin.com/in/shubham-shinde",
-        )
-        mock_service.set_profile = MagicMock(return_value=mock_profile)
-        
-        # Test
-        result = await asyncio.to_thread(
-            mock_service.set_profile,
-            "12345",
-            "linkedin",
-            "https://linkedin.com/in/shubham-shinde"
-        )
-        assert result.platform == "linkedin"
-    
-    @pytest.mark.asyncio
-    async def test_profile_get_profiles(self):
-        """Test /profile view - get all profiles."""
-        # Mock service
-        mock_service = MagicMock()
-        profiles = {
-            "x": SocialProfile(
-                discord_user_id="12345",
-                platform="x",
-                profile_handle="shubham5080",
-                display_value="@shubham5080",
-            ),
-            "linkedin": SocialProfile(
-                discord_user_id="12345",
-                platform="linkedin",
-                profile_handle="shubham-shinde",
-                display_value="linkedin.com/in/shubham-shinde",
-            ),
-        }
-        mock_service.get_profiles = MagicMock(return_value=profiles)
-        
-        # Test
-        result = await asyncio.to_thread(mock_service.get_profiles, "12345")
-        assert len(result) == 2
-        assert "x" in result
-        assert "linkedin" in result
-    
-    @pytest.mark.asyncio
-    async def test_profile_remove_existing(self):
-        """Test /profile remove with existing profile."""
-        # Mock service
-        mock_service = MagicMock()
-        mock_service.remove_profile = MagicMock(return_value=True)
-        
-        # Test
-        result = await asyncio.to_thread(
-            mock_service.remove_profile,
-            "12345",
-            "x"
-        )
-        assert result is True
-    
-    @pytest.mark.asyncio
-    async def test_profile_remove_nonexistent(self):
-        """Test /profile remove with non-existent profile."""
-        # Mock service
-        mock_service = MagicMock()
-        mock_service.remove_profile = MagicMock(return_value=False)
-        
-        # Test
-        result = await asyncio.to_thread(
-            mock_service.remove_profile,
-            "12345",
-            "x"
-        )
-        assert result is False
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.deferred = False
+
+    async def defer(self, *, ephemeral: bool = False) -> None:
+        self.deferred = True
+        self.ephemeral = ephemeral
 
 
-class TestStatusCommandIntegration:
-    """Tests for /status command with social profile integration."""
-    
-    @pytest.mark.asyncio
-    async def test_status_shows_social_profiles(self):
-        """Test that /status displays linked social profiles."""
-        # Mock service
-        mock_service = MagicMock()
-        profiles = {
-            "x": SocialProfile(
-                discord_user_id="12345",
-                platform="x",
-                profile_handle="shubham5080",
-                display_value="@shubham5080",
-            ),
-        }
-        mock_service.get_profiles = MagicMock(return_value=profiles)
-        
-        # Simulate get_profiles call
-        result = await asyncio.to_thread(mock_service.get_profiles, "12345")
-        assert len(result) > 0
-        assert "x" in result
-    
-    @pytest.mark.asyncio
-    async def test_status_shows_no_profiles_when_empty(self):
-        """Test that /status shows 'not linked' when no profiles."""
-        # Mock service returning empty
-        mock_service = MagicMock()
-        mock_service.get_profiles = MagicMock(return_value={})
-        
-        # Simulate
-        result = await asyncio.to_thread(mock_service.get_profiles, "12345")
-        assert len(result) == 0
+class _FakeInteraction:
+    def __init__(self, user_id: int = 123) -> None:
+        self.user = MagicMock(id=user_id)
+        self.response = _FakeResponse()
+        self.followup = _FakeFollowup()
 
 
-class TestPermissionChecks:
-    """Tests for permission enforcement."""
-    
-    def test_user_can_edit_own_profile(self):
-        """Test that user can edit their own profile."""
-        user_id = "12345"
-        target_id = "12345"
-        is_admin = False
-        
-        # User can edit own profile
-        can_edit = (user_id == target_id)
-        assert can_edit is True
-    
-    def test_user_cannot_edit_others_profile(self):
-        """Test that user cannot edit others' profiles."""
-        user_id = "12345"
-        target_id = "67890"
-        
-        # User cannot edit others' profiles
-        can_edit = (user_id == target_id)
-        assert can_edit is False
-    
-    def test_admin_cannot_edit_others_profile(self):
-        """Test that even admins cannot edit others' profiles."""
-        user_id = "12345"
-        target_id = "67890"
-        is_admin = True
-        
-        # Even admins cannot edit others' profiles
-        can_edit = (user_id == target_id)
-        assert can_edit is False
+def _profile(display: str, platform: str = "x") -> SocialProfile:
+    return SocialProfile(
+        discord_user_id="123",
+        platform=platform,
+        profile_handle=display.lstrip("@"),
+        display_value=display,
+        verified=False,
+        created_at=None,
+        updated_at=None,
+    )
 
 
-class TestErrorHandling:
-    """Tests for error scenarios."""
-    
-    @pytest.mark.asyncio
-    async def test_invalid_platform_error(self):
-        """Test error for invalid platform."""
-        mock_service = MagicMock()
-        mock_service.set_profile = MagicMock(
-            side_effect=ValueError("Invalid platform: xyz")
-        )
-        
-        with pytest.raises(ValueError):
-            await asyncio.to_thread(
-                mock_service.set_profile,
-                "12345",
-                "xyz",
-                "value"
-            )
-    
-    @pytest.mark.asyncio
-    async def test_invalid_username_error(self):
-        """Test error for invalid username."""
-        mock_service = MagicMock()
-        mock_service.set_profile = MagicMock(
-            side_effect=ValueError("Invalid X username: contains_invalid_chars!")
-        )
-        
-        with pytest.raises(ValueError):
-            await asyncio.to_thread(
-                mock_service.set_profile,
-                "12345",
-                "x",
-                "contains_invalid_chars!"
-            )
-    
-    @pytest.mark.asyncio
-    async def test_invalid_url_error(self):
-        """Test error for invalid LinkedIn URL."""
-        mock_service = MagicMock()
-        mock_service.set_profile = MagicMock(
-            side_effect=ValueError("Invalid LinkedIn URL: not a valid profile")
-        )
-        
-        with pytest.raises(ValueError):
-            await asyncio.to_thread(
-                mock_service.set_profile,
-                "12345",
-                "linkedin",
-                "https://invalid.url"
-            )
+@pytest.mark.asyncio
+async def test_connect_social_new_profile_sends_connected_embed() -> None:
+    service = AsyncMock()
+    service.get_profile.return_value = None
+    service.set_profile.return_value = _profile("@newuser")
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_connect_social(interaction, service, "x", "@newuser")
+
+    assert interaction.response.deferred is True
+    assert len(interaction.followup.messages) == 1
+    embed = interaction.followup.messages[0]["embed"]
+    assert embed.title == "✅ X connected"
+    assert "@newuser" in embed.description
+    assert "Made a mistake?" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_connect_social_existing_profile_sends_updated_embed() -> None:
+    service = AsyncMock()
+    service.get_profile.return_value = _profile("@olduser")
+    service.set_profile.return_value = _profile("@newuser")
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_connect_social(interaction, service, "x", "@newuser")
+
+    embed = interaction.followup.messages[0]["embed"]
+    assert embed.title == "✅ X updated"
+    assert "@olduser" in embed.description
+    assert "@newuser" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_connect_social_invalid_input_sends_error_embed() -> None:
+    service = AsyncMock()
+    service.get_profile.return_value = None
+    service.set_profile.side_effect = ValueError("bad handle")
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_connect_social(interaction, service, "x", "!!!")
+
+    embed = interaction.followup.messages[0]["embed"]
+    assert embed.title == "❌ Invalid X input"
+    assert embed.description == "bad handle"
+
+
+@pytest.mark.asyncio
+async def test_connect_social_generic_failure_sends_text_error() -> None:
+    service = AsyncMock()
+    service.get_profile.return_value = None
+    service.set_profile.side_effect = RuntimeError("db down")
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_connect_social(interaction, service, "x", "@ok")
+
+    msg = interaction.followup.messages[0]
+    assert msg["content"] == "❌ Could not save your profile. Please try again later."
+    assert msg["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_social_not_found_sends_error_embed() -> None:
+    service = AsyncMock()
+    service.remove_profile.return_value = False
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_disconnect_social(interaction, service, "linkedin")
+
+    embed = interaction.followup.messages[0]["embed"]
+    assert embed.title == "❌ LinkedIn not connected"
+    assert "No LinkedIn account was linked" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_disconnect_social_success_sends_ok_embed() -> None:
+    service = AsyncMock()
+    service.remove_profile.return_value = True
+    interaction = _FakeInteraction()
+
+    await social_commands.handle_disconnect_social(interaction, service, "x")
+
+    embed = interaction.followup.messages[0]["embed"]
+    assert embed.title == "✅ X disconnected"
+
+
+def test_platform_choices_are_x_and_linkedin() -> None:
+    values = {c.value for c in social_commands.PLATFORM_CHOICES}
+    assert values == {"x", "linkedin"}

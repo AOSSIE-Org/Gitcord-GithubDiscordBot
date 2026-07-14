@@ -51,7 +51,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 - **Audit‑first workflow**: JSON + Markdown reports before any writes.
 - **Deterministic planning**: identical inputs produce identical plans.
 - **Permission‑aware IO**: readers degrade safely on missing permissions.
-- **Discord Bot**: Interactive slash commands for identity linking, issue management, and contribution tracking.
+- **Discord Bot**: Interactive slash commands for identity linking, contributor profiles, metrics, and notifications.
 
 ---
 
@@ -241,24 +241,21 @@ Wait 30 seconds for commands to sync.
 
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
-- `/verify` - Check your verification status
-- `/status` - Show verification state, activity window, roles, and social profiles
+- `/profile` - Show contributor profile (GitHub, verification, socials, roles); optional Discord member
 - `/unlink` - Unlink your GitHub identity
-- `/profile` - Link or view X/LinkedIn social profiles (`/profile set`, `/profile view`, `/profile remove`)
+- `/connect-social` - Connect X or LinkedIn (enter your username or profile URL)
+- `/disconnect-social` - Disconnect X or LinkedIn from Gitcord
 
 ### Contribution & Metrics
 
-- `/summary` - Show your contribution metrics (7 and 30 days)
-- `/pr-info` - Show PR context preview (repository, reviews, CI status)
+- `/summary` - Show contribution metrics (7 and 30 days); optional Discord member for another verified contributor
+- `/open-prs` - List a contributor's currently open PRs in configured repos
 
-### Issue Management
+### Sync (mentor-only)
 
-- `/request-issue` - Request to be assigned to a GitHub issue
-- `/assign-issue` - Assign issue to Discord user (mentor-only)
-- `/issue-requests` - Review pending issue requests (mentor-only)
-- `/sync` - Manually sync GitHub events and notifications (mentor-only)
+- `/sync` - Manually sync GitHub events and send notifications
 
-**Note:** Commands marked "mentor-only" require roles configured in `assignments.issue_assignees`. The bot also auto-detects PR URLs in configured channels and shows PR previews.
+**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. The bot can also auto-detect PR URLs in configured channels and post passive previews.
 
 ---
 

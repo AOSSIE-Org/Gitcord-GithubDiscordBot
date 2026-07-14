@@ -363,9 +363,9 @@ nohup ghdcbot --config config/config.yaml bot > bot.log 2>&1 &
 
 ### 7.3 Smoke-test slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/verify`, `/status`, `/summary`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/unlink`, `/connect-social`, `/disconnect-social`
 
-**Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`, `/assign-issue`, `/issue-requests`
+**Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`
 
 See [docs/TESTING_DISCORD.md](docs/TESTING_DISCORD.md) for a full test sequence.
 
@@ -466,6 +466,15 @@ Run `ghdcbot --config config/config.yaml validate` (or the Docker equivalent) af
 2. Code expires in 10 minutes — run `/link` again if needed
 3. See [docs/IDENTITY_VERIFICATION.md](docs/IDENTITY_VERIFICATION.md)
 
+### Social profiles (`/connect-social`, `/disconnect-social`)
+
+Contributors link their X or LinkedIn manually — no external setup required:
+
+- `/connect-social` — pick a platform and enter your X username (e.g. `@name`) or LinkedIn URL
+- `/disconnect-social` — remove a linked profile
+
+Linked profiles show up in `/profile`.
+
 ### GitHub 403 / permission errors
 
 1. Token not expired; org resource owner selected correctly
@@ -500,13 +509,11 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 | `config/examples/` | Reference configs only |
 | `.env` | Tokens (from `.env.example`) |
 
-### Next steps
-
 ### Discord slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/verify`, `/status`, `/summary`, `/request-issue`, `/profile`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/unlink`, `/connect-social`, `/disconnect-social`
 
-**Mentors:** `/assign-issue`, `/issue-requests`, `/sync`
+**Mentors:** `/sync`
 
 ### Next steps
 

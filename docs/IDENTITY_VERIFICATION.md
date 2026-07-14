@@ -21,7 +21,7 @@ The older `/verify-link github_username` command remains available and uses the 
 
 | File | Purpose |
 | --- | --- |
-| `src/ghdcbot/bot.py` | Discord slash commands and identity verification buttons: `/link`, `/verify-link`, `/verify`, `/status`, `/unlink`, `/identity status`. |
+| `src/ghdcbot/bot.py` | Discord slash commands and identity verification buttons: `/link`, `/verify-link`, `/profile`, `/unlink`. |
 | `src/ghdcbot/engine/identity_linking.py` | Business logic for creating claims, verifying claims, generating codes, audit events, and unlinking. |
 | `src/ghdcbot/adapters/github/identity.py` | Read-only GitHub adapter that searches the user's bio and public gists for the code. |
 | `src/ghdcbot/adapters/storage/sqlite.py` | SQLite schema and persistence for pending and verified identity links. |
@@ -474,10 +474,8 @@ def list_verified_identity_mappings(self) -> list[IdentityMapping]:
 
 The user can check status through:
 
-- `/verify`
-- `/status`
-- `/identity status`
-- `ghdcbot identity status --discord-user-id <id>`
+- `/profile` (optional Discord member — omit for yourself)
+- `ghdcbot identity status --discord-user-id <id>` (CLI)
 
 `get_identity_status()` returns one of:
 
@@ -680,438 +678,38 @@ The manual fallback remains:
 
 ---
 
-# Social Profiles: `/profile` Commands (Week 5 Day 6)
+# Social Profiles: `/connect-social` and `/disconnect-social`
 
-Contributors can optionally link their social media profiles (X/Twitter, LinkedIn, etc.) to enhance their contributor profile in Gitcord.
-
-## Overview
-
-The `/profile` command suite enables contributors to manage their social profiles independently from GitHub verification. Unlike `/link` (which requires GitHub verification), social profiles are self-reported and immediately available.
-
-**Key Features:**
-- Link X (Twitter) username or profile URL
-- Link LinkedIn profile URL
-- View all linked profiles with `/profile view`
-- Remove profiles with `/profile remove`
-- Automatic integration with `/status` command
-- Platform-specific validation (username format, URL normalization)
+Contributors can optionally link X and LinkedIn by entering their username / profile URL manually. No external app registration or OAuth is required.
 
 ## Commands
 
-### `/profile set x <username_or_url>`
+- `/connect-social platform:` — choose **X** or **LinkedIn**, then enter your username or profile URL
+- `/disconnect-social platform:` — remove that platform from Gitcord storage
+- `/profile` — shows linked social profiles (read-only)
 
-Link your X (Twitter) profile.
+Input is normalized and validated (e.g. `@name`, `name`, or `https://x.com/name` for X; a LinkedIn profile URL for LinkedIn).
 
-**Accepted formats:**
-- `@username` (with @mention)
-- `username` (plain username)
-- `https://x.com/username` (full URL)
-- `https://twitter.com/username` (legacy Twitter URL)
+## Code map
 
-**Example:**
-```text
-/profile set x @octocat
-```
-
-**Response:**
-```text
-✅ X profile linked successfully.
-Profile: @octocat
-```
-
-**Validation Rules:**
-- Length: 1–15 characters
-- Allowed characters: a-z, 0-9, underscore only
-- Case-insensitive (stored as lowercase)
+| Path | Role |
+|------|------|
+| `src/ghdcbot/adapters/discord/social_commands.py` | `/connect-social`, `/disconnect-social` |
+| `src/ghdcbot/engine/social_profiles.py` | Profile normalization, storage service |
+| `src/ghdcbot/adapters/storage/sqlite.py` | `social_profiles` table |
 
 ---
 
-### `/profile set linkedin <url>`
-
-Link your LinkedIn profile.
-
-**Accepted formats:**
-- `https://linkedin.com/in/profile-name`
-- `https://www.linkedin.com/in/profile-name`
-- `linkedin.com/in/profile-name` (auto-https)
-
-**Example:**
-```text
-/profile set linkedin https://linkedin.com/in/octocat
-```
-
-**Response:**
-```text
-✅ LinkedIn profile linked successfully.
-Profile: linkedin.com/in/octocat
-```
-
-**Validation Rules:**
-- Must be a profile URL (contains `/in/`)
-- Company pages and school profiles are rejected
-- URLs are normalized: `www.` removed, `https://` enforced, trailing slashes removed
-
----
-
-### `/profile view`
-
-Display all your linked social profiles.
-
-**Example:**
-```text
-/profile view
-```
-
-**Response:**
-```text
-Your Social Profiles
-
-GitHub: octocat ✔️
-X (Twitter): @octocat ✔️
-LinkedIn: linkedin.com/in/octocat ✔️
-Bluesky: Not linked
-Mastodon: Not linked
-```
-
-**Empty state (no profiles linked):**
-```text
-No social profiles linked yet.
-
-Link your profiles:
-• /profile set x <username>
-• /profile set linkedin <url>
-```
-
----
-
-### `/profile remove <platform>`
-
-Remove a linked social profile.
-
-**Platforms:** `x` | `linkedin` | `bluesky` | `mastodon`
-
-**Example:**
-```text
-/profile remove x
-```
-
-**Response:**
-```text
-✅ X profile removed successfully.
-```
-
-**Error (not linked):**
-```text
-❌ X profile not found.
-This profile was not linked to your account.
-```
-
----
-
-## `/status` Command Integration
-
-The existing `/status` command now displays linked social profiles.
-
-**Before (Week 5 Day 5):**
-```text
-Activity window: last 7 days (from bot config).
-Linked GitHub: octocat.
-Your roles: Contributor, Member.
-```
-
-**After (Week 5 Day 6):**
-```text
-Activity window: last 7 days (from bot config).
-Linked GitHub: octocat ✔️
-Social Profiles:
-  • X: @octocat
-  • LinkedIn: linkedin.com/in/octocat
-Your roles: Contributor, Member.
-```
-
-**If no social profiles linked:**
-```text
-Social Profiles: Not linked yet. Use `/profile set x` or `/profile set linkedin`.
-```
-
----
-
-## Implementation Details
-
-### Files
-
-| File | Purpose |
-| --- | --- |
-| `src/ghdcbot/adapters/discord/social_commands.py` | Discord slash command handlers for `/profile` group. |
-| `src/ghdcbot/engine/social_profiles.py` | Business logic service layer (already implemented Week 5 Day 5). |
-| `src/ghdcbot/core/social_validators.py` | Platform-specific input validators (already implemented Week 5 Day 5). |
-| `src/ghdcbot/adapters/storage/sqlite.py` | SQLite storage for social profiles table (already implemented Week 5 Day 5). |
-| `tests/test_social_commands.py` | Discord command integration tests. |
-| `tests/test_social_validators.py` | Platform validator unit tests (35 tests, already passing). |
-| `tests/test_social_storage.py` | Storage layer tests (20 tests, already passing). |
-| `tests/test_social_service.py` | Service layer integration tests (23 tests, already passing). |
-| `social_commands_design.md` | Detailed design document for command structure and UX. |
-
-### Command Handler Pattern
-
-```python
-@tree.command(
-    name="profile",
-    description="Manage your social profiles (X, LinkedIn, etc.)",
-    guild=discord.Object(id=guild_id),
-)
-async def profile_cmd(
-    interaction: discord.Interaction,
-    action: str,  # "set" | "view" | "remove"
-    platform: Optional[str] = None,  # "x" | "linkedin"
-    value: Optional[str] = None,  # username or URL
-) -> None:
-    await interaction.response.defer(ephemeral=True)
-    discord_user_id = str(interaction.user.id)
-    
-    if action.lower() == "set":
-        # Call: await asyncio.to_thread(
-        #     social_service.set_profile,
-        #     discord_user_id,
-        #     platform,
-        #     value
-        # )
-        # Handle validators, show success/error embeds
-    
-    elif action.lower() == "view":
-        # Call: await asyncio.to_thread(
-        #     social_service.get_profiles,
-        #     discord_user_id
-        # )
-        # Show profile list embed
-    
-    elif action.lower() == "remove":
-        # Call: await asyncio.to_thread(
-        #     social_service.remove_profile,
-        #     discord_user_id,
-        #     platform
-        # )
-        # Show removal confirmation or error
-```
-
-### Permission Model
-
-| Action | User | Admin |
-|--------|------|-------|
-| Set own profile | ✅ | ✅ |
-| View own profile | ✅ | ✅ |
-| Remove own profile | ✅ | ✅ |
-| View others' profiles | ❌ | ✅ (future) |
-| Edit others' profiles | ❌ | ❌ |
-
-**Current implementation:** Users can only edit their own profiles. Admins cannot override this restriction. Future enhancement: Admins can view any contributor's profiles for moderation.
-
-### Data Model
-
-**Table: `social_profiles`** (SQLite)
-```sql
-CREATE TABLE social_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    discord_user_id TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    profile_handle TEXT NOT NULL,
-    display_value TEXT,
-    verified INTEGER DEFAULT 0,
-    created_at TEXT,
-    updated_at TEXT,
-    UNIQUE(discord_user_id, platform),
-    FOREIGN KEY(discord_user_id) REFERENCES discord_users(id)
-);
-CREATE INDEX idx_social_profiles_discord_user ON social_profiles(discord_user_id);
-CREATE INDEX idx_social_profiles_platform ON social_profiles(platform);
-```
-
-**Fields:**
-- `discord_user_id`: Discord user ID (from interaction.user.id)
-- `platform`: "x" | "linkedin" | "bluesky" | "mastodon" (lowercase)
-- `profile_handle`: Normalized username/profile ID
-- `display_value`: User-friendly display (e.g., "@octocat", "linkedin.com/in/octocat")
-- `verified`: 0 (self-reported, not verified) or 1 (future: verified via API)
-- `created_at`, `updated_at`: ISO8601 timestamps
-
----
-
-## Error Handling
-
-### Invalid Input Errors
-
-**X Username:**
-```text
-❌ Invalid X username.
-Valid formats:
-• @username
-• username
-• https://x.com/username
-• https://twitter.com/username
-
-Rules:
-Length: 1–15 characters, alphanumeric + underscore only.
-```
-
-**LinkedIn URL:**
-```text
-❌ Invalid LinkedIn URL.
-Valid formats:
-• https://linkedin.com/in/profile-name
-• https://www.linkedin.com/in/profile-name
-
-Note: Company pages and school profiles are not supported for contributors.
-```
-
-### Permission Errors
-
-**Trying to edit another user's profile:**
-```text
-❌ Cannot edit other users' profiles.
-Use /profile view to see your own profiles.
-```
-
-### Storage Errors
-
-If database access fails:
-```text
-❌ An error occurred. Please try again later.
-```
-
-(Error details are logged but not shown to user for security.)
-
----
-
-## Testing
-
-### Unit Tests
-
-```bash
-pytest tests/test_social_validators.py -v
-```
-- 35 tests covering X, LinkedIn, Bluesky, Mastodon validators
-- Format parsing: usernames, URLs, special characters
-- Validation rules: length, allowed characters, domain checks
-- **Status:** All passing
-
-### Storage Tests
-
-```bash
-pytest tests/test_social_storage.py -v
-```
-- 20 tests covering CRUD operations
-- Isolation: per-user, per-platform
-- Constraint enforcement: UNIQUE(discord_user_id, platform)
-- **Status:** All passing
-
-### Service Layer Tests
-
-```bash
-pytest tests/test_social_service.py -v
-```
-- 23 tests covering orchestration
-- Async/await patterns
-- Validation → storage → response flow
-- **Status:** All passing
-
-### Command Integration Tests
-
-```bash
-pytest tests/test_social_commands.py -v
-```
-- Embed generation (success, error, list)
-- Command parsing and routing
-- Permission checks
-- Error scenarios
-- `/status` integration
-- **Status:** All passing
-
-### Full Test Suite
-
-```bash
-pytest tests/ -v
-```
-- 294+ tests total (216 existing + 78 new social profile tests)
-- **Status:** All passing, zero regressions
-
----
-
-## Manual Discord Testing Checklist
-
-Before deployment, verify these flows in the AOSSIE server:
-
-- [ ] Set X profile with username: `/profile set x @octocat`
-- [ ] Set X profile with URL: `/profile set x https://x.com/octocat`
-- [ ] Set X profile with plain name: `/profile set x octocat`
-- [ ] Update X profile: `/profile set x @newname` (replaces old)
-- [ ] Remove X profile: `/profile remove x`
-- [ ] Set LinkedIn profile: `/profile set linkedin https://linkedin.com/in/octocat`
-- [ ] Update LinkedIn profile: `/profile set linkedin https://linkedin.com/in/newname`
-- [ ] Remove LinkedIn profile: `/profile remove linkedin`
-- [ ] View profiles: `/profile view` shows all linked profiles
-- [ ] View empty profiles: `/profile view` shows "Not linked" when none
-- [ ] Check `/status` shows X profile: `/status` includes "X: @octocat"
-- [ ] Check `/status` shows LinkedIn profile: `/status` includes "LinkedIn: linkedin.com/in/..."
-- [ ] Error: Invalid X username: `/profile set x invalid@username` → error embed
-- [ ] Error: Invalid LinkedIn URL: `/profile set linkedin invalid-url` → error embed
-- [ ] Verify `/link` and `/verify-link` still work (no regression)
-- [ ] Verify `/summary` still works (no regression)
-- [ ] Verify `/identity-status` still works (no regression)
-
----
-
-## Future Enhancements
-
-1. **Profile Verification** – Optionally verify X profiles via API and mark `verified=1`
-2. **View Others' Profiles** – `/profile view @user` (mentor-only) to see contributor's social profiles
-3. **Additional Platforms** – Bluesky, Mastodon, personal websites
-4. **Edit/Remove Buttons** – UI buttons in `/profile view` to edit or remove without typing commands
-5. **Profile Cards** – Show social profiles in contributor identity cards for mentors
-6. **Social Score** – Calculate contributor's "social presence" based on linked platforms (future gamification)
-
----
-
-## Troubleshooting
-
-### Command not showing up in Discord
-
-1. Make sure bot has updated slash commands: Check `/` menu in Discord
-2. If not visible, bot may need to reconnect: Restart bot service
-3. Verify command was registered in `on_ready()`: Check logs for "slash commands synced"
-
-### "Invalid X username" error
-
-- Check for special characters: Only alphanumeric + underscore
-- Check length: Must be 1–15 characters
-- Try plain username: `/profile set x octocat` (not `@octocat`)
-
-### "Invalid LinkedIn URL" error
-
-- Make sure it's a profile URL (contains `/in/`)
-- Try with `https://linkedin.com/in/name` format
-- Avoid company pages (`/company/`) or school pages (`/school/`)
-
-### Profiles not showing in `/status`
-
-1. Make sure profiles are linked: `/profile view`
-2. Check if social profiles service is initialized: Check logs for SocialProfileService creation
-3. Try again after a few seconds (cache delay)
-
-### Permission denied error when trying to remove profile
-
-- Verify you're using `/profile remove` as the correct user
-- Check Discord user ID matches: `interaction.user.id`
-
----
+## Manual Discord smoke (social profiles)
+
+- [ ] `/connect-social` with platform X saves a valid username/URL
+- [ ] `/connect-social` with invalid input shows a validation error
+- [ ] `/disconnect-social` removes a linked platform
+- [ ] `/profile` lists connected social profiles
+- [ ] `/link` and `/verify-link` still work (no regression)
 
 ## References
 
-- **Design Document:** `social_commands_design.md`
-- **Backend Implementation (Week 5 Day 5):**
-  - Social Profile Service: `src/ghdcbot/engine/social_profiles.py`
-  - Validators: `src/ghdcbot/core/social_validators.py`
-  - Domain Models: `src/ghdcbot/core/social_models.py`
-  - Storage: `src/ghdcbot/adapters/storage/sqlite.py`
-- **Command Implementation (Week 5 Day 6):**
-  - Social Commands: `src/ghdcbot/adapters/discord/social_commands.py`
-  - Bot Integration: `src/ghdcbot/bot.py` (lines with `social_service`, `register_social_commands()`, `/status` extension)
+- Profiles engine: `src/ghdcbot/engine/social_profiles.py`
+- Commands: `src/ghdcbot/adapters/discord/social_commands.py`
+- Env template: `.env.example`

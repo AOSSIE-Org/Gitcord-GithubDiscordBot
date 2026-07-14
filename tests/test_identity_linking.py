@@ -533,14 +533,30 @@ assignments:
     assert "Verified at: -" in out
 
 
-def test_discord_identity_status_uses_invoking_user_only() -> None:
-    """Discord /identity status must use interaction.user.id (no cross-user inspection)."""
+def test_discord_profile_supports_optional_member_lookup() -> None:
+    """Discord /profile may show another member via optional contributor param."""
     import inspect
+    import ghdcbot.bot as bot_mod
     from ghdcbot.bot import run_bot as run_bot_fn
     source = inspect.getsource(run_bot_fn)
-    assert "interaction.user.id" in source
-    assert "get_identity_status" in source
-    assert "identity_group" in source
+    module_source = inspect.getsource(bot_mod)
+    assert 'name="profile"' in source
+    assert "contributor: discord.Member | None = None" in source
+    assert "Social Profiles" in module_source
+    assert "_format_social_profiles_line" in source
+
+
+def test_discord_profile_shows_verification_status() -> None:
+    """/profile folds in verification status (identity group command removed)."""
+    import inspect
+    import ghdcbot.bot as bot_mod
+    from ghdcbot.bot import run_bot as run_bot_fn
+    source = inspect.getsource(run_bot_fn)
+    helper_source = inspect.getsource(bot_mod._identity_status_lines)
+    assert "_identity_status_lines" in source
+    assert "get_identity_status" in helper_source
+    assert "**Verification:**" in helper_source
+    assert 'name="identity"' not in source
 
 
 # --- Stale identity expiry (soft) ---

@@ -81,6 +81,30 @@ class DiscordApiAdapter:
             )
         return member_roles
 
+    def list_roles_for_member(self, discord_user_id: str) -> list[str]:
+        """Return role names for a single guild member.
+
+        Fetches only the target member (one API call) instead of paginating the
+        whole guild, so it is cheap enough to call from a slash command.
+        Returns an empty list when roles or the member cannot be read.
+        """
+        roles, roles_ok = self._list_roles()
+        if not roles_ok:
+            return []
+        role_lookup = {role["id"]: role["name"] for role in roles}
+        response = self._request(
+            "GET", f"/guilds/{self._guild_id}/members/{discord_user_id}"
+        )
+        if response is None or response.status_code != 200:
+            self._logger.warning(
+                "Unable to fetch guild member roles",
+                extra={"guild_id": self._guild_id, "user_id": discord_user_id},
+            )
+            return []
+        member = response.json()
+        role_names = [role_lookup.get(role_id, "") for role_id in member.get("roles", [])]
+        return sorted([name for name in role_names if name])
+
     def list_members(self) -> list[dict]:
         """Return member objects with user ID, username, and role IDs."""
         members, _ = self._list_members()

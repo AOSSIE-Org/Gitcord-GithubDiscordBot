@@ -35,6 +35,9 @@ class DiscordReader(Protocol):
     def list_member_roles(self) -> dict[str, Sequence[str]]:
         """Return mapping of discord user ID to role names."""
 
+    def list_roles_for_member(self, discord_user_id: str) -> Sequence[str]:
+        """Return role names for a single guild member (cheap, one API call)."""
+
 
 class DiscordWriter(Protocol):
     def add_role(self, discord_user_id: str, role_name: str) -> None:

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.metrics import (
+    build_contribution_summary_message,
     get_contribution_metrics,
     get_rank_for_user,
     rank_by_activity,
@@ -113,3 +114,38 @@ def test_rank_by_activity_and_get_rank_for_user(tmp_path) -> None:
     assert get_rank_for_user(ranked, "a") == 2
     assert get_rank_for_user(ranked, "b") == 3
     assert get_rank_for_user(ranked, "z") is None
+
+
+def test_build_contribution_summary_message_for_other_user(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    now = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    events = [
+        ContributionEvent("alice", "pr_merged", "r", now - timedelta(days=1), {}),
+        ContributionEvent("bob", "pr_merged", "r", now - timedelta(days=2), {}),
+        ContributionEvent("bob", "pr_merged", "r", now - timedelta(days=3), {}),
+        ContributionEvent("bob", "pr_opened", "r", now - timedelta(days=1), {}),
+        ContributionEvent("carol", "comment", "r", now - timedelta(days=40), {}),
+    ]
+    storage.record_contributions(events)
+
+    self_msg = build_contribution_summary_message(
+        storage, "alice", rank_subject="you're", now=now
+    )
+    assert "**Last 7 days:**" in self_msg
+    assert "**Last 30 days:**" in self_msg
+    assert "PRs opened: 0, merged: 1" in self_msg
+    assert "you're #2." in self_msg
+
+    other_msg = build_contribution_summary_message(
+        storage, "bob", rank_subject="they're", now=now
+    )
+    assert "PRs opened: 1, merged: 2" in other_msg
+    assert "they're #1." in other_msg
+    assert "you're" not in other_msg
+
+    empty_msg = build_contribution_summary_message(
+        storage, "nobody", rank_subject="they're", now=now
+    )
+    assert "No activity in this period." in empty_msg
+    assert "Top contributors" not in empty_msg
