@@ -24,7 +24,7 @@ github:
     write: true
   user_fallback: false
   # Repo allowlist: only these repositories are scanned (sync/run-once). Uses short repo names under the org (not "org/name").
-  # Shared list: config/aussie-repos.yaml (15 AOSSIE repos).
+  # Shared list: config/aussie-repos.yaml (19 AOSSIE repos).
   repos: !include aussie-repos.yaml
 
 discord:
@@ -48,7 +48,26 @@ discord:
       allow_discord_administrators: true
   activity_channel_id: null
   pr_preview_channels: []
-  # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
+  pr_open_channels:
+    # #projects forum threads — repo short name → thread ID.
+    # Posts for all PR opens in mapped repos; verified authors are @mentioned,
+    # unverified authors show "Contributor is not verified on gitcord".
+    Agora-Blockchain: "1331983948175380581"       # Agora Blockchain
+    BabyNest: "1339225155481763882"              # BabyNest
+    DebateAI: "1312986807914463252"              # AI for Debates
+    Devr.AI: "1345044976794472498"               # Devr.AI
+    EduAid: "1317912993786499072"                # EduAid
+    Ell-ena: "1349032611267477586"               # Ell-ena
+    Gitcord-GithubDiscordBot: "1465995983791063140"  # Gitcord - Github Discord Bot
+    Gitcord-Test: "1524006041677729823"          # gitcord testing
+    InPactAI: "1345044736515379210"              # InPact AI
+    NeuroTrack: "1347053043711082507"           # NeuroTrack
+    Perspective: "1339226574276268144"           # Perspective AI
+    PictoPy: "1311271974630330388"               # Pictopy
+    Rein: "1467370739152846899"                  # Rein
+    Resonate: "1317913663360864346"              # Resonate
+    Resonate-Website: "1317913663360864346"       # Resonate (shared project thread)
+    # No #projects thread yet: PullRequestDashboard, SkillBot, Skills, Template-Repo
   notifications:
     enabled: true
     issue_assignment: false          # Off: avoids DM flood from assignment events (use /assign-issue manually)
@@ -59,6 +78,7 @@ discord:
     pr_closed: true
     issue_reopened: true
     pr_reopened: true
+    pr_opened: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
     channel_id: null

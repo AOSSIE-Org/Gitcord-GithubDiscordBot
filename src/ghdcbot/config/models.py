@@ -88,6 +88,7 @@ class NotificationConfig(BaseModel):
     pr_closed: bool = True  # PR closed without merge
     issue_reopened: bool = True  # Issue reopened (notifies assignee)
     pr_reopened: bool = True  # PR reopened (notifies author)
+    pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
@@ -110,6 +111,8 @@ class DiscordConfig(BaseModel):
     activity_channel_id: str | None = None
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
     pr_preview_channels: list[str] = Field(default_factory=list)
+    # Repo short name → Discord channel/thread ID for pr_opened notifications (verified authors only).
+    pr_open_channels: dict[str, str] = Field(default_factory=dict)
     # Optional: verified-only GitHub → Discord notifications
     notifications: NotificationConfig | None = None
     # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync). See SlashCommandPermissionRule.

@@ -113,6 +113,52 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
     assert len(closed) == 0
 
 
+def test_pr_closed_not_emitted_when_timeline_has_merged_and_closed(monkeypatch) -> None:
+    """A merged PR emits both merged+closed timeline events (same timestamp).
+
+    Even if the close event sorts after the merge event, pr_closed must not fire.
+    """
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [{"name": "repo", "owner": {"login": "owner"}, "full_name": "owner/repo"}],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [],
+        "/repos/owner/repo/pulls": [
+            {
+                "number": 28,
+                "state": "closed",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-09T00:00:00Z",
+                "closed_at": "2024-01-09T00:00:00Z",
+                "merged_at": "2024-01-09T00:00:00Z",
+                "title": "Week 6 work",
+                "html_url": "https://github.com/owner/repo/pull/28",
+                "user": {"login": "shubham5080"},
+            }
+        ],
+        "/repos/owner/repo/pulls/28/reviews": [],
+        "/repos/owner/repo/pulls/28/comments": [],
+        "/repos/owner/repo/issues/28/comments": [],
+        # Both events at the same timestamp, closed listed AFTER merged (the buggy order).
+        "/repos/owner/repo/issues/28/timeline": [
+            {"event": "merged", "created_at": "2024-01-09T00:00:00Z"},
+            {"event": "closed", "created_at": "2024-01-09T00:00:00Z"},
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    merged = [event for event in events if event.event_type == "pr_merged"]
+    closed = [event for event in events if event.event_type == "pr_closed"]
+
+    assert len(merged) == 1
+    assert len(closed) == 0
+
+
 def test_pr_closed_emitted_when_closed_then_reopened_before_sync(monkeypatch) -> None:
     adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
     monkeypatch.setattr(

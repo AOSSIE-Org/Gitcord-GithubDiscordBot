@@ -24,6 +24,11 @@ services:
     depends_on:
       init_data:
         condition: service_completed_successfully
+    # Stable public resolvers — host/Docker DNS flakes were dropping the Discord gateway
+    # and causing slash commands to show "The application did not respond".
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       # Mount config so you can edit YAML without rebuilding (use data_dir: /data in config).
       - ./config:/app/config:ro
@@ -43,6 +48,9 @@ services:
     depends_on:
       init_data:
         condition: service_completed_successfully
+    # Host networking: Docker bridge DNS on this campus network is flaky
+    # (Temporary failure in name resolution → empty syncs). Host DNS works.
+    network_mode: host
     volumes:
       - ./config:/app/config:ro
       - ./scripts:/app/scripts:ro

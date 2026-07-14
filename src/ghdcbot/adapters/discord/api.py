@@ -177,7 +177,7 @@ class DiscordApiAdapter:
             response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": text},
+                json={"content": text, "flags": 4},  # 4 = SUPPRESS_EMBEDS (no link previews)
             )
         except httpx.HTTPError as exc:
             self._logger.warning(
@@ -227,7 +227,7 @@ class DiscordApiAdapter:
             msg_response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": text},
+                json={"content": text, "flags": 4},  # 4 = SUPPRESS_EMBEDS (no link previews)
             )
             if msg_response.status_code not in (200, 201):
                 self._logger.warning(
