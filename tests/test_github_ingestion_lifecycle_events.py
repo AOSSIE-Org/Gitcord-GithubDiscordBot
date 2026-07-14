@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 
 import httpx
 
-from ghdcbot.adapters.github.rest import GitHubRestAdapter
+from ghdcbot.adapters.github.rest import (
+    GitHubRestAdapter,
+    _should_emit_pr_closed_for_timeline_close,
+)
 
 
 class _MockClient:
@@ -157,6 +160,15 @@ def test_pr_closed_not_emitted_when_timeline_has_merged_and_closed(monkeypatch) 
 
     assert len(merged) == 1
     assert len(closed) == 0
+
+
+def test_should_skip_pr_closed_when_merged_event_precedes_close_same_timestamp() -> None:
+    """GitHub often orders timeline as merged then closed; skip even without merged_at."""
+    timeline = [
+        {"event": "merged", "created_at": "2026-07-14T05:48:06Z"},
+        {"event": "closed", "created_at": "2026-07-14T05:48:06Z"},
+    ]
+    assert _should_emit_pr_closed_for_timeline_close(timeline, 1, None) is False
 
 
 def test_pr_closed_emitted_when_closed_then_reopened_before_sync(monkeypatch) -> None:

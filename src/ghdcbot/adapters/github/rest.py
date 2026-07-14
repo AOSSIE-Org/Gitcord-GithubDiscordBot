@@ -1615,6 +1615,14 @@ def _should_emit_pr_closed_for_timeline_close(
     close_at = _parse_iso8601(timeline_events[close_index].get("created_at"))
     if merged_at and close_at and close_at >= merged_at:
         return False
+    # Timeline order may be merged→closed; also scan the whole timeline for a
+    # merge at the same timestamp as this close (not only events after it).
+    for event in timeline_events:
+        if event.get("event") != "merged":
+            continue
+        merged_evt_at = _parse_iso8601(event.get("created_at"))
+        if close_at and merged_evt_at and close_at == merged_evt_at:
+            return False
     for event in timeline_events[close_index + 1 :]:
         event_type = event.get("event")
         if event_type == "reopened":
