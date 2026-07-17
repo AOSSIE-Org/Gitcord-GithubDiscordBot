@@ -151,6 +151,40 @@ The Discord bot stays running; SQLite data and reports persist in a Docker volum
 
 See **[docs/DOCKER.md](docs/DOCKER.md)** for details, pitfalls, and audit-first workflow.
 
+### Quick Deployment (always-on)
+
+For development and user testing, run Gitcord locally with Docker as described above. When the bot must stay online while your computer is off, deploy the same Compose setup to an always-on Linux host.
+
+#### Linux VPS (recommended)
+
+This works with Oracle Cloud Free Tier, a small VM from another provider, or your own always-on server. Gitcord does not accept inbound web traffic, so the VM only needs outbound HTTPS access plus SSH for administration.
+
+1. Create an Ubuntu/Debian VM, install Git, [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/), then clone this repository.
+2. Create `.env` and `config/config.yaml` exactly as in the Docker quick start. Keep `runtime.data_dir: "/data"` so SQLite survives restarts.
+3. Validate the configuration, then start the bot and scheduled sync:
+
+   ```bash
+   docker compose run --rm bot --config /app/config/config.yaml validate
+   docker compose --profile scheduler up -d --build
+   docker compose ps
+   docker compose logs -f bot sync-scheduler
+   ```
+
+Both services use `restart: unless-stopped`, and the named `gitcord_data` volume preserves identities, notification history, and sync cursors across container or VM restarts. The scheduler runs every six hours by default; set `GITCORD_SYNC_INTERVAL_SECONDS` in `.env` to change it.
+
+For updates:
+
+```bash
+git pull
+docker compose --profile scheduler up -d --build
+```
+
+Protect `.env`, restrict SSH access, and back up the `gitcord_data` volume. Never commit production tokens or `config/config.yaml`.
+
+#### Fly.io and similar container platforms
+
+Fly.io is possible, but the repository is not currently a one-command Fly deployment: its Compose file uses host networking and a local named volume. A Fly deployment must remove `network_mode: host`, provide secrets through `fly secrets`, mount a persistent volume at `/data`, and run the bot and scheduler without allowing overlapping syncs. Use a Linux VPS for the supported copy-and-run path until platform-specific deployment files are added.
+
 ### Quick Setup Overview (local Python install)
 
 **1. Create GitHub Token** ([Detailed Guide](INSTALLATION.md#step-1-create-github-token-pat))
