@@ -16,11 +16,17 @@ data/
 config/config.yaml
 config/*-local.yaml
 config/*.local.yaml
+# Live org YAML at config/*.yaml stays local; only ship templates + tracked examples
+config/*.yaml
+!config/example.yaml
+!config/docker-example.yaml
+!config/aussie.yaml
+!config/aussie-repos.yaml
 # Per-org Docker stacks (copy from docker-compose.instance.example.yml)
 docker-compose.*.local.yml
-# Live org stacks kept on the host only (do not commit real guild/channel IDs)
-config/stability-nexus.yaml
-docker-compose.stability-nexus.yml
+docker-compose.*.yml
+!docker-compose.yml
+!docker-compose.*.example.yml
 src/ghdcbot.egg-info/
 *.egg-info/
 run-bot.sh
