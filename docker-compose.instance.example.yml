@@ -1,0 +1,67 @@
+# Example: run a second (or Nth) Gitcord instance for another organization.
+# Each instance needs its own Discord application, GitHub token, config, env file,
+# Compose project name (-p), and Docker volume — never share state between orgs.
+#
+# Setup:
+#   cp .env.example .env.myorg
+#   cp config/docker-example.yaml config/myorg.local.yaml   # gitignored via *.local.yaml
+#   # Edit myorg.local.yaml: github.org, discord.guild_id, channels, notifications
+#   cp docker-compose.instance.example.yml docker-compose.myorg.local.yml  # gitignored
+#   # Edit the copied compose file: env_file, config path, volume name
+#
+# Start:
+#   docker compose -p gitcord-myorg -f docker-compose.myorg.local.yml --env-file .env.myorg up -d --build
+#   docker compose -p gitcord-myorg -f docker-compose.myorg.local.yml --env-file .env.myorg --profile scheduler up -d
+#
+# Discord Developer Portal: set App Icon + Bot Icon from
+#   public/gitcord-discord-icon-large.png
+# (see INSTALLATION.md → Step 2.2).
+
+services:
+  init_data:
+    build: .
+    image: gitcord:latest
+    user: "0"
+    entrypoint: []
+    volumes:
+      - gitcord_instance_data:/data
+    command: ["sh", "-c", "chown -R appuser:appuser /data"]
+
+  bot:
+    build: .
+    image: gitcord:latest
+    env_file: .env.myorg
+    depends_on:
+      init_data:
+        condition: service_completed_successfully
+    network_mode: host
+    volumes:
+      - ./config:/app/config:ro
+      - gitcord_instance_data:/data
+    command: ["--config", "/app/config/myorg.local.yaml", "bot"]
+    restart: unless-stopped
+
+  sync-scheduler:
+    build: .
+    image: gitcord:latest
+    env_file: .env.myorg
+    profiles:
+      - scheduler
+    depends_on:
+      init_data:
+        condition: service_completed_successfully
+    network_mode: host
+    volumes:
+      - ./config:/app/config:ro
+      - ./scripts:/app/scripts:ro
+      - gitcord_instance_data:/data
+    environment:
+      GITCORD_CONFIG: /app/config/myorg.local.yaml
+      GITCORD_SYNC_INTERVAL_SECONDS: ${GITCORD_SYNC_INTERVAL_SECONDS:-21600}
+    entrypoint: []
+    user: appuser
+    command: ["bash", "/app/scripts/sync-loop.sh"]
+    restart: unless-stopped
+
+volumes:
+  gitcord_instance_data:

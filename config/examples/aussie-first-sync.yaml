@@ -1,14 +1,17 @@
-# AOSSIE first-sync profile — use ONCE when expanding the repo set (e.g. allowlist → all org repos).
+# AOSSIE first-sync profile — use ONCE when expanding from 2 → 15 repos.
 #
 # Goal: ingest GitHub activity into SQLite without flooding Discord or mutating roles/GitHub.
 #
 # Usage:
-#   1. Set discord.notifications.enabled: false in config/config.yaml
-#   2. Omit github.repos (all org) or expand the allowlist
-#   3. docker compose run --rm bot --config /app/config/config.yaml run-once
-#   4. Set discord.notifications.enabled: true again
+#   cp config/examples/aussie-first-sync.yaml config/config.yaml
+#   docker compose restart bot    # or restart your local bot process
+#   Run /sync once (expect 10–30+ minutes), watch logs for repos_total: 15
 #
-# Steady-state: config/aussie.yaml (notifications on; role updates stay off until merge_role_rules are agreed).
+# After sync completes successfully, switch back to steady-state config:
+#   cp config/aussie.yaml config/config.yaml
+#   docker compose restart bot
+#
+# Steady-state turns notifications back on; role updates stay off until merge_role_rules are agreed.
 
 runtime:
   mode: "active"
@@ -28,7 +31,7 @@ github:
     read: true
     write: false   # FIRST SYNC: no issue auto-assignment on GitHub
   user_fallback: false
-  # Omit repos allowlist to scan the whole org.
+  repos: !include ../aussie-repos.yaml
 
 discord:
   guild_id: "1022871757289422898"
@@ -50,7 +53,7 @@ discord:
   activity_channel_id: null
   pr_preview_channels: []
   notifications:
-    enabled: false   # FIRST SYNC: no DM flood while catching up new repos
+    enabled: false   # FIRST SYNC: no DM flood while catching up 13 new repos
     issue_assignment: true
     pr_review_requested: true
     pr_review_result: true

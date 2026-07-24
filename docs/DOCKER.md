@@ -77,6 +77,7 @@ Gitcord-GithubDiscordBot/
 │   ├── example.yaml        # Template for local install
 │   └── examples/           # Reference configs (not used by compose)
 ├── docker-compose.yml
+├── docker-compose.instance.example.yml  # Template for a second org instance
 ├── Dockerfile
 ├── pyproject.toml
 ├── src/
@@ -87,6 +88,34 @@ Gitcord-GithubDiscordBot/
 
 - `/app` = app root (code, config mount at `/app/config`).
 - `/data` = persistent volume (SQLite `state.db`, `reports/`, `audit_events.jsonl`). Set `data_dir: "/data"` in config.
+
+---
+
+## Multiple organizations (separate instances)
+
+Gitcord is designed for **any** open-source org. To run more than one org/server on the same host, use **isolated** stacks — never share `.env`, config, or the SQLite volume.
+
+For each org:
+
+1. Create a **new Discord application** (own bot token) and upload [`public/gitcord-discord-icon-large.png`](../public/gitcord-discord-icon-large.png) as App Icon + Bot Icon ([INSTALLATION.md](../INSTALLATION.md#22-set-app-icon-recommended)).
+2. Create a **separate GitHub PAT** with access to that org.
+3. Copy templates and fill placeholders:
+
+   ```bash
+   cp .env.example .env.myorg
+   cp config/docker-example.yaml config/myorg.local.yaml
+   cp docker-compose.instance.example.yml docker-compose.myorg.local.yml
+   ```
+
+4. Edit `config/myorg.local.yaml` (`github.org`, `discord.guild_id`, channels, notifications) and the copied compose file (`env_file`, config path, volume name).
+5. Start with a unique project name:
+
+   ```bash
+   docker compose -p gitcord-myorg -f docker-compose.myorg.local.yml --env-file .env.myorg up -d --build
+   docker compose -p gitcord-myorg -f docker-compose.myorg.local.yml --env-file .env.myorg --profile scheduler up -d
+   ```
+
+`*.local.yaml` and `docker-compose.*.local.yml` are gitignored so live org IDs stay off the public repo.
 
 ---
 
@@ -145,7 +174,7 @@ Gitcord-GithubDiscordBot/
 
 The Discord bot handles slash commands; **background sync** ingests GitHub activity, sends notifications, and (when enabled) updates roles. Run it on a schedule so mentors do not need `/sync` every time.
 
-**Prerequisites:** finish the [first-sync profile](../config/examples/aussie-first-sync.yaml) once, then use steady-state `config/config.yaml` (`cp config/aussie.yaml config/config.yaml`).
+**Prerequisites:** for a large first ingest, set `discord.notifications.enabled: false` once, run `run-once`, then re-enable notifications in `config/config.yaml` (from `config/docker-example.yaml`).
 
 **Safety:** every `run-once` (CLI, `/sync`, scheduler) runs a **preflight** that aborts if `assignments.issue_assignees` or `assignments.review_roles` are set while `github.permissions.write: true` — this blocks the bulk auto-assign incident. Check manually:
 

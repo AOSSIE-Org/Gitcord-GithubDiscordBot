@@ -1,11 +1,5 @@
-# Optional AOSSIE repo allowlist for Gitcord sync.
-# Steady-state config (config/aussie.yaml) now scans ALL org repos by omitting github.repos.
-# Keep this file if you need to restrict sync again:
-#   in config.yaml / aussie.yaml set:
-#     github:
-#       repos: !include aussie-repos.yaml
-#
-# Example allowlist (previous 19-repo pilot set):
+# Shared AOSSIE repo allowlist for Gitcord sync (19 repos).
+# Referenced via !include from aussie.yaml and config/examples/aussie*.yaml
 mode: allow
 names:
   - "Agora-Blockchain"
