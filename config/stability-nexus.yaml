@@ -1,0 +1,132 @@
+# Stability Nexus Gitcord config (Docker).
+# Tokens come from .env.stability-nexus — never put secrets in this file.
+# Isolated from AOSSIE: separate compose project + volume (see docker-compose.stability-nexus.yml).
+#
+# Discord app branding: upload public/gitcord-discord-icon-large.png as App Icon
+# and Bot Icon in the Discord Developer Portal (INSTALLATION.md Step 2.2).
+#
+# pr_open_channels map GitHub short repo names → Discord #projects forum thread IDs.
+
+runtime:
+  mode: "active"
+  log_level: "INFO"
+  data_dir: "/data"
+  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
+  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
+  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  activity_period_days: 7
+  enable_discord_role_updates: false
+
+github:
+  org: "StabilityNexus"
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+  permissions:
+    read: true
+    write: false
+  user_fallback: false
+  repos:
+    mode: allow
+    names:
+      # MiniChain
+      - "MiniChain"
+      # WalletLink
+      - "WalletLink"
+      # Orb Oracle
+      - "OrbOracle-EVM-Frontend"
+      - "OrbOracle-Formalization"
+      - "OrbOracle-Poster"
+      - "OrbOracle-Solana"
+      # Fate
+      - "Fate-EVM-Frontend"
+      - "Fate-LandingPage"
+      - "Fate-Solana"
+      - "Fate-Solana-WebUI"
+      - "Fate-Sui-Frontend"
+      # Tectonic
+      - "Tectonic-EVM-WebUI"
+      # Chainvoice
+      - "Chainvoice"
+      # Bene Fundraising EVM
+      - "Bene-FundRaising-EVM-Contracts"
+      - "Bene-FundRaising-EVM-Frontend"
+      - "Bene-LandingPage"
+      # Windmill Order Book Exchange
+      - "Windmill-EVM-Contracts"
+      - "Windmill-EVM-Keeper"
+      - "Windmill-EVM-WebUI"
+      # Gluon in Solidity / Ergo / Research
+      - "Gluon-EVM"
+      - "Gluon-EVM-WebUI"
+      - "Gluon-Ergo-Contracts"
+      - "Gluon-Ergo-SDK"
+      - "Gluon-Ergo-UI"
+      - "Gluon-Formalization-Coq"
+      - "Gluon-LandingPage"
+      # Decentralized Identity Tokens
+      - "IdentityTokens-EVM-Contracts"
+      - "IdentityTokens-EVM-Frontend"
+
+discord:
+  guild_id: "995968619034984528"
+  token: "${DISCORD_TOKEN}"
+  permissions:
+    read: true
+    write: true
+  unrestricted_slash_commands: false
+  command_permissions:
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+  activity_channel_id: null
+  pr_preview_channels: []
+  pr_open_channels:
+    MiniChain: "1471163521877410045"
+    WalletLink: "1525366355682000948"
+    OrbOracle-EVM-Frontend: "1504406274693922837"
+    OrbOracle-Formalization: "1504406274693922837"
+    OrbOracle-Poster: "1504406274693922837"
+    OrbOracle-Solana: "1504406274693922837"
+    Fate-EVM-Frontend: "1324064370883301386"
+    Fate-LandingPage: "1324064370883301386"
+    Fate-Solana: "1324064370883301386"
+    Fate-Solana-WebUI: "1324064370883301386"
+    Fate-Sui-Frontend: "1324064370883301386"
+    Tectonic-EVM-WebUI: "1503320626096635935"
+    Chainvoice: "1328282666335993856"
+    Bene-FundRaising-EVM-Contracts: "1311251432359591967"
+    Bene-FundRaising-EVM-Frontend: "1311251432359591967"
+    Bene-LandingPage: "1311251432359591967"
+    Windmill-EVM-Contracts: "1458849723296256050"
+    Windmill-EVM-Keeper: "1458849723296256050"
+    Windmill-EVM-WebUI: "1458849723296256050"
+    Gluon-EVM: "1283781488587837492"
+    Gluon-EVM-WebUI: "1283781488587837492"
+    Gluon-Ergo-Contracts: "1283794841482035224"
+    Gluon-Ergo-SDK: "1283794841482035224"
+    Gluon-Ergo-UI: "1283794841482035224"
+    Gluon-Formalization-Coq: "1283791094651420734"
+    Gluon-LandingPage: "1283791094651420734"
+    IdentityTokens-EVM-Contracts: "1461697098767532269"
+    IdentityTokens-EVM-Frontend: "1461697098767532269"
+  notifications:
+    enabled: true
+    issue_assignment: false
+    pr_review_requested: true
+    pr_review_result: true
+    pr_review_comment: true
+    pr_merged: true
+    pr_closed: true
+    issue_reopened: true
+    pr_reopened: true
+    pr_opened: true
+    coderabbit_reminders: false
+    coderabbit_reminder_after_hours: 48
+    channel_id: null
+
+assignments:
+  review_roles: []
+  issue_assignees: []
+  issue_request_eligible_roles: []
+
+repo_contributor_roles: {}

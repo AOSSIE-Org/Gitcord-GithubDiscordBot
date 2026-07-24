@@ -1,0 +1,65 @@
+# Standalone Stability Nexus Gitcord stack (isolated from AOSSIE).
+#
+# Discord Developer Portal: set App Icon + Bot Icon to
+#   public/gitcord-discord-icon-large.png
+# (see INSTALLATION.md → Step 2.2).
+#
+#   docker compose -p gitcord-stability -f docker-compose.stability-nexus.yml --env-file .env.stability-nexus up -d --build
+#
+# Scheduler:
+#   docker compose -p gitcord-stability -f docker-compose.stability-nexus.yml --env-file .env.stability-nexus --profile scheduler up -d
+#
+# One-off sync:
+#   docker compose -p gitcord-stability -f docker-compose.stability-nexus.yml --env-file .env.stability-nexus \
+#     run --rm --entrypoint bash bot -lc \
+#     'flock -n /data/run-once.lock ghdcbot --config /app/config/stability-nexus.yaml preflight-sync &&
+#      flock -n /data/run-once.lock ghdcbot --config /app/config/stability-nexus.yaml run-once'
+
+services:
+  init_data:
+    build: .
+    image: gitcord:latest
+    user: "0"
+    entrypoint: []
+    volumes:
+      - gitcord_stability_data:/data
+    command: ["sh", "-c", "chown -R appuser:appuser /data"]
+
+  bot:
+    build: .
+    image: gitcord:latest
+    env_file: .env.stability-nexus
+    depends_on:
+      init_data:
+        condition: service_completed_successfully
+    network_mode: host
+    volumes:
+      - ./config:/app/config:ro
+      - gitcord_stability_data:/data
+    command: ["--config", "/app/config/stability-nexus.yaml", "bot"]
+    restart: unless-stopped
+
+  sync-scheduler:
+    build: .
+    image: gitcord:latest
+    env_file: .env.stability-nexus
+    profiles:
+      - scheduler
+    depends_on:
+      init_data:
+        condition: service_completed_successfully
+    network_mode: host
+    volumes:
+      - ./config:/app/config:ro
+      - ./scripts:/app/scripts:ro
+      - gitcord_stability_data:/data
+    environment:
+      GITCORD_CONFIG: /app/config/stability-nexus.yaml
+      GITCORD_SYNC_INTERVAL_SECONDS: ${GITCORD_SYNC_INTERVAL_SECONDS:-21600}
+    entrypoint: []
+    user: appuser
+    command: ["bash", "/app/scripts/sync-loop.sh"]
+    restart: unless-stopped
+
+volumes:
+  gitcord_stability_data:

@@ -92,17 +92,33 @@ For initial dry-run testing, **Read** on Contents/Issues/PRs is enough. Enable *
 3. Enter application name: `Gitcord` (or your preferred name)
 4. Click **Create**
 
-### 2.2 Create Bot
+### 2.2 Set App Icon (recommended)
+
+Use the official Gitcord icon so members recognize the bot in your server:
+
+| File | Use |
+|------|-----|
+| [`public/gitcord-discord-icon-large.png`](public/gitcord-discord-icon-large.png) | **App Icon** and **Bot Icon** (1024×1024 PNG) |
+| [`public/gitcord-white-bg.png`](public/gitcord-white-bg.png) | Optional alternate (white background) |
+
+1. In the Developer Portal, open **General Information**
+2. Under **App Icon**, click the upload area and select `public/gitcord-discord-icon-large.png`
+3. Save changes
+4. Open **Bot** (left sidebar) → under **Icon**, upload the **same** file (App Icon alone does not always update the in-server avatar)
+
+Discord accepts PNG/JPG; square **512×512** or **1024×1024** works best.
+
+### 2.3 Create Bot
 
 1. Open the **Bot** section (left sidebar)
 2. Click **Add Bot** → **Yes, do it!**
 
-### 2.3 Configure Bot Settings
+### 2.4 Configure Bot Settings
 
 - **Public Bot:** off (unless you want others to invite it)
 - **Requires OAuth2 Code Grant:** off
 
-### 2.4 Set Privileged Gateway Intents
+### 2.5 Set Privileged Gateway Intents
 
 Under **Bot** → **Privileged Gateway Intents**:
 
@@ -112,7 +128,7 @@ Under **Bot** → **Privileged Gateway Intents**:
 | Presence Intent | ❌ No |
 | Message Content Intent | ❌ No (only if you enable `pr_preview_channels` in config) |
 
-### 2.5 Copy Bot Token
+### 2.6 Copy Bot Token
 
 1. Click **Reset Token** (or copy the existing token)
 2. **Copy the token immediately**

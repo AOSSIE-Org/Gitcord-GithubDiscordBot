@@ -21,8 +21,9 @@ github:
     read: true
     write: true
   user_fallback: false
-  # Repo allowlist — shared: config/aussie-repos.yaml
-  repos: !include ../aussie-repos.yaml
+  # Scan all org repos (no allowlist). Sync is slower than a short allowlist.
+  # Restrict later with: repos: { mode: allow, names: [...] } or !include ../aussie-repos.yaml
+  # First expand of the allowlist: disable discord.notifications.enabled for one run-once.
 
 discord:
   guild_id: "1022871757289422898"

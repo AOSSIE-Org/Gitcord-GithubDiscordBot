@@ -195,7 +195,7 @@ Fly.io is possible, but the repository is not currently a one-command Fly deploy
 **2. Create Discord Bot** ([Detailed Guide](INSTALLATION.md#step-2-create-discord-bot))
 
 - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-- Create Application → Add Bot → Enable **Server Members Intent**
+- Create Application → set **App Icon** + **Bot Icon** from [`public/gitcord-discord-icon-large.png`](public/gitcord-discord-icon-large.png) → Add Bot → Enable **Server Members Intent**
 
 **3. Invite Bot to Server** ([Detailed Guide](INSTALLATION.md#step-3-invite-bot-to-discord-server))
 
