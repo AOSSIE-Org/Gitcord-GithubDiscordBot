@@ -16,6 +16,17 @@ data/
 config/config.yaml
 config/*-local.yaml
 config/*.local.yaml
+# Live org YAML at config/*.yaml stays local; only ship templates + tracked examples
+config/*.yaml
+!config/example.yaml
+!config/docker-example.yaml
+!config/aussie.yaml
+!config/aussie-repos.yaml
+# Per-org Docker stacks (copy from docker-compose.instance.example.yml)
+docker-compose.*.local.yml
+docker-compose.*.yml
+!docker-compose.yml
+!docker-compose.*.example.yml
 src/ghdcbot.egg-info/
 *.egg-info/
 run-bot.sh
@@ -23,7 +34,8 @@ config/shubh-olrd.yaml
 test_snapshots_comprehensive.sh
 bot.log
 bot_output.log
-
 # Accidental npm artifacts (Python repo; no package.json)
 package-lock.json
 venv/
+gitcord_status.pdf
+gitcord-portfolio-thumbnail.jpg
