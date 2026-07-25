@@ -160,12 +160,29 @@ def test_build_notification_message_pr_merged() -> None:
         event_type="pr_merged",
         repo="test-repo",
         created_at=datetime.now(timezone.utc),
-        payload={"pr_number": 999},
+        payload={"pr_number": 999, "base_branch": "dev"},
     )
     msg = _build_notification_message(event, "pr_merged", "test-org", "contributor")
     assert "PR Merged" in msg
     assert "#999" in msg
+    assert "merged into the `dev` branch" in msg
+    assert "main branch" not in msg
     assert "Thank you for your contribution" in msg
+
+
+def test_build_notification_message_pr_merged_without_base_branch() -> None:
+    """Older events without base_branch must not claim merge into main."""
+    event = ContributionEvent(
+        github_user="contributor",
+        event_type="pr_merged",
+        repo="test-repo",
+        created_at=datetime.now(timezone.utc),
+        payload={"pr_number": 100},
+    )
+    msg = _build_notification_message(event, "pr_merged", "test-org", "contributor")
+    assert "has been merged" in msg
+    assert "main branch" not in msg
+    assert "main`" not in msg
 
 
 def test_build_notification_message_pr_closed_template() -> None:

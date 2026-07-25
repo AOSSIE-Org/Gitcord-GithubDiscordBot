@@ -432,9 +432,18 @@ def _build_notification_message(
     
     elif event_type_key == "pr_merged":
         pr_number = payload.get("pr_number")
+        base_branch = (payload.get("base_branch") or "").strip()
+        if base_branch:
+            merge_line = (
+                f"Congratulations! Your **PR #{pr_number}** has been merged into "
+                f"the `{base_branch}` branch. 🎉\n\n"
+            )
+        else:
+            # Older stored events may lack base_branch; do not assume "main".
+            merge_line = f"Congratulations! Your **PR #{pr_number}** has been merged. 🎉\n\n"
         return (
             f"🚀 **PR Merged Successfully!**\n\n"
-            f"Congratulations! Your **PR #{pr_number}** has been merged into the main branch. 🎉\n\n"
+            f"{merge_line}"
             f"**Repository:** `{github_org}/{repo}`\n"
             f"**Link:** {_suppress_discord_embed(f'https://github.com/{github_org}/{repo}/pull/{pr_number}')}\n\n"
             f"✨ Thank you for your contribution!"
