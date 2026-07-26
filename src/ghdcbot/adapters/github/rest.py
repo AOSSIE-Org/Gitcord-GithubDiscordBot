@@ -689,11 +689,14 @@ class GitHubRestAdapter:
                         )
                     # Check CI status
                     ci_failed = _check_pr_ci_status(pr, owner, repo, self._client)
+                    base_branch = ((pr.get("base") or {}).get("ref") or "").strip()
                     payload = {
                         "pr_number": pr["number"],
                         "title": pr.get("title"),
                         "merged_at": pr.get("merged_at"),
                     }
+                    if base_branch:
+                        payload["base_branch"] = base_branch
                     if difficulty_labels:
                         payload["difficulty_labels"] = difficulty_labels
                     if ci_failed:

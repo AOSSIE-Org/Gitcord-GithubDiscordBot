@@ -102,6 +102,7 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
                 "title": "Ship feature",
                 "html_url": "https://github.com/owner/repo/pull/21",
                 "user": {"login": "bob"},
+                "base": {"ref": "dev"},
             }
         ],
     )
@@ -113,6 +114,7 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
 
     assert len(merged) == 1
     assert merged[0].payload["pr_number"] == 21
+    assert merged[0].payload["base_branch"] == "dev"
     assert len(closed) == 0
 
 
