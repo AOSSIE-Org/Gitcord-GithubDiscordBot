@@ -505,6 +505,7 @@ def run_bot(config_path: str) -> None:
 
         # 4. Fetch contribution metrics if GitHub user exists
         if github_user:
+            metrics_available = True
             try:
                 now_utc = datetime.now(timezone.utc)
                 start_30 = now_utc - timedelta(days=30)
@@ -521,6 +522,7 @@ def run_bot(config_path: str) -> None:
                 logging.getLogger("ghdcbot.bot").debug(
                     "Error fetching contribution metrics for /profile: %s", e
                 )
+                metrics_available = False
                 user_metrics, rank = None, None
 
             if user_metrics:
@@ -538,28 +540,45 @@ def run_bot(config_path: str) -> None:
                     value="\n".join(metrics_lines),
                     inline=False,
                 )
-            else:
+            elif metrics_available:
                 embed.add_field(
                     name="📊 Contributions (Last 30 Days)",
                     value="No activity recorded in the last 30 days.",
                     inline=False,
                 )
-
+            else:
+                embed.add_field(
+                    name="📊 Contributions (Last 30 Days)",
+                    value="Contribution data is temporarily unavailable.",
+                    inline=False,
+                )
+        def _truncate_embed_field_value(value: str, limit: int = 1024) -> str:
+            if len(value) <= limit:
+                return value
+            return f"{value[:limit - 1]}…"
         # 5. Fetch and add Social Profiles
         socials_line = await _format_social_profiles_line(social_service, discord_user_id, viewing_self)
         if socials_line.startswith("**Social Profiles:**"):
             socials_value = socials_line.replace("**Social Profiles:**", "").strip()
         else:
             socials_value = socials_line.strip()
-        embed.add_field(name="Connected Socials", value=socials_value, inline=False)
-
+        embed.add_field(
+            name="Connected Socials",
+            value=_truncate_embed_field_value(socials_value),
+            inline=False,
+        )
         # 6. Fetch and add Discord Roles
         roles_line = await _format_roles_line(discord_reader, discord_user_id)
         if roles_line.startswith("**Roles:**"):
             roles_value = roles_line.replace("**Roles:**", "").strip()
         else:
             roles_value = roles_line.strip()
-        embed.add_field(name="Server Roles", value=roles_value, inline=False)
+        
+        embed.add_field(
+            name="Server Roles",
+            value=_truncate_embed_field_value(roles_value),
+            inline=False,
+        )
 
         embed.set_footer(text="Gitcord Automation Engine")
 
