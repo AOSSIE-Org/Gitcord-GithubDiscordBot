@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import httpx
+
+from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 
 
 @dataclass(frozen=True)
@@ -20,16 +22,11 @@ class GitHubIdentityReader:
     (profile bio and public gists) and searches for a verification code.
     """
 
-    def __init__(self, token: str, api_base: str = "https://api.github.com") -> None:
+    def __init__(
+        self, token: str | Callable[[], str], api_base: str = "https://api.github.com"
+    ) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
-        self._client = httpx.Client(
-            base_url=api_base,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=20.0,
-        )
+        self._client = build_github_httpx_client(token, api_base=api_base, timeout=20.0)
 
     def close(self) -> None:
         self._client.close()

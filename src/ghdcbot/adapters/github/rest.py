@@ -6,10 +6,11 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 import httpx
 
+from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 from ghdcbot.config.loader import get_active_config
 from ghdcbot.config.models import RepoFilterConfig
 from ghdcbot.core.models import ContributionEvent
@@ -65,21 +66,14 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
 
 
 class GitHubRestAdapter:
-    def __init__(self, token: str, org: str, api_base: str) -> None:
+    def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
         self._last_repo_count: int | None = None
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
-        self._client = httpx.Client(
-            base_url=api_base,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=30.0,
-        )
+        self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
         self._client.close()
@@ -142,6 +136,38 @@ class GitHubRestAdapter:
         Results are limited to the configured org and filtered by the active repo
         allowlist/denylist when present. Shape matches ``list_open_pull_requests``.
         """
+        return self._search_pull_requests_for_author(
+            github_user,
+            query_extra="is:open",
+            include_status=False,
+            log_label="open PRs",
+        )
+
+    def list_pull_requests_for_author(self, github_user: str) -> list[dict]:
+        """List recent PRs (open/merged/closed) for one author via Search API.
+
+        Newest-updated first. Each item includes ``status``: open | merged | closed.
+        Scoped to the configured org and active repo allowlist/denylist.
+        """
+        return self._search_pull_requests_for_author(
+            github_user,
+            query_extra="",
+            include_status=True,
+            log_label="PRs",
+            sort="updated",
+            order="desc",
+        )
+
+    def _search_pull_requests_for_author(
+        self,
+        github_user: str,
+        *,
+        query_extra: str,
+        include_status: bool,
+        log_label: str,
+        sort: str | None = None,
+        order: str | None = None,
+    ) -> list[dict]:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -156,20 +182,28 @@ class GitHubRestAdapter:
             else:
                 denied_names = names
 
-        # Search is author-scoped; one or two pages is enough for contributor lookups.
-        query = f"is:pr is:open author:{author} org:{self._org}"
+        extra = (query_extra or "").strip()
+        query = f"is:pr author:{author} org:{self._org}"
+        if extra:
+            query = f"is:pr {extra} author:{author} org:{self._org}"
+
         results: list[dict] = []
         page = 1
         while page <= 5:
+            params: dict[str, str | int] = {"q": query, "per_page": 100, "page": page}
+            if sort:
+                params["sort"] = sort
+            if order:
+                params["order"] = order
             response = self._request(
                 "GET",
                 "/search/issues",
-                params={"q": query, "per_page": 100, "page": page},
+                params=params,
             )
             if response is None or response.status_code != 200:
                 if response is not None:
                     self._logger.warning(
-                        "GitHub search for open PRs failed",
+                        f"GitHub search for {log_label} failed",
                         extra={
                             "status_code": response.status_code,
                             "github_user": author,
@@ -192,16 +226,18 @@ class GitHubRestAdapter:
                 if repo_name in denied_names:
                     continue
                 user = item.get("user") if isinstance(item.get("user"), dict) else {}
-                results.append(
-                    {
-                        "repo": repo_name,
-                        "number": item.get("number"),
-                        "author": user.get("login") or author,
-                        "title": item.get("title"),
-                        "html_url": item.get("html_url"),
-                        "created_at": item.get("created_at"),
-                    }
-                )
+                row: dict = {
+                    "repo": repo_name,
+                    "number": item.get("number"),
+                    "author": user.get("login") or author,
+                    "title": item.get("title"),
+                    "html_url": item.get("html_url"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+                if include_status:
+                    row["status"] = _pr_status_from_search_issue(item)
+                results.append(row)
             if len(items) < 100:
                 break
             page += 1
@@ -385,6 +421,40 @@ class GitHubRestAdapter:
                 "error_response": error_body,
             },
         )
+
+    def create_issue_comment(
+        self, owner: str, repo: str, issue_number: int, body: str
+    ) -> bool:
+        """Post a comment on an issue or pull request (Issues Comments API).
+
+        Returns True if the comment was created (201).
+        """
+        path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        try:
+            response = self._client.post(path, json={"body": body})
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub create comment failed (network)",
+                extra={"path": path, "error": str(exc)},
+            )
+            return False
+        if response.status_code in {200, 201}:
+            self._logger.info(
+                "GitHub comment created",
+                extra={"owner": owner, "repo": repo, "issue_number": issue_number},
+            )
+            return True
+        self._logger.warning(
+            "GitHub create comment failed (API)",
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "issue_number": issue_number,
+                "status_code": response.status_code,
+                "error_response": (response.text or "")[:300],
+            },
+        )
+        return False
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.
@@ -1824,6 +1894,18 @@ def _repo_name_from_search_issue(item: dict, org: str) -> str | None:
             rest = html_url[idx + len(marker) :]
             return rest.split("/", 1)[0] or None
     return None
+
+
+def _pr_status_from_search_issue(item: dict) -> str:
+    """Classify a Search API PR item as open, merged, or closed (unmerged)."""
+    state = str(item.get("state") or "").strip().lower()
+    pull_request = item.get("pull_request") if isinstance(item.get("pull_request"), dict) else {}
+    merged_at = pull_request.get("merged_at")
+    if state == "open":
+        return "open"
+    if merged_at:
+        return "merged"
+    return "closed"
 
 
 def _load_repo_filter() -> RepoFilterConfig | None:

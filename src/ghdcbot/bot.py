@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
 
+from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
@@ -19,6 +20,11 @@ from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
 )
 from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
+from ghdcbot.engine.pr_list import (
+    clamp_pr_list_args,
+    format_pr_list_messages,
+    select_recent_prs,
+)
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -305,8 +311,12 @@ def run_bot(config_path: str) -> None:
         data_dir=config.runtime.data_dir,
     )
     storage.init_schema()
+    github_token = resolve_github_token(
+        pat=config.github.token,
+        api_base=str(config.github.api_base),
+    )
     github_identity = GitHubIdentityReader(
-        token=config.github.token,
+        token=github_token,
         api_base=str(config.github.api_base),
     )
     service = IdentityLinkService(storage=storage, github_identity=github_identity)
@@ -319,7 +329,7 @@ def run_bot(config_path: str) -> None:
     )
     github_adapter = build_adapter(
         config.runtime.github_adapter,
-        token=config.github.token,
+        token=github_token,
         org=config.github.org,
         api_base=str(config.github.api_base),
     )
@@ -581,6 +591,81 @@ def run_bot(config_path: str) -> None:
         )
         await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
 
+    @tree.command(
+        name="pr",
+        description="List a contributor's recent PRs grouped by closed / merged / open",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        contributor="Discord member whose PRs to list",
+        count="How many recent PRs to show (optional, default 10, max 100)",
+        skip="How many recent PRs to skip first (M, optional)",
+    )
+    async def pr_list_cmd(
+        interaction: discord.Interaction,
+        contributor: discord.Member,
+        count: Optional[app_commands.Range[int, 1, 100]] = None,
+        skip: app_commands.Range[int, 0, 500] = 0,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        n, m = clamp_pr_list_args(count=count, skip=int(skip))
+        logger.info(
+            "/pr requested",
+            extra={
+                "requested_count": count,
+                "effective_count": n,
+                "skip": m,
+                "contributor_id": str(contributor.id),
+            },
+        )
+        github_user = resolve_discord_to_github(storage, str(contributor.id))
+        if not github_user:
+            await interaction.followup.send(
+                (
+                    f"❌ {contributor.mention} has not verified their GitHub identity. "
+                    "Use `/link` and `/verify-link` first."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            list_for_author = getattr(github_adapter, "list_pull_requests_for_author", None)
+            if not callable(list_for_author):
+                await interaction.followup.send(
+                    "❌ This GitHub adapter cannot list author PRs.",
+                    ephemeral=True,
+                )
+                return
+            all_prs = await asyncio.to_thread(list_for_author, github_user)
+        except Exception as exc:
+            logger.exception(
+                "Failed to list pull requests for /pr",
+                extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+            )
+            await interaction.followup.send(
+                f"❌ Error fetching PRs: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        selected = select_recent_prs(all_prs, count=n, skip=m)
+        messages = format_pr_list_messages(
+            contributor_mention=contributor.mention,
+            github_user=github_user,
+            prs=selected,
+            org=config.github.org,
+            count=n,
+            skip=m,
+        )
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
+
     def command_permission_check(command_name: str):
         """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
 
@@ -672,7 +757,7 @@ def run_bot(config_path: str) -> None:
 
             github_adapter_for_sync = build_adapter(
                 config.runtime.github_adapter,
-                token=config.github.token,
+                token=github_token,
                 org=config.github.org,
                 api_base=str(config.github.api_base),
             )
@@ -683,7 +768,7 @@ def run_bot(config_path: str) -> None:
             )
             github_writer_for_sync = build_adapter(
                 config.runtime.github_adapter,
-                token=config.github.token,
+                token=github_token,
                 org=config.github.org,
                 api_base=str(config.github.api_base),
             )

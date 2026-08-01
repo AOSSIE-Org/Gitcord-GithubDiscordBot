@@ -58,7 +58,8 @@ class RuntimeConfig(BaseModel):
 
 class GitHubConfig(BaseModel):
     org: str
-    token: str
+    # Optional when GitHub App env vars are set (GITHUB_APP_ID + installation + private key).
+    token: str = ""
     api_base: HttpUrl = Field(default="https://api.github.com")
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     repos: RepoFilterConfig | None = None
@@ -89,6 +90,8 @@ class NotificationConfig(BaseModel):
     issue_reopened: bool = True  # Issue reopened (notifies assignee)
     pr_reopened: bool = True  # PR reopened (notifies author)
     pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
+    # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.
+    pr_opened_github_comment: bool = False
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
@@ -107,6 +110,8 @@ class DiscordConfig(BaseModel):
     guild_id: str
     token: str
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
+    # Optional: public Discord invite URL (used in GitHub PR link-nudge comments).
+    invite_url: str | None = None
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
@@ -190,9 +195,19 @@ class IdentityConfig(BaseModel):
 class SnapshotConfig(BaseModel):
     """Configuration for GitHub-backed JSON snapshots."""
     enabled: bool = False
-    repo_path: str = ""  # Format: "owner/repo" (e.g., "org/gitcord-data")
+    repo_path: str = ""  # Format: "owner/repo" (e.g., "AOSSIE-Org/gitcord")
     # Optional: branch to write to (default: main/master)
     branch: str | None = None
+    # Minimum hours between snapshot writes (0 = every successful sync).
+    # Sync can still run every 2h; snapshots can be daily with min_interval_hours: 24.
+    min_interval_hours: int = 0
+
+    @field_validator("min_interval_hours")
+    @classmethod
+    def validate_min_interval_hours(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("snapshots.min_interval_hours must be >= 0")
+        return value
 
 
 class BotConfig(BaseModel):

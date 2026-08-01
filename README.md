@@ -284,6 +284,7 @@ Wait 30 seconds for commands to sync.
 
 - `/summary` - Show contribution metrics (7 and 30 days); optional Discord member for another verified contributor
 - `/open-prs` - List a contributor's currently open PRs in configured repos
+- `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
 
 ### Sync (mentor-only)
 

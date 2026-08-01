@@ -10,6 +10,7 @@ from pathlib import Path
 from ghdcbot.config.loader import load_config
 from ghdcbot.config.sync_safety import assert_sync_safe, collect_sync_safety_violations
 from ghdcbot.core.errors import AdapterError, ConfigError
+from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.engine.identity_linking import IdentityLinkService
 from ghdcbot.engine.orchestrator import Orchestrator
@@ -23,9 +24,13 @@ def build_orchestrator(config_path: str) -> Orchestrator:
     logger = logging.getLogger("CLI")
     logger.info("Loaded configuration", extra={"mode": config.runtime.mode.value})
 
+    github_token = resolve_github_token(
+        pat=config.github.token,
+        api_base=str(config.github.api_base),
+    )
     github_adapter = build_adapter(
         config.runtime.github_adapter,
-        token=config.github.token,
+        token=github_token,
         org=config.github.org,
         api_base=str(config.github.api_base),
     )
@@ -58,7 +63,10 @@ def _build_identity_service(
     """
     orchestrator = build_orchestrator(config_path)
     github_identity = GitHubIdentityReader(
-        token=orchestrator.config.github.token,
+        token=resolve_github_token(
+            pat=orchestrator.config.github.token,
+            api_base=str(orchestrator.config.github.api_base),
+        ),
         api_base=str(orchestrator.config.github.api_base),
     )
     service = IdentityLinkService(storage=orchestrator.storage, github_identity=github_identity)

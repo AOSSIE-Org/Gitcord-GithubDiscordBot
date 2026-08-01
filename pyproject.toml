@@ -15,6 +15,7 @@ dependencies = [
   "tenacity>=8.2",
   "python-dotenv>=1.0",
   "discord.py>=2.0",
+  "PyJWT[crypto]>=2.8",
 ]
 
 [project.scripts]
