@@ -16,7 +16,7 @@ class SqliteStorage:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -687,6 +687,46 @@ class SqliteStorage:
                 (dedupe_key,),
             ).fetchone()
         return row is not None
+
+    def claim_notification_sent(
+        self,
+        dedupe_key: str,
+        event: Any,
+        discord_user_id: str,
+        channel_id: str | None,
+        target_github_user: str | None = None,
+    ) -> bool:
+        """Atomically claim a dedupe key. Returns True only for the first claimant."""
+        now = datetime.now(timezone.utc).isoformat()
+        target = str(event.payload.get("issue_number") or event.payload.get("pr_number") or "")
+        github_user = target_github_user or event.github_user
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO notifications_sent
+                (dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dedupe_key,
+                    event.event_type,
+                    github_user,
+                    discord_user_id,
+                    event.repo,
+                    target,
+                    channel_id,
+                    now,
+                ),
+            )
+            return cur.rowcount == 1
+
+    def release_notification_claim(self, dedupe_key: str) -> None:
+        """Delete a claimed notification row so a later attempt can retry."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM notifications_sent WHERE dedupe_key = ?",
+                (dedupe_key,),
+            )
 
     def mark_notification_sent(
         self,

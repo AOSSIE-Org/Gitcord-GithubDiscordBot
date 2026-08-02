@@ -4,9 +4,9 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Iterator, Sequence
 
 import httpx
 
@@ -42,7 +42,10 @@ def _is_rate_limit_exhausted(response: httpx.Response) -> bool:
     if response.status_code != 403:
         return False
     rate_limit = _parse_rate_limit(response.headers)
-    return rate_limit.remaining == 0
+    if rate_limit.remaining == 0:
+        return True
+    # Secondary rate limits often keep remaining > 0 but send Retry-After.
+    return bool(str(response.headers.get("Retry-After") or "").strip())
 
 
 def _rate_limit_reset_timestamp(headers: dict) -> int | None:
@@ -56,6 +59,13 @@ def _rate_limit_reset_timestamp(headers: dict) -> int | None:
 
 
 def _rate_limit_sleep_seconds(headers: dict) -> float | None:
+    retry_after = headers.get("Retry-After")
+    if retry_after is not None:
+        retry_str = str(retry_after).strip()
+        try:
+            return max(float(retry_str), _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
+        except ValueError:
+            pass
     reset_ts = _rate_limit_reset_timestamp(headers)
     if reset_ts is None:
         return None
@@ -65,10 +75,49 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
     return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
 
 
+_GITHUB_SEARCH_QUERY_MAX_LEN = 256
+
+
+def _append_repo_search_qualifiers(
+    query: str,
+    *,
+    org: str,
+    allowed_names: set[str] | None,
+    denied_names: set[str],
+) -> str:
+    """Add allow/deny ``repo:`` qualifiers while staying within GitHub's query length limit."""
+    if allowed_names is not None and allowed_names:
+        repo_terms = [f"repo:{org}/{name}" for name in sorted(allowed_names)]
+        joined = " OR ".join(repo_terms)
+        candidate = f"{query} ({joined})"
+        if len(candidate) <= _GITHUB_SEARCH_QUERY_MAX_LEN:
+            return candidate
+        # Fit as many repos as possible; local filter remains the safety net.
+        parts: list[str] = []
+        for term in repo_terms:
+            trial = f"{query} ({' OR '.join(parts + [term])})"
+            if len(trial) > _GITHUB_SEARCH_QUERY_MAX_LEN:
+                break
+            parts.append(term)
+        if parts:
+            return f"{query} ({' OR '.join(parts)})"
+        return query
+    if denied_names:
+        result = query
+        for name in sorted(denied_names):
+            candidate = f"{result} -repo:{org}/{name}"
+            if len(candidate) > _GITHUB_SEARCH_QUERY_MAX_LEN:
+                break
+            result = candidate
+        return result
+    return query
+
+
 class GitHubRestAdapter:
     def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
+        self._token = token
         self._last_repo_count: int | None = None
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
@@ -186,6 +235,12 @@ class GitHubRestAdapter:
         query = f"is:pr author:{author} org:{self._org}"
         if extra:
             query = f"is:pr {extra} author:{author} org:{self._org}"
+        query = _append_repo_search_qualifiers(
+            query,
+            org=self._org,
+            allowed_names=allowed_names,
+            denied_names=denied_names,
+        )
 
         results: list[dict] = []
         page = 1
@@ -203,11 +258,12 @@ class GitHubRestAdapter:
             if response is None or response.status_code != 200:
                 if response is not None:
                     self._logger.warning(
-                        f"GitHub search for {log_label} failed",
+                        "GitHub search failed",
                         extra={
                             "status_code": response.status_code,
                             "github_user": author,
                             "org": self._org,
+                            "log_label": log_label,
                         },
                     )
                 break
@@ -430,14 +486,27 @@ class GitHubRestAdapter:
         Returns True if the comment was created (201).
         """
         path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        try:
-            response = self._client.post(path, json={"body": body})
-        except httpx.HTTPError as exc:
+        response = self._execute_request_with_retries(
+            "POST", path, params={}, json_body={"body": body}
+        )
+        if response is None:
             self._logger.warning(
-                "GitHub create comment failed (network)",
-                extra={"path": path, "error": str(exc)},
+                "GitHub create comment failed (network/retries)",
+                extra={"path": path},
             )
             return False
+
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": path,
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+
         if response.status_code in {200, 201}:
             self._logger.info(
                 "GitHub comment created",
@@ -1441,7 +1510,12 @@ class GitHubRestAdapter:
             page += 1
 
     def _execute_request_with_retries(
-        self, method: str, path: str, params: dict
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        *,
+        json_body: dict | None = None,
     ) -> httpx.Response | None:
         last_reason = "unknown"
         for attempt in range(1, _GITHUB_RETRY_MAX_ATTEMPTS + 1):
@@ -1452,7 +1526,9 @@ class GitHubRestAdapter:
             while True:
                 try:
                     self._increment_sync_request_count()
-                    response = self._client.request(method, path, params=params)
+                    response = self._client.request(
+                        method, path, params=params, json=json_body
+                    )
                     transport_error = None
                 except httpx.TimeoutException:
                     transport_error = "Timeout"
@@ -1531,8 +1607,17 @@ class GitHubRestAdapter:
 
         return None
 
-    def _request(self, method: str, path: str, params: dict) -> httpx.Response | None:
-        response = self._execute_request_with_retries(method, path, params)
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        *,
+        json_body: dict | None = None,
+    ) -> httpx.Response | None:
+        response = self._execute_request_with_retries(
+            method, path, params, json_body=json_body
+        )
         if response is None:
             return None
 

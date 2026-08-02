@@ -571,13 +571,13 @@ def run_bot(config_path: str) -> None:
                 open_prs = await asyncio.to_thread(
                     lambda: list(github_adapter.list_open_pull_requests())
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "Failed to list open pull requests",
                 extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
             )
             await interaction.followup.send(
-                f"❌ Error fetching open PRs: {exc}",
+                "❌ Error fetching open PRs. Please try again later.",
                 ephemeral=True,
             )
             return
@@ -601,6 +601,7 @@ def run_bot(config_path: str) -> None:
         count="How many recent PRs to show (optional, default 10, max 100)",
         skip="How many recent PRs to skip first (M, optional)",
     )
+    @app_commands.checks.cooldown(1, 30.0)
     async def pr_list_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member,
@@ -639,13 +640,13 @@ def run_bot(config_path: str) -> None:
                 )
                 return
             all_prs = await asyncio.to_thread(list_for_author, github_user)
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "Failed to list pull requests for /pr",
                 extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
             )
             await interaction.followup.send(
-                f"❌ Error fetching PRs: {exc}",
+                "❌ Error fetching PRs. Please try again later.",
                 ephemeral=True,
             )
             return
@@ -821,6 +822,17 @@ def run_bot(config_path: str) -> None:
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
+        if isinstance(error, app_commands.CommandOnCooldown):
+            retry_after = int(error.retry_after) + 1
+            message = f"⏳ This command is on cooldown. Try again in {retry_after}s."
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+            except Exception:
+                logger.exception("Failed to send cooldown message")
+            return
         if isinstance(error, app_commands.CheckFailure):
             try:
                 cmd_name = interaction.command.name if interaction.command else "unknown"

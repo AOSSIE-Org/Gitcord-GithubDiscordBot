@@ -1,14 +1,18 @@
 """Tests for verified-only GitHub → Discord notifications."""
 
 from datetime import datetime, timezone
+from threading import Barrier, Thread
 
+from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.notifications import (
     _build_dedupe_key,
     _build_notification_message,
+    _build_pr_opened_channel_message,
     _build_pr_opened_github_link_comment,
+    _sanitize_discord_pr_title,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
@@ -29,6 +33,16 @@ class MockStorage:
     def was_notification_sent(self, dedupe_key: str) -> bool:
         return dedupe_key in self.notifications_sent
     
+    def claim_notification_sent(self, *args: object, **kwargs: object) -> bool:
+        dedupe_key = args[0] if args else kwargs.get("dedupe_key", "")
+        if dedupe_key in self.notifications_sent:
+            return False
+        self.notifications_sent.add(str(dedupe_key))
+        return True
+
+    def release_notification_claim(self, dedupe_key: str) -> None:
+        self.notifications_sent.discard(dedupe_key)
+
     def mark_notification_sent(self, *args: object, **kwargs: object) -> None:
         dedupe_key = args[0] if args else kwargs.get("dedupe_key", "")
         self.notifications_sent.add(dedupe_key)
@@ -1165,3 +1179,80 @@ def test_pr_opened_github_link_comment_skips_duplicate() -> None:
 
     assert result is False
     assert github_writer.comments == []
+
+
+def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
+    dirty = "fix](https://evil.example) @everyone"
+    clean = _sanitize_discord_pr_title(dirty)
+    assert "\\]" in clean
+    assert "@everyone" not in clean
+    assert "@\u200beveryone" in clean
+
+    message = _build_pr_opened_channel_message(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=datetime.now(timezone.utc),
+            payload={"pr_number": 7, "title": dirty},
+        ),
+        "AOSSIE-Org",
+        "alice",
+        None,
+    )
+    assert message is not None
+    assert "](https://evil.example)" not in message
+    assert "https://github.com/AOSSIE-Org/repo/pull/7" in message
+    assert "@everyone" not in message
+
+    normal = _build_pr_opened_channel_message(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=datetime.now(timezone.utc),
+            payload={"pr_number": 8, "title": "Normal title"},
+        ),
+        "AOSSIE-Org",
+        "alice",
+        "123",
+    )
+    assert normal is not None
+    assert "Normal title" in normal
+    assert "**Author:** alice - <@123>" in normal
+
+
+def test_pr_opened_github_link_comment_concurrent_claim(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = _pr_opened_event(github_user="stranger")
+    barrier = Barrier(2)
+    results: list[bool] = []
+
+    def _run() -> None:
+        barrier.wait()
+        results.append(
+            send_pr_opened_github_link_comment(
+                event,
+                storage,
+                github_writer,
+                policy,
+                config,
+                "AOSSIE-Org",
+                "https://discord.gg/hjUhu33uAn",
+            )
+        )
+
+    threads = [Thread(target=_run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [False, True]
+    assert len(github_writer.comments) == 1
+    assert storage.was_notification_sent("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
+

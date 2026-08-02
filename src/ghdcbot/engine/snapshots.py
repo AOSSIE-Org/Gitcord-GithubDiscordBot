@@ -149,7 +149,7 @@ def _write_snapshots(
         if _write_file_to_github(github_writer, owner, repo, file_path, content, commit_message, branch=branch):
             files_written += 1
     
-    if files_written > 0:
+    if files_written == len(snapshot_data):
         logger.info(
             "GitHub snapshots written",
             extra={
@@ -176,6 +176,17 @@ def _write_snapshots(
                     "timestamp": now.isoformat(),
                 },
             })
+    elif files_written > 0:
+        logger.warning(
+            "GitHub snapshots partially written; cursor not advanced",
+            extra={
+                "org": config.github.org,
+                "repo": f"{owner}/{repo}",
+                "snapshot_dir": snapshot_dir,
+                "files_written": files_written,
+                "files_expected": len(snapshot_data),
+            },
+        )
 
 
 def _collect_snapshot_data(

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import httpx
 import jwt
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 # Refresh a few minutes before GitHub's ~1h expiry.
 _TOKEN_REFRESH_SKEW_SECONDS = 120
 
+# One provider per (app_id, installation_id, api_base) so mint/refresh is shared.
+_provider_cache: GitHubAppTokenProvider | None = None
+_provider_cache_key: tuple[str, str, str] | None = None
+
 
 @dataclass
 class GitHubAppTokenProvider:
@@ -28,17 +33,19 @@ class GitHubAppTokenProvider:
 
     app_id: str
     installation_id: str
-    private_key_pem: str
+    private_key_pem: str = field(repr=False)
     api_base: str = "https://api.github.com"
 
-    _token: str | None = None
-    _expires_at: float = 0.0
+    _token: str | None = field(default=None, init=False, repr=False)
+    _expires_at: float = field(default=0.0, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def get_token(self) -> str:
-        now = time.time()
-        if self._token and now < (self._expires_at - _TOKEN_REFRESH_SKEW_SECONDS):
-            return self._token
-        return self._mint_installation_token()
+        with self._lock:
+            now = time.time()
+            if self._token and now < (self._expires_at - _TOKEN_REFRESH_SKEW_SECONDS):
+                return self._token
+            return self._mint_installation_token()
 
     def _app_jwt(self) -> str:
         now = int(time.time())
@@ -73,7 +80,7 @@ class GitHubAppTokenProvider:
         if isinstance(expires_at_raw, str) and expires_at_raw:
             # 2026-07-30T08:00:00Z
             try:
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 expires = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
                 self._expires_at = expires.timestamp()
@@ -105,9 +112,21 @@ def _load_private_key() -> str | None:
 
 def github_app_provider_from_env(*, api_base: str = "https://api.github.com") -> GitHubAppTokenProvider | None:
     """Build a provider when App env vars are present; otherwise return None (use PAT)."""
+    global _provider_cache, _provider_cache_key
+
     app_id = (os.environ.get("GITHUB_APP_ID") or "").strip()
     installation_id = (os.environ.get("GITHUB_APP_INSTALLATION_ID") or "").strip()
-    if not app_id or not installation_id:
+    if not app_id and not installation_id:
+        return None
+    if bool(app_id) ^ bool(installation_id):
+        logger.warning(
+            "Incomplete GitHub App configuration: set both GITHUB_APP_ID and "
+            "GITHUB_APP_INSTALLATION_ID (or neither); falling back to PAT if set",
+            extra={
+                "has_app_id": bool(app_id),
+                "has_installation_id": bool(installation_id),
+            },
+        )
         return None
     private_key = _load_private_key()
     if not private_key:
@@ -115,12 +134,19 @@ def github_app_provider_from_env(*, api_base: str = "https://api.github.com") ->
             "GITHUB_APP_ID and GITHUB_APP_INSTALLATION_ID are set, but "
             "GITHUB_APP_PRIVATE_KEY_PATH / GITHUB_APP_PRIVATE_KEY is missing"
         )
-    return GitHubAppTokenProvider(
+    api_base_normalized = api_base.rstrip("/")
+    cache_key = (app_id, installation_id, api_base_normalized)
+    if _provider_cache is not None and _provider_cache_key == cache_key:
+        return _provider_cache
+    provider = GitHubAppTokenProvider(
         app_id=app_id,
         installation_id=installation_id,
         private_key_pem=private_key,
-        api_base=api_base.rstrip("/"),
+        api_base=api_base_normalized,
     )
+    _provider_cache = provider
+    _provider_cache_key = cache_key
+    return provider
 
 
 def resolve_github_token(
@@ -148,7 +174,14 @@ class DynamicBearerAuth(httpx.Auth):
         self._get_token = get_token
 
     def auth_flow(self, request: httpx.Request):
-        request.headers["Authorization"] = f"Bearer {self._get_token()}"
+        try:
+            token = self._get_token()
+        except Exception as exc:
+            raise httpx.RequestError(
+                f"Failed to obtain GitHub token: {exc}",
+                request=request,
+            ) from exc
+        request.headers["Authorization"] = f"Bearer {token}"
         yield request
 
 

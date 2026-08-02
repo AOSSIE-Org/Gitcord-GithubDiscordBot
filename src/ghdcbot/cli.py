@@ -62,11 +62,15 @@ def _build_identity_service(
     Returns the service and an orchestrator for cleanup (close()).
     """
     orchestrator = build_orchestrator(config_path)
-    github_identity = GitHubIdentityReader(
-        token=resolve_github_token(
+    # Reuse the orchestrator's already-resolved token/provider (same App mint cache).
+    github_token = getattr(orchestrator.github_reader, "_token", None)
+    if github_token is None:
+        github_token = resolve_github_token(
             pat=orchestrator.config.github.token,
             api_base=str(orchestrator.config.github.api_base),
-        ),
+        )
+    github_identity = GitHubIdentityReader(
+        token=github_token,
         api_base=str(orchestrator.config.github.api_base),
     )
     service = IdentityLinkService(storage=orchestrator.storage, github_identity=github_identity)

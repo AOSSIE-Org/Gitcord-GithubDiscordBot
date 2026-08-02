@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 import httpx
 
@@ -18,6 +18,7 @@ class GitHubPlanWriter:
 
     def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
+        self._token = token
         self._org = org
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 

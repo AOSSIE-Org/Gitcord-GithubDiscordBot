@@ -266,11 +266,12 @@ def send_pr_opened_github_link_comment(
         return False
 
     dedupe_key = f"pr_opened_github_link:{event.repo}:{pr_number}"
-    if _was_notification_sent(storage, dedupe_key):
+    if not _claim_notification_sent(storage, dedupe_key, event, "", None, author_github):
         return False
 
     create_comment = getattr(github_writer, "create_issue_comment", None)
     if not callable(create_comment):
+        _release_notification_claim(storage, dedupe_key)
         logger.warning(
             "Skipping PR GitHub link comment: github writer has no create_issue_comment",
             extra={"repo": event.repo, "pr_number": pr_number},
@@ -281,6 +282,7 @@ def send_pr_opened_github_link_comment(
     try:
         sent = bool(create_comment(github_org, event.repo, int(pr_number), body))
     except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
         logger.warning(
             "Failed to post PR GitHub link comment",
             exc_info=True,
@@ -289,9 +291,10 @@ def send_pr_opened_github_link_comment(
         return False
 
     if sent:
-        _mark_notification_sent(storage, dedupe_key, event, "", None, author_github)
         _audit_notification(storage, event, "", None, author_github)
-    return sent
+        return True
+    _release_notification_claim(storage, dedupe_key)
+    return False
 
 
 def _is_github_bot_login(login: str) -> bool:
@@ -328,6 +331,17 @@ def _suppress_discord_embed(url: str) -> str:
     return f"<{text}>"
 
 
+def _sanitize_discord_pr_title(title: str) -> str:
+    """Escape markdown link delimiters and neutralize mass-mention tokens in PR titles."""
+    text = (title or "Untitled")[:100]
+    text = text.replace("\\", "\\\\")
+    for ch in ("[", "]", "(", ")"):
+        text = text.replace(ch, f"\\{ch}")
+    for mention in ("@everyone", "@here"):
+        text = text.replace(mention, mention[0] + "\u200b" + mention[1:])
+    return text
+
+
 def _build_pr_opened_channel_message(
     event: ContributionEvent,
     github_org: str,
@@ -337,7 +351,7 @@ def _build_pr_opened_channel_message(
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
-    pr_title = (event.payload.get("title") or "Untitled")[:100]
+    pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
     repo = event.repo
     url = _suppress_discord_embed(
         f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
@@ -409,6 +423,36 @@ def _was_notification_sent(storage: Storage, dedupe_key: str) -> bool:
     if callable(check):
         return check(dedupe_key)
     return False
+
+
+def _claim_notification_sent(
+    storage: Storage,
+    dedupe_key: str,
+    event: ContributionEvent,
+    discord_user_id: str,
+    channel_id: str | None,
+    target_github_user: str,
+) -> bool:
+    """Atomically claim a dedupe key. Only the claimant should post the notification."""
+    claim = getattr(storage, "claim_notification_sent", None)
+    if callable(claim):
+        return bool(claim(dedupe_key, event, discord_user_id, channel_id, target_github_user))
+    # Fallback for storages without claim support (non-atomic).
+    if _was_notification_sent(storage, dedupe_key):
+        return False
+    _mark_notification_sent(storage, dedupe_key, event, discord_user_id, channel_id, target_github_user)
+    return True
+
+
+def _release_notification_claim(storage: Storage, dedupe_key: str) -> None:
+    """Release a failed claim so a later sync can retry."""
+    release = getattr(storage, "release_notification_claim", None)
+    if callable(release):
+        release(dedupe_key)
+        return
+    sent = getattr(storage, "notifications_sent", None)
+    if isinstance(sent, set):
+        sent.discard(dedupe_key)
 
 
 def _mark_notification_sent(
