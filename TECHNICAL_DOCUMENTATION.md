@@ -225,7 +225,7 @@ discord:
 - Handles identity linking (`/link`, `/verify-link`, `/unlink`)
 - Shows contributor profiles (`/profile` — GitHub, verification, socials, roles)
 - Social profile linking (`/connect-social`, `/disconnect-social` — manual username/URL)
-- Contribution metrics (`/summary`, `/open-prs`)
+- Contribution metrics (`/summary`, `/open-prs`, `/pr`)
 - Passive PR URL previews in configured channels
 - Mentor-only sync (`/sync`)
 
@@ -607,6 +607,7 @@ Gitcord's approach:
 - `/connect-social` / `/disconnect-social` - Link or remove X/LinkedIn (manual entry)
 - `/summary` - Contribution metrics (self or another verified contributor)
 - `/open-prs` - List a contributor's open PRs
+- `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
 - `/unlink` - Remove verified link (cooldown applies)
 
 ### 4.2 Notifications (Verified-Only)

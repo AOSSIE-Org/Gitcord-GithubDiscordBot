@@ -59,8 +59,30 @@ def write_snapshots_to_github(
     snapshot_config = getattr(config, "snapshots", None)
     if not snapshot_config or not snapshot_config.enabled:
         return
-    
+
     try:
+        min_hours = int(getattr(snapshot_config, "min_interval_hours", 0) or 0)
+        if min_hours > 0:
+            get_cursor = getattr(storage, "get_cursor", None)
+            if callable(get_cursor):
+                last = get_cursor("snapshots")
+                if last is not None:
+                    from datetime import datetime, timezone
+
+                    now = datetime.now(timezone.utc)
+                    last_utc = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+                    age_hours = (now - last_utc.astimezone(timezone.utc)).total_seconds() / 3600.0
+                    if age_hours < min_hours:
+                        logger.info(
+                            "Skipping GitHub snapshot (within min interval)",
+                            extra={
+                                "min_interval_hours": min_hours,
+                                "hours_since_last": round(age_hours, 2),
+                                "org": config.github.org,
+                            },
+                        )
+                        return
+
         _write_snapshots(
             storage=storage,
             config=config,
@@ -127,7 +149,7 @@ def _write_snapshots(
         if _write_file_to_github(github_writer, owner, repo, file_path, content, commit_message, branch=branch):
             files_written += 1
     
-    if files_written > 0:
+    if files_written == len(snapshot_data):
         logger.info(
             "GitHub snapshots written",
             extra={
@@ -137,6 +159,9 @@ def _write_snapshots(
                 "files": files_written,
             },
         )
+        set_cursor = getattr(storage, "set_cursor", None)
+        if callable(set_cursor):
+            set_cursor("snapshots", now)
         # Audit log
         append_audit = getattr(storage, "append_audit_event", None)
         if callable(append_audit):
@@ -151,6 +176,17 @@ def _write_snapshots(
                     "timestamp": now.isoformat(),
                 },
             })
+    elif files_written > 0:
+        logger.warning(
+            "GitHub snapshots partially written; cursor not advanced",
+            extra={
+                "org": config.github.org,
+                "repo": f"{owner}/{repo}",
+                "snapshot_dir": snapshot_dir,
+                "files_written": files_written,
+                "files_expected": len(snapshot_data),
+            },
+        )
 
 
 def _collect_snapshot_data(

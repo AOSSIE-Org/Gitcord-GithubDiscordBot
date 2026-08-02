@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import httpx
+
+from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 
 
 @dataclass(frozen=True)
@@ -20,16 +22,12 @@ class GitHubIdentityReader:
     (profile bio and public gists) and searches for a verification code.
     """
 
-    def __init__(self, token: str, api_base: str = "https://api.github.com") -> None:
+    def __init__(
+        self, token: str | Callable[[], str], api_base: str = "https://api.github.com"
+    ) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
-        self._client = httpx.Client(
-            base_url=api_base,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=20.0,
-        )
+        self._token = token
+        self._client = build_github_httpx_client(token, api_base=api_base, timeout=20.0)
 
     def close(self) -> None:
         self._client.close()
@@ -98,8 +96,10 @@ class GitHubIdentityReader:
         return []
 
     def _raw_contains_code(self, raw_url: str, code: str) -> bool:
+        # Absolute raw gist URLs must not use the authenticated API client.
         try:
-            resp = self._client.get(raw_url, headers={"Accept": "text/plain"})
+            with httpx.Client(timeout=20.0) as raw_client:
+                resp = raw_client.get(raw_url, headers={"Accept": "text/plain"})
         except httpx.HTTPError as exc:
             self._logger.warning("GitHub raw fetch failed", extra={"url": raw_url, "error": str(exc)})
             return False

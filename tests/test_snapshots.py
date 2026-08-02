@@ -328,3 +328,56 @@ def test_write_snapshots_handles_errors() -> None:
     
     # Should not have written files due to error
     assert len(github_writer.files_written) == 0
+
+
+def test_write_snapshots_partial_write_does_not_advance_cursor() -> None:
+    """Cursor advances only when every snapshot file write succeeds."""
+
+    class PartialWriter(MockGitHubWriter):
+        def write_file(self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None) -> bool:
+            # Fail the second write attempt.
+            if len(self.files_written) >= 1:
+                return False
+            return super().write_file(owner, repo, file_path, content, commit_message, branch)
+
+    class CursorStorage(MockStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cursors: dict[str, datetime] = {}
+
+        def set_cursor(self, source: str, cursor: datetime) -> None:
+            self.cursors[source] = cursor
+
+    storage = CursorStorage()
+    config = BotConfig(
+        runtime=RuntimeConfig(
+            mode=RunMode.DRY_RUN,
+            log_level="INFO",
+            data_dir="/tmp/test",
+            github_adapter="test",
+            discord_adapter="test",
+            storage_adapter="test",
+            activity_period_days=30,
+        ),
+        github=GitHubConfig(org="test-org", token="test", api_base="https://api.github.com", permissions=PermissionConfig()),
+        discord=DiscordConfig(guild_id="123", token="test", permissions=PermissionConfig()),
+        assignments=AssignmentConfig(),
+        snapshots=SnapshotConfig(enabled=True, repo_path="org/repo"),
+    )
+    github_writer = PartialWriter()
+
+    write_snapshots_to_github(
+        storage=storage,
+        config=config,
+        github_writer=github_writer,
+        identity_mappings=[
+            IdentityMapping(discord_user_id="123", github_user="alice"),
+        ],
+        scores=[],
+        member_roles={},
+        period_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+    )
+
+    assert len(github_writer.files_written) >= 1
+    assert "snapshots" not in storage.cursors

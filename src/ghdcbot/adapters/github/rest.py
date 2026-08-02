@@ -4,12 +4,13 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Iterator, Sequence
 
 import httpx
 
+from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 from ghdcbot.config.loader import get_active_config
 from ghdcbot.config.models import RepoFilterConfig
 from ghdcbot.core.models import ContributionEvent
@@ -41,7 +42,10 @@ def _is_rate_limit_exhausted(response: httpx.Response) -> bool:
     if response.status_code != 403:
         return False
     rate_limit = _parse_rate_limit(response.headers)
-    return rate_limit.remaining == 0
+    if rate_limit.remaining == 0:
+        return True
+    # Secondary rate limits often keep remaining > 0 but send Retry-After.
+    return bool(str(response.headers.get("Retry-After") or "").strip())
 
 
 def _rate_limit_reset_timestamp(headers: dict) -> int | None:
@@ -55,6 +59,13 @@ def _rate_limit_reset_timestamp(headers: dict) -> int | None:
 
 
 def _rate_limit_sleep_seconds(headers: dict) -> float | None:
+    retry_after = headers.get("Retry-After")
+    if retry_after is not None:
+        retry_str = str(retry_after).strip()
+        try:
+            return max(float(retry_str), _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
+        except ValueError:
+            pass
     reset_ts = _rate_limit_reset_timestamp(headers)
     if reset_ts is None:
         return None
@@ -64,22 +75,54 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
     return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
 
 
+_GITHUB_SEARCH_QUERY_MAX_LEN = 256
+
+
+def _append_repo_search_qualifiers(
+    query: str,
+    *,
+    org: str,
+    allowed_names: set[str] | None,
+    denied_names: set[str],
+) -> str:
+    """Add allow/deny ``repo:`` qualifiers while staying within GitHub's query length limit."""
+    if allowed_names is not None and allowed_names:
+        repo_terms = [f"repo:{org}/{name}" for name in sorted(allowed_names)]
+        joined = " OR ".join(repo_terms)
+        candidate = f"{query} ({joined})"
+        if len(candidate) <= _GITHUB_SEARCH_QUERY_MAX_LEN:
+            return candidate
+        # Fit as many repos as possible; local filter remains the safety net.
+        parts: list[str] = []
+        for term in repo_terms:
+            trial = f"{query} ({' OR '.join(parts + [term])})"
+            if len(trial) > _GITHUB_SEARCH_QUERY_MAX_LEN:
+                break
+            parts.append(term)
+        if parts:
+            return f"{query} ({' OR '.join(parts)})"
+        return query
+    if denied_names:
+        result = query
+        for name in sorted(denied_names):
+            candidate = f"{result} -repo:{org}/{name}"
+            if len(candidate) > _GITHUB_SEARCH_QUERY_MAX_LEN:
+                break
+            result = candidate
+        return result
+    return query
+
+
 class GitHubRestAdapter:
-    def __init__(self, token: str, org: str, api_base: str) -> None:
+    def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
+        self._token = token
         self._last_repo_count: int | None = None
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
-        self._client = httpx.Client(
-            base_url=api_base,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=30.0,
-        )
+        self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
         self._client.close()
@@ -142,6 +185,38 @@ class GitHubRestAdapter:
         Results are limited to the configured org and filtered by the active repo
         allowlist/denylist when present. Shape matches ``list_open_pull_requests``.
         """
+        return self._search_pull_requests_for_author(
+            github_user,
+            query_extra="is:open",
+            include_status=False,
+            log_label="open PRs",
+        )
+
+    def list_pull_requests_for_author(self, github_user: str) -> list[dict]:
+        """List recent PRs (open/merged/closed) for one author via Search API.
+
+        Newest-updated first. Each item includes ``status``: open | merged | closed.
+        Scoped to the configured org and active repo allowlist/denylist.
+        """
+        return self._search_pull_requests_for_author(
+            github_user,
+            query_extra="",
+            include_status=True,
+            log_label="PRs",
+            sort="updated",
+            order="desc",
+        )
+
+    def _search_pull_requests_for_author(
+        self,
+        github_user: str,
+        *,
+        query_extra: str,
+        include_status: bool,
+        log_label: str,
+        sort: str | None = None,
+        order: str | None = None,
+    ) -> list[dict]:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -156,24 +231,39 @@ class GitHubRestAdapter:
             else:
                 denied_names = names
 
-        # Search is author-scoped; one or two pages is enough for contributor lookups.
-        query = f"is:pr is:open author:{author} org:{self._org}"
+        extra = (query_extra or "").strip()
+        query = f"is:pr author:{author} org:{self._org}"
+        if extra:
+            query = f"is:pr {extra} author:{author} org:{self._org}"
+        query = _append_repo_search_qualifiers(
+            query,
+            org=self._org,
+            allowed_names=allowed_names,
+            denied_names=denied_names,
+        )
+
         results: list[dict] = []
         page = 1
         while page <= 5:
+            params: dict[str, str | int] = {"q": query, "per_page": 100, "page": page}
+            if sort:
+                params["sort"] = sort
+            if order:
+                params["order"] = order
             response = self._request(
                 "GET",
                 "/search/issues",
-                params={"q": query, "per_page": 100, "page": page},
+                params=params,
             )
             if response is None or response.status_code != 200:
                 if response is not None:
                     self._logger.warning(
-                        "GitHub search for open PRs failed",
+                        "GitHub search failed",
                         extra={
                             "status_code": response.status_code,
                             "github_user": author,
                             "org": self._org,
+                            "log_label": log_label,
                         },
                     )
                 break
@@ -192,16 +282,18 @@ class GitHubRestAdapter:
                 if repo_name in denied_names:
                     continue
                 user = item.get("user") if isinstance(item.get("user"), dict) else {}
-                results.append(
-                    {
-                        "repo": repo_name,
-                        "number": item.get("number"),
-                        "author": user.get("login") or author,
-                        "title": item.get("title"),
-                        "html_url": item.get("html_url"),
-                        "created_at": item.get("created_at"),
-                    }
-                )
+                row: dict = {
+                    "repo": repo_name,
+                    "number": item.get("number"),
+                    "author": user.get("login") or author,
+                    "title": item.get("title"),
+                    "html_url": item.get("html_url"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+                if include_status:
+                    row["status"] = _pr_status_from_search_issue(item)
+                results.append(row)
             if len(items) < 100:
                 break
             page += 1
@@ -385,6 +477,53 @@ class GitHubRestAdapter:
                 "error_response": error_body,
             },
         )
+
+    def create_issue_comment(
+        self, owner: str, repo: str, issue_number: int, body: str
+    ) -> bool:
+        """Post a comment on an issue or pull request (Issues Comments API).
+
+        Returns True if the comment was created (201).
+        """
+        path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        response = self._execute_request_with_retries(
+            "POST", path, params={}, json_body={"body": body}
+        )
+        if response is None:
+            self._logger.warning(
+                "GitHub create comment failed (network/retries)",
+                extra={"path": path},
+            )
+            return False
+
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": path,
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+
+        if response.status_code in {200, 201}:
+            self._logger.info(
+                "GitHub comment created",
+                extra={"owner": owner, "repo": repo, "issue_number": issue_number},
+            )
+            return True
+        self._logger.warning(
+            "GitHub create comment failed (API)",
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "issue_number": issue_number,
+                "status_code": response.status_code,
+                "error_response": (response.text or "")[:300],
+            },
+        )
+        return False
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.
@@ -1371,7 +1510,12 @@ class GitHubRestAdapter:
             page += 1
 
     def _execute_request_with_retries(
-        self, method: str, path: str, params: dict
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        *,
+        json_body: dict | None = None,
     ) -> httpx.Response | None:
         last_reason = "unknown"
         for attempt in range(1, _GITHUB_RETRY_MAX_ATTEMPTS + 1):
@@ -1382,7 +1526,9 @@ class GitHubRestAdapter:
             while True:
                 try:
                     self._increment_sync_request_count()
-                    response = self._client.request(method, path, params=params)
+                    response = self._client.request(
+                        method, path, params=params, json=json_body
+                    )
                     transport_error = None
                 except httpx.TimeoutException:
                     transport_error = "Timeout"
@@ -1461,8 +1607,17 @@ class GitHubRestAdapter:
 
         return None
 
-    def _request(self, method: str, path: str, params: dict) -> httpx.Response | None:
-        response = self._execute_request_with_retries(method, path, params)
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        *,
+        json_body: dict | None = None,
+    ) -> httpx.Response | None:
+        response = self._execute_request_with_retries(
+            method, path, params, json_body=json_body
+        )
         if response is None:
             return None
 
@@ -1824,6 +1979,18 @@ def _repo_name_from_search_issue(item: dict, org: str) -> str | None:
             rest = html_url[idx + len(marker) :]
             return rest.split("/", 1)[0] or None
     return None
+
+
+def _pr_status_from_search_issue(item: dict) -> str:
+    """Classify a Search API PR item as open, merged, or closed (unmerged)."""
+    state = str(item.get("state") or "").strip().lower()
+    pull_request = item.get("pull_request") if isinstance(item.get("pull_request"), dict) else {}
+    merged_at = pull_request.get("merged_at")
+    if state == "open":
+        return "open"
+    if merged_at:
+        return "merged"
+    return "closed"
 
 
 def _load_repo_filter() -> RepoFilterConfig | None:

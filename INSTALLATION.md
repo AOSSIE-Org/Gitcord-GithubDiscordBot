@@ -379,7 +379,7 @@ nohup ghdcbot --config config/config.yaml bot > bot.log 2>&1 &
 
 ### 7.3 Smoke-test slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/unlink`, `/connect-social`, `/disconnect-social`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/pr`, `/unlink`, `/connect-social`, `/disconnect-social`
 
 **Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`
 
@@ -527,7 +527,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 
 ### Discord slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/unlink`, `/connect-social`, `/disconnect-social`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/pr`, `/unlink`, `/connect-social`, `/disconnect-social`
 
 **Mentors:** `/sync`
 
