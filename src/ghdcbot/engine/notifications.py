@@ -190,8 +190,6 @@ def send_pr_opened_channel_notification(
     discord_user_id = _resolve_github_to_discord(storage, author_github)
 
     dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
-    if _was_notification_sent(storage, dedupe_key):
-        return False
 
     message = _build_pr_opened_channel_message(
         event, github_org, author_github, discord_user_id
@@ -206,9 +204,25 @@ def send_pr_opened_channel_notification(
     if not callable(send_msg):
         return False
 
+    notify_discord_id = discord_user_id or ""
+    try:
+        claimed = _claim_notification_sent(
+            storage, dedupe_key, event, notify_discord_id, channel_id, author_github
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim pr_opened channel notification",
+            exc_info=True,
+            extra={"error": str(exc), "channel_id": channel_id, "repo": event.repo},
+        )
+        return False
+    if not claimed:
+        return False
+
     try:
         sent = bool(send_msg(channel_id, message))
     except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
         logger.warning(
             "Failed to send pr_opened channel notification",
             exc_info=True,
@@ -217,12 +231,10 @@ def send_pr_opened_channel_notification(
         return False
 
     if sent:
-        notify_discord_id = discord_user_id or ""
-        _mark_notification_sent(
-            storage, dedupe_key, event, notify_discord_id, channel_id, author_github
-        )
         _audit_notification(storage, event, notify_discord_id, channel_id, author_github)
-    return sent
+        return True
+    _release_notification_claim(storage, dedupe_key)
+    return False
 
 
 def send_pr_opened_github_link_comment(
@@ -266,7 +278,18 @@ def send_pr_opened_github_link_comment(
         return False
 
     dedupe_key = f"pr_opened_github_link:{event.repo}:{pr_number}"
-    if not _claim_notification_sent(storage, dedupe_key, event, "", None, author_github):
+    try:
+        claimed = _claim_notification_sent(
+            storage, dedupe_key, event, "", None, author_github
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim PR GitHub link comment notification",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+        )
+        return False
+    if not claimed:
         return False
 
     create_comment = getattr(github_writer, "create_issue_comment", None)

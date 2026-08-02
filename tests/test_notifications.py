@@ -1,8 +1,12 @@
 """Tests for verified-only GitHub → Discord notifications."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Barrier, Thread
+from unittest.mock import MagicMock
 
+import httpx
+
+from ghdcbot.adapters.github.rest import GitHubRestAdapter
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.models import ContributionEvent
@@ -73,7 +77,7 @@ def test_build_dedupe_key() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123},
     )
     key = _build_dedupe_key(event, "alice")
@@ -90,7 +94,7 @@ def test_build_notification_message_issue_assigned() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "issue_number": 123,
             "title": "Fix bug",
@@ -112,7 +116,7 @@ def test_build_notification_message_pr_approved() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "state": "APPROVED",
@@ -132,7 +136,7 @@ def test_build_notification_message_pr_changes_requested() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 789,
             "state": "CHANGES_REQUESTED",
@@ -152,7 +156,7 @@ def test_build_notification_message_pr_review_comment() -> None:
         github_user="bhavik",
         event_type="pr_reviewed",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 123,
             "state": "COMMENT",
@@ -175,7 +179,7 @@ def test_build_notification_message_pr_merged() -> None:
         github_user="contributor",
         event_type="pr_merged",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"pr_number": 999, "base_branch": "dev"},
     )
     msg = _build_notification_message(event, "pr_merged", "test-org", "contributor")
@@ -192,7 +196,7 @@ def test_build_notification_message_pr_merged_without_base_branch() -> None:
         github_user="contributor",
         event_type="pr_merged",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"pr_number": 100},
     )
     msg = _build_notification_message(event, "pr_merged", "test-org", "contributor")
@@ -207,7 +211,7 @@ def test_build_notification_message_pr_closed_template() -> None:
         github_user="contributor",
         event_type="pr_closed",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 123,
             "pr_title": "Improve onboarding validation",
@@ -238,7 +242,7 @@ def test_send_notification_pr_closed() -> None:
         github_user="contributor",
         event_type="pr_closed",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 123,
             "pr_title": "Improve onboarding validation",
@@ -270,7 +274,7 @@ def test_pr_closed_disabled() -> None:
         github_user="contributor",
         event_type="pr_closed",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 123,
             "pr_author": "contributor",
@@ -299,7 +303,7 @@ def test_pr_closed_dedupe() -> None:
         github_user="contributor",
         event_type="pr_closed",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 123,
             "pr_author": "contributor",
@@ -327,7 +331,7 @@ def test_send_notification_unverified_user() -> None:
         github_user="unverified",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -353,7 +357,7 @@ def test_send_notification_verified_user() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -382,7 +386,7 @@ def test_send_notification_disabled_config() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -408,7 +412,7 @@ def test_send_notification_event_type_disabled() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -435,7 +439,7 @@ def test_send_notification_deduplication() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -461,7 +465,7 @@ def test_send_notification_dry_run() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -487,7 +491,7 @@ def test_send_notification_pr_reviewed_approved() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "state": "APPROVED",
@@ -519,7 +523,7 @@ def test_send_notification_pr_reviewed_comment() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "state": "COMMENT",
@@ -553,7 +557,7 @@ def test_send_notification_pr_reviewed_comment_disabled() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "state": "COMMENT",
@@ -587,7 +591,7 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
         github_user="reviewer",
         event_type="pr_reviewed",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "state": "COMMENT",
@@ -618,7 +622,7 @@ def test_send_notification_channel_mode() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -646,7 +650,7 @@ def test_send_notification_audit_logging() -> None:
         github_user="alice",
         event_type="issue_assigned",
         repo="test-repo",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"issue_number": 123, "title": "Test"},
     )
     
@@ -675,7 +679,7 @@ def test_send_notification_issue_reopened() -> None:
         github_user="alice",
         event_type="issue_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "issue_number": 123,
             "title": "Improve onboarding",
@@ -711,7 +715,7 @@ def test_send_notification_pr_reopened() -> None:
         github_user="bob",
         event_type="pr_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "title": "Improve onboarding validation",
@@ -747,7 +751,7 @@ def test_issue_reopened_disabled() -> None:
         github_user="alice",
         event_type="issue_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "issue_number": 123,
             "title": "Improve onboarding",
@@ -777,7 +781,7 @@ def test_pr_reopened_disabled() -> None:
         github_user="bob",
         event_type="pr_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "title": "Improve onboarding validation",
@@ -807,7 +811,7 @@ def test_issue_reopened_dedupe() -> None:
         github_user="alice",
         event_type="issue_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "issue_number": 123,
             "title": "Improve onboarding",
@@ -839,7 +843,7 @@ def test_pr_reopened_dedupe() -> None:
         github_user="bob",
         event_type="pr_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "pr_number": 456,
             "title": "Improve onboarding validation",
@@ -871,7 +875,7 @@ def test_issue_reopened_without_assignee() -> None:
         github_user="",
         event_type="issue_reopened",
         repo="Gitcord",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={
             "issue_number": 123,
             "title": "Improve onboarding",
@@ -897,7 +901,7 @@ def test_pr_opened_channel_notification_posts_to_mapped_channel() -> None:
         github_user="alice",
         event_type="pr_opened",
         repo="Gitcord-GithubDiscordBot",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"pr_number": 42, "title": "Test PR"},
     )
 
@@ -931,7 +935,7 @@ def test_pr_opened_channel_notification_skips_unmapped_repo() -> None:
         github_user="alice",
         event_type="pr_opened",
         repo="EduAid",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"pr_number": 1, "title": "Other"},
     )
 
@@ -954,7 +958,7 @@ def _pr_opened_event(*, github_user: str = "alice", repo: str = "Gitcord-GithubD
         github_user=github_user,
         event_type="pr_opened",
         repo=repo,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         payload={"pr_number": 42, "title": "Test PR"},
     )
 
@@ -1193,7 +1197,7 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
             github_user="alice",
             event_type="pr_opened",
             repo="repo",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             payload={"pr_number": 7, "title": dirty},
         ),
         "AOSSIE-Org",
@@ -1210,7 +1214,7 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
             github_user="alice",
             event_type="pr_opened",
             repo="repo",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             payload={"pr_number": 8, "title": "Normal title"},
         ),
         "AOSSIE-Org",
@@ -1254,5 +1258,69 @@ def test_pr_opened_github_link_comment_concurrent_claim(tmp_path) -> None:
 
     assert sorted(results) == [False, True]
     assert len(github_writer.comments) == 1
+    assert storage.was_notification_sent("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
+
+
+def test_pr_opened_github_link_comment_claim_storage_failure() -> None:
+    storage = MockStorage()
+    storage.claim_notification_sent = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("database is locked")
+    )
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_link_comment_timeout_preserves_claim_prevents_duplicate(tmp_path) -> None:
+    """Timeout after GitHub may have accepted must not create a duplicate /link comment."""
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = MagicMock()
+    client.post.side_effect = httpx.TimeoutException(
+        "timeout",
+        request=httpx.Request("POST", "https://api.github.com/repos/o/r/issues/1/comments"),
+    )
+    adapter._client = client  # type: ignore[assignment]
+
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = _pr_opened_event(github_user="stranger")
+
+    first = send_pr_opened_github_link_comment(
+        event,
+        storage,
+        adapter,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+    second = send_pr_opened_github_link_comment(
+        event,
+        storage,
+        adapter,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert first is True
+    assert second is False
+    assert client.post.call_count == 1
     assert storage.was_notification_sent("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
 

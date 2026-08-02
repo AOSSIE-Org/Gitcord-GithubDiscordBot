@@ -484,15 +484,26 @@ class GitHubRestAdapter:
         """Post a comment on an issue or pull request (Issues Comments API).
 
         Returns True if the comment was created (201).
+
+        Uses a single non-retrying POST: retries after an accepted-but-unread
+        response would duplicate comments. Timeouts are treated as success so
+        callers keep their SQLite dedupe claim for uncertain outcomes.
         """
         path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        response = self._execute_request_with_retries(
-            "POST", path, params={}, json_body={"body": body}
-        )
-        if response is None:
+        try:
+            self._increment_sync_request_count()
+            response = self._client.post(path, json={"body": body})
+        except httpx.TimeoutException as exc:
+            # GitHub may have accepted the comment; do not retry or report failure.
             self._logger.warning(
-                "GitHub create comment failed (network/retries)",
-                extra={"path": path},
+                "GitHub create comment timed out (outcome uncertain; treating as success)",
+                extra={"path": path, "error": str(exc)},
+            )
+            return True
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub create comment failed (network)",
+                extra={"path": path, "error": str(exc)},
             )
             return False
 
@@ -524,6 +535,78 @@ class GitHubRestAdapter:
             },
         )
         return False
+
+    def delete_file(
+        self,
+        owner: str,
+        repo: str,
+        file_path: str,
+        commit_message: str,
+        branch: str | None = None,
+    ) -> bool:
+        """Delete a file from a GitHub repo using the Contents API.
+
+        Returns True if the file was deleted (200) or already absent (404).
+        """
+        try:
+            if not branch:
+                repo_info = self._request("GET", f"/repos/{owner}/{repo}", params={})
+                if repo_info and repo_info.status_code == 200:
+                    branch = repo_info.json().get("default_branch", "main")
+                else:
+                    branch = "main"
+
+            file_response = self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/contents/{file_path}",
+                params={"ref": branch},
+            )
+            if file_response is None:
+                return False
+            if file_response.status_code == 404:
+                return True
+            if file_response.status_code != 200:
+                return False
+            file_sha = file_response.json().get("sha")
+            if not file_sha:
+                return False
+
+            payload = {"message": commit_message, "sha": file_sha, "branch": branch}
+            try:
+                response = self._client.request(
+                    "DELETE",
+                    f"/repos/{owner}/{repo}/contents/{file_path}",
+                    json=payload,
+                )
+            except httpx.HTTPError as exc:
+                self._logger.warning(
+                    "GitHub delete file failed (network)",
+                    extra={"path": file_path, "error": str(exc)},
+                )
+                return False
+            if response.status_code in {200, 204}:
+                self._logger.info(
+                    "File deleted from GitHub",
+                    extra={"owner": owner, "repo": repo, "file_path": file_path},
+                )
+                return True
+            self._logger.warning(
+                "Failed to delete file from GitHub",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "file_path": file_path,
+                    "status_code": response.status_code,
+                },
+            )
+            return False
+        except Exception as exc:
+            self._logger.warning(
+                "Exception deleting file from GitHub",
+                exc_info=True,
+                extra={"owner": owner, "repo": repo, "file_path": file_path, "error": str(exc)},
+            )
+            return False
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.

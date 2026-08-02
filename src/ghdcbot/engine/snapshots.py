@@ -144,10 +144,12 @@ def _write_snapshots(
     branch = snapshot_config.branch
     
     files_written = 0
+    written_paths: list[str] = []
     for filename, content in snapshot_data.items():
         file_path = f"{snapshot_dir}/{filename}"
         if _write_file_to_github(github_writer, owner, repo, file_path, content, commit_message, branch=branch):
             files_written += 1
+            written_paths.append(file_path)
     
     if files_written == len(snapshot_data):
         logger.info(
@@ -177,14 +179,19 @@ def _write_snapshots(
                 },
             })
     elif files_written > 0:
+        cleanup_message = f"Gitcord snapshot cleanup (incomplete run: {run_id[:8]})"
+        removed = _cleanup_partial_snapshot_files(
+            github_writer, owner, repo, written_paths, cleanup_message, branch=branch
+        )
         logger.warning(
-            "GitHub snapshots partially written; cursor not advanced",
+            "GitHub snapshots partially written; cleaned up and cursor not advanced",
             extra={
                 "org": config.github.org,
                 "repo": f"{owner}/{repo}",
                 "snapshot_dir": snapshot_dir,
                 "files_written": files_written,
                 "files_expected": len(snapshot_data),
+                "files_removed": removed,
             },
         )
 
@@ -388,3 +395,34 @@ def _write_file_to_github(
             extra={"file_path": file_path, "error": str(exc)},
         )
         return False
+
+
+def _cleanup_partial_snapshot_files(
+    github_writer: Any,
+    owner: str,
+    repo: str,
+    file_paths: list[str],
+    commit_message: str,
+    branch: str | None = None,
+) -> int:
+    """Best-effort removal of files written during an incomplete snapshot run."""
+    delete_file = getattr(github_writer, "delete_file", None)
+    if not callable(delete_file):
+        logger.warning(
+            "Cannot clean up partial snapshot: github writer has no delete_file",
+            extra={"owner": owner, "repo": repo, "files": len(file_paths)},
+        )
+        return 0
+
+    removed = 0
+    for file_path in file_paths:
+        try:
+            if delete_file(owner, repo, file_path, commit_message, branch=branch):
+                removed += 1
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete partial snapshot file",
+                exc_info=True,
+                extra={"file_path": file_path, "error": str(exc)},
+            )
+    return removed
