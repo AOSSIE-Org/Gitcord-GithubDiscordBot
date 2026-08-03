@@ -28,6 +28,7 @@ from ghdcbot.engine.metrics import (
 )
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
+    resolve_github_to_discord,
 )
 from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_list import (
@@ -815,6 +816,30 @@ def run_bot(config_path: str) -> None:
                 suppress_embeds=True,
             )
 
+    @tree.command(
+        name="who-is",
+        description="Lookup a GitHub username to find their verified Discord account",
+        guild=discord.Object(id=guild_id)
+    )
+    @app_commands.describe(github_username = "text")
+    async def who_is_cmd(interaction: discord.Interaction, github_username: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        # Pass storage into the standalone resolve_github_to_discord helper function
+        discord_user_id = resolve_github_to_discord(storage, github_username)
+        if discord_user_id:
+            status_info = storage.get_identity_status(discord_user_id) if hasattr(storage, "get_identity_status") else {}
+            is_stale = status_info.get("is_stale", False)
+            status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+            await interaction.followup.send(
+                f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"❌ GitHub user **{github_username}** is not linked or verified with any Discord account.",
+                ephemeral=True
+            )
+        
     def command_permission_check(command_name: str):
         """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
 
