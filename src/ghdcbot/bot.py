@@ -362,6 +362,7 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(github_username="Your GitHub username")
     async def link_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
+        github_username = github_username.strip()
         discord_user_id = str(interaction.user.id)
         max_age_days = None
         if getattr(config, "identity", None) is not None:
@@ -392,6 +393,7 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(github_username="Your GitHub username")
     async def verify_link_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
+        github_username = github_username.strip()
         discord_user_id = str(interaction.user.id)
         try:
             ok, location = await asyncio.to_thread(
@@ -821,14 +823,26 @@ def run_bot(config_path: str) -> None:
         description="Lookup a GitHub username to find their verified Discord account",
         guild=discord.Object(id=guild_id)
     )
-    @app_commands.describe(github_username = "text")
+    @app_commands.describe(github_username="GitHub username to look up")
     async def who_is_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
+        github_username = github_username.strip()
         # Pass storage into the standalone resolve_github_to_discord helper function
         discord_user_id = resolve_github_to_discord(storage, github_username)
         if discord_user_id:
-            status_info = storage.get_identity_status(discord_user_id) if hasattr(storage, "get_identity_status") else {}
-            is_stale = status_info.get("is_stale", False)
+            get_status = getattr(storage, "get_identity_status", None)
+            max_age_days = None
+            if getattr(config, "identity", None) is not None:
+                max_age_days = getattr(config.identity, "verified_max_age_days", None)
+            
+            status_info = {}
+            if callable(get_status):
+                try:
+                    status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
+                except Exception:
+                    status_info = {}
+            
+            is_stale = status_info.get("is_stale", True) if status_info else True
             status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
             await interaction.followup.send(
                 f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
