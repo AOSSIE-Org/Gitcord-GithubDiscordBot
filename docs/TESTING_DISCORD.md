@@ -30,7 +30,7 @@ This guide explains how to safely validate Gitcord role automation in a Discord 
 
 - Identity: `/link`, `/verify-link`, `/profile` (optional Discord member), `/unlink`
 - Social: `/connect-social`, `/disconnect-social`
-- Metrics: `/summary` (optional Discord member), `/open-prs` (required Discord member)
+- Metrics: `/summary` (optional Discord member), `/open-prs` (required Discord member), `/pr` (member + count N, optional skip M)
 - Mentor actions (with configured role): `/sync`
 
 If slash commands do not appear immediately, wait for command sync and ensure the configured `discord.guild_id` is correct.

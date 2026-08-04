@@ -32,6 +32,8 @@ services:
       - ./config:/app/config:ro
       # Persist SQLite state, reports, and audit logs between restarts.
       - gitcord_data:/data
+      # GitHub App private key (GitcordApp[bot] auth — not Bruno PAT).
+      - /home/shubham/privateKeys/gitcordapp.2026-07-29.private-key.pem:/secrets/gitcordapp.pem:ro
     command: ["--config", "/app/config/config.yaml", "bot"]
     restart: unless-stopped
 
@@ -53,6 +55,7 @@ services:
       - ./config:/app/config:ro
       - ./scripts:/app/scripts:ro
       - gitcord_data:/data
+      - /home/shubham/privateKeys/gitcordapp.2026-07-29.private-key.pem:/secrets/gitcordapp.pem:ro
     environment:
       GITCORD_CONFIG: /app/config/config.yaml
       GITCORD_SYNC_INTERVAL_SECONDS: ${GITCORD_SYNC_INTERVAL_SECONDS:-21600}

@@ -33,6 +33,8 @@ discord:
   permissions:
     read: true
     write: true
+  # Public invite used in GitHub PR comments for unverified authors.
+  invite_url: "https://discord.gg/hjUhu33uAn"
   # TESTING: set false in production — when true, any server member may use /assign-issue, /issue-requests, /sync.
   unrestricted_slash_commands: false
   # Per-command slash access (role_ids stable; role_names optional). Admins may use these when enabled below.
@@ -50,8 +52,8 @@ discord:
   pr_preview_channels: []
   pr_open_channels:
     # #projects forum threads — repo short name → thread ID.
-    # Posts for all PR opens in mapped repos; verified authors are @mentioned,
-    # unverified authors show "Contributor is not verified on gitcord".
+    # Posts for all PR opens in mapped repos; verified: "Author: GH - @Discord",
+    # unverified: "Author: GH - unknown" + /link nudge.
     Agora-Blockchain: "1331983948175380581"       # Agora Blockchain
     BabyNest: "1339225155481763882"              # BabyNest
     DebateAI: "1312986807914463252"              # AI for Debates
@@ -79,6 +81,7 @@ discord:
     issue_reopened: true
     pr_reopened: true
     pr_opened: true
+    pr_opened_github_comment: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
     channel_id: null
@@ -91,3 +94,9 @@ assignments:
   issue_request_eligible_roles: []
 
 repo_contributor_roles: {}
+
+snapshots:
+  enabled: true
+  repo_path: "AOSSIE-Org/.gitcord"
+  branch: "main"
+  min_interval_hours: 24

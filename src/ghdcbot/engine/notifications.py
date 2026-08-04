@@ -8,7 +8,7 @@ from typing import Any
 
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.interfaces import DiscordWriter, Storage
-from ghdcbot.core.modes import MutationPolicy
+from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent
 
 logger = logging.getLogger(__name__)
@@ -225,6 +225,102 @@ def send_pr_opened_channel_notification(
     return sent
 
 
+def send_pr_opened_github_link_comment(
+    event: ContributionEvent,
+    storage: Storage,
+    github_writer: Any,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+    invite_url: str | None,
+) -> bool:
+    """Comment on a newly opened PR asking an unverified author to /link in Discord.
+
+    Independent of github.permissions.write (assignments) so orgs that disable
+    auto-assign can still nudge contributors. Skipped in dry-run/observer.
+    """
+    if not config.enabled or not config.pr_opened_github_comment:
+        return False
+    if event.event_type != "pr_opened":
+        return False
+    if policy.mode != RunMode.ACTIVE:
+        return False
+
+    author_github = (event.github_user or "").strip()
+    if not author_github or _is_github_bot_login(author_github):
+        return False
+
+    if _resolve_github_to_discord(storage, author_github):
+        return False
+
+    invite = (invite_url or "").strip()
+    if not invite:
+        logger.warning(
+            "Skipping PR GitHub link comment: discord.invite_url is not set",
+            extra={"repo": event.repo, "pr_number": event.payload.get("pr_number")},
+        )
+        return False
+
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return False
+
+    dedupe_key = f"pr_opened_github_link:{event.repo}:{pr_number}"
+    if not _claim_notification_sent(storage, dedupe_key, event, "", None, author_github):
+        return False
+
+    create_comment = getattr(github_writer, "create_issue_comment", None)
+    if not callable(create_comment):
+        _release_notification_claim(storage, dedupe_key)
+        logger.warning(
+            "Skipping PR GitHub link comment: github writer has no create_issue_comment",
+            extra={"repo": event.repo, "pr_number": pr_number},
+        )
+        return False
+
+    body = _build_pr_opened_github_link_comment(author_github, invite)
+    try:
+        sent = bool(create_comment(github_org, event.repo, int(pr_number), body))
+    except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
+        logger.warning(
+            "Failed to post PR GitHub link comment",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+        )
+        return False
+
+    if sent:
+        _audit_notification(storage, event, "", None, author_github)
+        return True
+    _release_notification_claim(storage, dedupe_key)
+    return False
+
+
+def _is_github_bot_login(login: str) -> bool:
+    return login.strip().lower().endswith("[bot]")
+
+
+def _build_pr_opened_github_link_comment(author_github: str, invite_url: str) -> str:
+    """Polished GitHub markdown asking an unverified PR author to link via Discord."""
+    return (
+        "### Link your account with Gitcord\n"
+        "\n"
+        f"Thanks for opening this PR, **@{author_github}**!\n"
+        "\n"
+        "To receive Discord notifications and contributor tracking for this organization:\n"
+        "\n"
+        f"1. **Join Discord:** {invite_url}\n"
+        f"2. In Discord, run `/link {author_github}`\n"
+        "3. Paste the verification code into your GitHub **bio** (or a public gist)\n"
+        f"4. Click **Verify** in Discord (or run `/verify-link {author_github}`)\n"
+        "\n"
+        "Once linked, Gitcord can notify you about reviews, merges, and more.\n"
+        "\n"
+        "— *Posted by Gitcord*"
+    )
+
+
 def _suppress_discord_embed(url: str) -> str:
     """Wrap a URL so Discord clients do not generate a link preview card."""
     text = (url or "").strip()
@@ -233,6 +329,17 @@ def _suppress_discord_embed(url: str) -> str:
     if text.startswith("<") and text.endswith(">"):
         return text
     return f"<{text}>"
+
+
+def _sanitize_discord_pr_title(title: str) -> str:
+    """Escape markdown link delimiters and neutralize mass-mention tokens in PR titles."""
+    text = (title or "Untitled")[:100]
+    text = text.replace("\\", "\\\\")
+    for ch in ("[", "]", "(", ")"):
+        text = text.replace(ch, f"\\{ch}")
+    for mention in ("@everyone", "@here"):
+        text = text.replace(mention, mention[0] + "\u200b" + mention[1:])
+    return text
 
 
 def _build_pr_opened_channel_message(
@@ -244,21 +351,24 @@ def _build_pr_opened_channel_message(
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
-    pr_title = (event.payload.get("title") or "Untitled")[:100]
+    pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
+    repo = event.repo
     url = _suppress_discord_embed(
-        f"https://github.com/{github_org}/{event.repo}/pull/{pr_number}"
+        f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     )
+    # Compact header: linked title so we don't need a separate Link line (Bruno).
+    # Author line: "GITHUB - @Discord" when verified, "GITHUB - unknown" otherwise.
+    header = f"🆕 **New PR: [{repo} #{pr_number} — {pr_title}]({url})**"
     if discord_user_id:
-        author_display = f"<@{discord_user_id}> (`{author_github}`)"
-    else:
-        author_display = f"Contributor is not verified on gitcord (`{author_github}`)"
-    return (
-        f"🆕 **New PR opened**\n\n"
-        f"**Author:** {author_display}\n"
-        f"**PR:** #{pr_number} — {pr_title}\n"
-        f"**Repository:** `{github_org}/{event.repo}`\n"
-        f"**Link:** {url}"
+        author_line = f"**Author:** {author_github} - <@{discord_user_id}>"
+        return f"{header}\n\n{author_line}"
+
+    author_line = f"**Author:** {author_github} - unknown"
+    link_nudge = (
+        f"If you are `{author_github}`, please use `/link {author_github}` "
+        "to link your github account to your Discord account."
     )
+    return f"{header}\n\n{author_line}\n\n{link_nudge}"
 
 
 def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None:
@@ -313,6 +423,36 @@ def _was_notification_sent(storage: Storage, dedupe_key: str) -> bool:
     if callable(check):
         return check(dedupe_key)
     return False
+
+
+def _claim_notification_sent(
+    storage: Storage,
+    dedupe_key: str,
+    event: ContributionEvent,
+    discord_user_id: str,
+    channel_id: str | None,
+    target_github_user: str,
+) -> bool:
+    """Atomically claim a dedupe key. Only the claimant should post the notification."""
+    claim = getattr(storage, "claim_notification_sent", None)
+    if callable(claim):
+        return bool(claim(dedupe_key, event, discord_user_id, channel_id, target_github_user))
+    # Fallback for storages without claim support (non-atomic).
+    if _was_notification_sent(storage, dedupe_key):
+        return False
+    _mark_notification_sent(storage, dedupe_key, event, discord_user_id, channel_id, target_github_user)
+    return True
+
+
+def _release_notification_claim(storage: Storage, dedupe_key: str) -> None:
+    """Release a failed claim so a later sync can retry."""
+    release = getattr(storage, "release_notification_claim", None)
+    if callable(release):
+        release(dedupe_key)
+        return
+    sent = getattr(storage, "notifications_sent", None)
+    if isinstance(sent, set):
+        sent.discard(dedupe_key)
 
 
 def _mark_notification_sent(

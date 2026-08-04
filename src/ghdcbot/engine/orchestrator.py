@@ -22,6 +22,7 @@ from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
     send_notification_for_event,
     send_pr_opened_channel_notification,
+    send_pr_opened_github_link_comment,
 )
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
@@ -98,6 +99,7 @@ class Orchestrator:
         notification_config = getattr(self.config.discord, "notifications", None)
         if notification_config and notification_config.enabled:
             pr_open_channels = getattr(self.config.discord, "pr_open_channels", None) or {}
+            invite_url = getattr(self.config.discord, "invite_url", None)
             _send_notifications_for_new_events(
                 contributions,
                 self.storage,
@@ -106,6 +108,8 @@ class Orchestrator:
                 notification_config,
                 self.config.github.org,
                 pr_open_channels,
+                github_writer=self.github_writer,
+                invite_url=invite_url,
             )
             # CodeRabbit reminders: one reminder per PR for verified contributors (opt-in, non-blocking)
             if getattr(notification_config, "coderabbit_reminders", False):
@@ -274,6 +278,9 @@ def _send_notifications_for_new_events(
     config: Any,
     github_org: str,
     pr_open_channels: dict[str, str] | None = None,
+    *,
+    github_writer: Any = None,
+    invite_url: str | None = None,
 ) -> None:
     """Send Discord notifications for notification-worthy events (verified users only)."""
     logger = logging.getLogger("Notifications")
@@ -284,6 +291,16 @@ def _send_notifications_for_new_events(
         if event.event_type == "pr_opened":
             if send_pr_opened_channel_notification(
                 event, storage, discord_writer, policy, config, channels, github_org
+            ):
+                sent_count += 1
+            if github_writer is not None and send_pr_opened_github_link_comment(
+                event,
+                storage,
+                github_writer,
+                policy,
+                config,
+                github_org,
+                invite_url,
             ):
                 sent_count += 1
             continue

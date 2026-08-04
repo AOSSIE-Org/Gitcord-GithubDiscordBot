@@ -1,15 +1,21 @@
 """Tests for verified-only GitHub → Discord notifications."""
 
 from datetime import datetime, timezone
+from threading import Barrier, Thread
 
+from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.notifications import (
     _build_dedupe_key,
     _build_notification_message,
+    _build_pr_opened_channel_message,
+    _build_pr_opened_github_link_comment,
+    _sanitize_discord_pr_title,
     send_notification_for_event,
     send_pr_opened_channel_notification,
+    send_pr_opened_github_link_comment,
 )
 
 
@@ -27,6 +33,16 @@ class MockStorage:
     def was_notification_sent(self, dedupe_key: str) -> bool:
         return dedupe_key in self.notifications_sent
     
+    def claim_notification_sent(self, *args: object, **kwargs: object) -> bool:
+        dedupe_key = args[0] if args else kwargs.get("dedupe_key", "")
+        if dedupe_key in self.notifications_sent:
+            return False
+        self.notifications_sent.add(str(dedupe_key))
+        return True
+
+    def release_notification_claim(self, dedupe_key: str) -> None:
+        self.notifications_sent.discard(dedupe_key)
+
     def mark_notification_sent(self, *args: object, **kwargs: object) -> None:
         dedupe_key = args[0] if args else kwargs.get("dedupe_key", "")
         self.notifications_sent.add(dedupe_key)
@@ -899,9 +915,10 @@ def test_pr_opened_channel_notification_posts_to_mapped_channel() -> None:
     assert len(discord_writer.messages_sent) == 1
     channel_id, message = discord_writer.messages_sent[0]
     assert channel_id == "1465995983791063140"
-    assert "New PR opened" in message
-    assert "<@999>" in message
+    assert "New PR: [Gitcord-GithubDiscordBot #42" in message
+    assert "**Author:** alice - <@999>" in message
     assert "pull/42" in message
+    assert "/link" not in message
 
 
 def test_pr_opened_channel_notification_skips_unmapped_repo() -> None:
@@ -983,8 +1000,9 @@ def test_pr_opened_channel_notification_posts_unverified_author() -> None:
     assert result is True
     assert len(discord_writer.messages_sent) == 1
     _, message = discord_writer.messages_sent[0]
-    assert "Contributor is not verified on gitcord" in message
-    assert "`stranger`" in message
+    assert "New PR: [Gitcord-GithubDiscordBot #42" in message
+    assert "**Author:** stranger - unknown" in message
+    assert "If you are `stranger`, please use `/link stranger`" in message
     assert "<@" not in message
 
 
@@ -1032,3 +1050,209 @@ def test_pr_opened_channel_notification_skips_when_discord_mutations_disallowed(
     assert result is False
     assert discord_writer.messages_sent == []
     assert policy.allow_discord_mutations is False
+
+
+class MockGithubWriter:
+    def __init__(self, *, succeed: bool = True) -> None:
+        self.comments: list[tuple[str, str, int, str]] = []
+        self.succeed = succeed
+
+    def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> bool:
+        self.comments.append((owner, repo, issue_number, body))
+        return self.succeed
+
+
+def test_build_pr_opened_github_link_comment_format() -> None:
+    body = _build_pr_opened_github_link_comment("alice", "https://discord.gg/invite")
+    assert "### Link your account with Gitcord" in body
+    assert "**@alice**" in body
+    assert "https://discord.gg/invite" in body
+    assert "`/link alice`" in body
+    assert "`/verify-link alice`" in body
+    assert "bio" in body.lower()
+
+
+def test_pr_opened_github_link_comment_posts_for_unverified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = []
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is True
+    assert len(github_writer.comments) == 1
+    owner, repo, number, body = github_writer.comments[0]
+    assert owner == "AOSSIE-Org"
+    assert repo == "Gitcord-GithubDiscordBot"
+    assert number == 42
+    assert "/link stranger" in body
+    assert "pr_opened_github_link:Gitcord-GithubDiscordBot:42" in storage.notifications_sent
+
+
+def test_pr_opened_github_link_comment_skips_verified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_pr_opened_github_link_comment_skips_bots() -> None:
+    storage = MockStorage()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="dependabot[bot]"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_pr_opened_github_link_comment_skips_without_invite() -> None:
+    storage = MockStorage()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        None,
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_pr_opened_github_link_comment_skips_duplicate() -> None:
+    storage = MockStorage()
+    storage.notifications_sent.add("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
+    dirty = "fix](https://evil.example) @everyone"
+    clean = _sanitize_discord_pr_title(dirty)
+    assert "\\]" in clean
+    assert "@everyone" not in clean
+    assert "@\u200beveryone" in clean
+
+    message = _build_pr_opened_channel_message(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=datetime.now(timezone.utc),
+            payload={"pr_number": 7, "title": dirty},
+        ),
+        "AOSSIE-Org",
+        "alice",
+        None,
+    )
+    assert message is not None
+    assert "](https://evil.example)" not in message
+    assert "https://github.com/AOSSIE-Org/repo/pull/7" in message
+    assert "@everyone" not in message
+
+    normal = _build_pr_opened_channel_message(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=datetime.now(timezone.utc),
+            payload={"pr_number": 8, "title": "Normal title"},
+        ),
+        "AOSSIE-Org",
+        "alice",
+        "123",
+    )
+    assert normal is not None
+    assert "Normal title" in normal
+    assert "**Author:** alice - <@123>" in normal
+
+
+def test_pr_opened_github_link_comment_concurrent_claim(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = _pr_opened_event(github_user="stranger")
+    barrier = Barrier(2)
+    results: list[bool] = []
+
+    def _run() -> None:
+        barrier.wait()
+        results.append(
+            send_pr_opened_github_link_comment(
+                event,
+                storage,
+                github_writer,
+                policy,
+                config,
+                "AOSSIE-Org",
+                "https://discord.gg/hjUhu33uAn",
+            )
+        )
+
+    threads = [Thread(target=_run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [False, True]
+    assert len(github_writer.comments) == 1
+    assert storage.was_notification_sent("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
+

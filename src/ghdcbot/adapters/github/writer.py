@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Callable, Iterable
 
 import httpx
 
+from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 from ghdcbot.core.models import GitHubAssignmentPlan
 from ghdcbot.core.modes import MutationPolicy, mutation_skip_reason
 
@@ -15,17 +16,11 @@ class GitHubPlanWriter:
     This adapter only executes precomputed plans when MutationPolicy allows it.
     """
 
-    def __init__(self, token: str, org: str, api_base: str) -> None:
+    def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
+        self._token = token
         self._org = org
-        self._client = httpx.Client(
-            base_url=api_base,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            timeout=30.0,
-        )
+        self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
         self._client.close()
