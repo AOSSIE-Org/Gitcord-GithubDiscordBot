@@ -44,9 +44,22 @@ class MockGitHubWriter:
     
     def __init__(self) -> None:
         self.files_written: list[tuple[str, str, str, str]] = []  # (owner, repo, path, content)
+        self.files_deleted: list[str] = []
     
     def write_file(self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None) -> bool:
         self.files_written.append((owner, repo, file_path, content))
+        return True
+
+    def delete_file(
+        self,
+        owner: str,
+        repo: str,
+        file_path: str,
+        commit_message: str,
+        branch: str | None = None,
+    ) -> bool:
+        self.files_deleted.append(file_path)
+        self.files_written = [entry for entry in self.files_written if entry[2] != file_path]
         return True
 
 
@@ -334,11 +347,20 @@ def test_write_snapshots_partial_write_does_not_advance_cursor() -> None:
     """Cursor advances only when every snapshot file write succeeds."""
 
     class PartialWriter(MockGitHubWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_attempts: list[str] = []
+            self.successful_writes = 0
+
         def write_file(self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None) -> bool:
+            self.write_attempts.append(file_path)
             # Fail the second write attempt.
-            if len(self.files_written) >= 1:
+            if self.successful_writes >= 1:
                 return False
-            return super().write_file(owner, repo, file_path, content, commit_message, branch)
+            ok = super().write_file(owner, repo, file_path, content, commit_message, branch)
+            if ok:
+                self.successful_writes += 1
+            return ok
 
     class CursorStorage(MockStorage):
         def __init__(self) -> None:
@@ -379,5 +401,8 @@ def test_write_snapshots_partial_write_does_not_advance_cursor() -> None:
         period_end=datetime(2024, 1, 31, tzinfo=timezone.utc),
     )
 
-    assert len(github_writer.files_written) >= 1
+    assert len(github_writer.write_attempts) >= 2
+    assert github_writer.successful_writes == 1
+    assert len(github_writer.files_deleted) == 1
+    assert len(github_writer.files_written) == 0  # cleaned up after partial failure
     assert "snapshots" not in storage.cursors
