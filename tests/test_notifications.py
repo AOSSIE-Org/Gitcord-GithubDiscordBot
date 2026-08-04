@@ -1353,8 +1353,9 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     )
 
     # Newest-first (GitHub list order) — notifications should still post #41 then #42.
+    events = [newer, older]
     _send_notifications_for_new_events(
-        [newer, older],
+        events,
         storage,
         discord_writer,
         policy,
@@ -1362,6 +1363,11 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
         "AOSSIE-Org",
         channels,
     )
+
+    # Notification pass must not mutate the caller's ingestion list.
+    assert events[0] is newer
+    assert events[1] is older
+    assert events == [newer, older]
 
     assert len(discord_writer.messages_sent) == 2
     assert "#41" in discord_writer.messages_sent[0][1]

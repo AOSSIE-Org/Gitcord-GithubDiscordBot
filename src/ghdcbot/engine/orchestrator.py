@@ -283,6 +283,8 @@ def _notification_event_sort_key(event: ContributionEvent) -> tuple:
         event.repo,
         str(payload.get("pr_number") or payload.get("issue_number") or ""),
         event.github_user or "",
+        # Final tie-breaker: equal-time pr_reviewed rows stay deterministic across ingest order.
+        str(payload.get("review_id") or ""),
     )
 
 
