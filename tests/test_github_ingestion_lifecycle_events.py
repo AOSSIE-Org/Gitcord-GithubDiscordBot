@@ -16,7 +16,9 @@ class _MockClient:
     def __init__(self, routes: dict[str, list]) -> None:
         self._routes = routes
 
-    def request(self, method: str, path: str, params: dict | None = None) -> httpx.Response:
+    def request(
+        self, method: str, path: str, params: dict | None = None, **kwargs: object
+    ) -> httpx.Response:
         data = self._routes.get(path, [])
         headers = {"X-RateLimit-Remaining": "10"}
         return httpx.Response(200, json=data, headers=headers)
