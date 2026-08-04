@@ -1,0 +1,105 @@
+# Publish this file to: https://github.com/AOSSIE-Org/.github/gitcord.yaml
+# Non-secret org settings for Gitcord. Tokens stay in each machine's .env.
+# Local Docker uses config/examples/bootstrap-remote-aossie.yaml as a thin pointer.
+
+runtime:
+  mode: active
+  log_level: INFO
+  data_dir: /data
+  github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
+  discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
+  storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
+  activity_period_days: 7
+  enable_discord_role_updates: false
+github:
+  org: AOSSIE-Org
+  api_base: https://api.github.com
+  permissions:
+    read: true
+    write: true
+  user_fallback: false
+  repos:
+    mode: allow
+    names:
+    - Agora-Blockchain
+    - BabyNest
+    - DebateAI
+    - Devr.AI
+    - EduAid
+    - Ell-ena
+    - Gitcord-GithubDiscordBot
+    - Gitcord-Test
+    - InPactAI
+    - NeuroTrack
+    - Perspective
+    - PictoPy
+    - PullRequestDashboard
+    - Rein
+    - Resonate
+    - Resonate-Website
+    - SkillBot
+    - Skills
+    - Template-Repo
+discord:
+  guild_id: '1022871757289422898'
+  permissions:
+    read: true
+    write: true
+  invite_url: https://discord.gg/hjUhu33uAn
+  unrestricted_slash_commands: false
+  command_permissions:
+    assign-issue:
+      role_names:
+      - Mentor
+      allow_discord_administrators: true
+    issue-requests:
+      role_names:
+      - Mentor
+      allow_discord_administrators: true
+    sync:
+      role_names:
+      - Mentor
+      allow_discord_administrators: true
+  activity_channel_id: null
+  pr_preview_channels: []
+  pr_open_channels:
+    Agora-Blockchain: '1331983948175380581'
+    BabyNest: '1339225155481763882'
+    DebateAI: '1312986807914463252'
+    Devr.AI: '1345044976794472498'
+    EduAid: '1317912993786499072'
+    Ell-ena: '1349032611267477586'
+    Gitcord-GithubDiscordBot: '1465995983791063140'
+    Gitcord-Test: '1524006041677729823'
+    InPactAI: '1345044736515379210'
+    NeuroTrack: '1347053043711082507'
+    Perspective: '1339226574276268144'
+    PictoPy: '1311271974630330388'
+    Rein: '1467370739152846899'
+    Resonate: '1317913663360864346'
+    Resonate-Website: '1317913663360864346'
+  notifications:
+    enabled: true
+    issue_assignment: false
+    pr_review_requested: true
+    pr_review_result: true
+    pr_review_comment: true
+    pr_merged: true
+    pr_closed: true
+    issue_reopened: true
+    pr_reopened: true
+    pr_opened: true
+    pr_opened_github_comment: true
+    coderabbit_reminders: false
+    coderabbit_reminder_after_hours: 48
+    channel_id: null
+assignments:
+  review_roles: []
+  issue_assignees: []
+  issue_request_eligible_roles: []
+repo_contributor_roles: {}
+snapshots:
+  enabled: true
+  repo_path: AOSSIE-Org/.gitcord
+  branch: main
+  min_interval_hours: 24

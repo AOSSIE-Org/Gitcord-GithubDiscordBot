@@ -267,13 +267,17 @@ Your active config is always **`config/config.yaml`** (gitignored — create it 
 |--------------|-----------|
 | Docker | `config/docker-example.yaml` |
 | Local Python | `config/example.yaml` |
+| Remote org settings (AOSSIE) | `config/examples/bootstrap-remote-aossie.yaml` + publish `config/examples/remote-gitcord-aossie.yaml` to `AOSSIE-Org/.github/gitcord.yaml` |
+| Remote org settings (Stability Nexus) | `config/examples/bootstrap-remote-stability-nexus.yaml` + publish `config/examples/remote-gitcord-stability-nexus.yaml` to `StabilityNexus/.github/gitcord.yaml` |
 
-**Minimum edits:**
+**Minimum edits (local full config):**
 
 1. `github.org` — your GitHub organization name
 2. `discord.guild_id` — server ID from [Step 3.6](#36-copy-server-id-guild-id)
 3. `role_mappings` / `assignments.issue_assignees` — use **exact Discord role names** that exist in your server
 4. Local only: `runtime.data_dir: "./data"`
+
+**Remote config:** with `remote_config.enabled: true`, org settings (channels, repos, notifications, guild id) load from GitHub. The local file only needs `runtime.data_dir`, `remote_config`, and token placeholders. Edit channel maps on GitHub, then restart Gitcord to pick up changes. Tokens never go in the remote file.
 
 Start with defaults in the template:
 
@@ -283,7 +287,7 @@ Start with defaults in the template:
 
 Optional blocks (`notifications`, `snapshots`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
 
-**Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample).
+**Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample, remote bootstrap templates).
 
 ### 6.3 Validate setup (recommended)
 

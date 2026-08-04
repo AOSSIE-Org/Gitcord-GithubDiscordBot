@@ -1,5 +1,14 @@
 # Gitcord config for Docker: data_dir must be /data (mounted volume).
 # Copy to config/config.yaml and set github.org, discord.guild_id, and tokens in .env.
+#
+# Optional (Week 11+): load non-secret org settings from GitHub instead of this file.
+# See config/examples/bootstrap-remote-aossie.yaml and docs/DOCKER.md → Remote config.
+# remote_config:
+#   enabled: true
+#   owner: "Your-Org"
+#   repo: ".github"
+#   path: "gitcord.yaml"
+#   ref: "main"
 
 runtime:
   mode: "dry-run"
