@@ -11,7 +11,9 @@ class _SequenceMockClient:
         self._outcomes = list(outcomes)
         self.call_count = 0
 
-    def request(self, method: str, path: str, params: dict | None = None) -> httpx.Response:
+    def request(
+        self, method: str, path: str, params: dict | None = None, **kwargs: object
+    ) -> httpx.Response:
         self.call_count += 1
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
