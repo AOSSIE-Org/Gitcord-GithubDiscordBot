@@ -1324,3 +1324,46 @@ def test_link_comment_timeout_preserves_claim_prevents_duplicate(tmp_path) -> No
     assert client.post.call_count == 1
     assert storage.was_notification_sent("pr_opened_github_link:Gitcord-GithubDiscordBot:42")
 
+
+def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
+    """Batch sync must post channel PR-open notices in created_at order (not API newest-first)."""
+    from ghdcbot.engine.orchestrator import _send_notifications_for_new_events
+
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True
+    )
+    channels = {"Gitcord-GithubDiscordBot": "1465995983791063140"}
+
+    newer = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime(2026, 8, 4, 18, 57, tzinfo=UTC),
+        payload={"pr_number": 42, "title": "Week 11 remote config"},
+    )
+    older = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime(2026, 8, 4, 18, 13, tzinfo=UTC),
+        payload={"pr_number": 41, "title": "CI mock fix"},
+    )
+
+    # Newest-first (GitHub list order) — notifications should still post #41 then #42.
+    _send_notifications_for_new_events(
+        [newer, older],
+        storage,
+        discord_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        channels,
+    )
+
+    assert len(discord_writer.messages_sent) == 2
+    assert "#41" in discord_writer.messages_sent[0][1]
+    assert "#42" in discord_writer.messages_sent[1][1]
+
