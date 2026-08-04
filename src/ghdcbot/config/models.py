@@ -210,6 +210,28 @@ class SnapshotConfig(BaseModel):
         return value
 
 
+class RemoteConfigSettings(BaseModel):
+    """Load non-secret org settings from a GitHub repo (e.g. AOSSIE-Org/.github/gitcord.yaml)."""
+
+    enabled: bool = False
+    owner: str = ""
+    repo: str = ".github"
+    path: str = "gitcord.yaml"
+    ref: str | None = None
+
+    @model_validator(mode="after")
+    def validate_remote_fields(self) -> RemoteConfigSettings:
+        if not self.enabled:
+            return self
+        if not (self.owner and self.owner.strip()):
+            raise ValueError("remote_config.owner is required when enabled")
+        if not (self.repo and self.repo.strip()):
+            raise ValueError("remote_config.repo is required when enabled")
+        if not (self.path and self.path.strip()):
+            raise ValueError("remote_config.path is required when enabled")
+        return self
+
+
 class BotConfig(BaseModel):
     runtime: RuntimeConfig
     github: GitHubConfig
@@ -221,6 +243,8 @@ class BotConfig(BaseModel):
     merge_role_rules: MergeRoleRulesConfig | None = None
     # Optional: GitHub snapshot storage
     snapshots: SnapshotConfig | None = None
+    # Optional: load org settings from GitHub (.github/gitcord.yaml); secrets stay local
+    remote_config: RemoteConfigSettings | None = None
     # Optional: repo name -> Discord role for "Contributor-X" (PR merged in repo X grants role)
     repo_contributor_roles: dict[str, str] | None = None
 

@@ -1,0 +1,23 @@
+# Thin local bootstrap for AOSSIE when using remote gitcord.yaml.
+# Copy to config/config.yaml for Docker:
+#   cp config/examples/bootstrap-remote-aossie.yaml config/config.yaml
+#
+# Org settings load from: https://github.com/AOSSIE-Org/.github/gitcord.yaml
+# Secrets stay in .env (GITHUB_TOKEN / Discord token / GitHub App key).
+
+runtime:
+  data_dir: "/data"
+
+remote_config:
+  enabled: true
+  owner: "AOSSIE-Org"
+  repo: ".github"
+  path: "gitcord.yaml"
+  ref: "master"
+
+github:
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+
+discord:
+  token: "${DISCORD_TOKEN}"

@@ -1,0 +1,23 @@
+# Thin local bootstrap for Stability Nexus when using remote gitcord.yaml.
+# Copy for the SN compose stack (gitignored local compose may point here), or:
+#   cp config/examples/bootstrap-remote-stability-nexus.yaml config/stability-nexus.yaml
+#
+# Org settings load from: https://github.com/StabilityNexus/.github/gitcord.yaml
+# Secrets stay in .env.stability-nexus.
+
+runtime:
+  data_dir: "/data"
+
+remote_config:
+  enabled: true
+  owner: "StabilityNexus"
+  repo: ".github"
+  path: "gitcord.yaml"
+  ref: "main"
+
+github:
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+
+discord:
+  token: "${DISCORD_TOKEN}"

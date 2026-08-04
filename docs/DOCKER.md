@@ -38,6 +38,17 @@ For GitHub PAT setup, Discord bot creation, and first-time configuration, start 
 
    Edit `config/config.yaml`: set `github.org`, `discord.guild_id`, and any other options. **Do not change `data_dir`**; it must stay `/data` so the mounted volume is used.
 
+   **Remote org config (optional):** mentors can keep non-secret settings in the org’s `.github` repo (`gitcord.yaml`) so every Gitcord instance shares one source of truth. Secrets stay in `.env`.
+
+   ```bash
+   # Example AOSSIE bootstrap (tokens still from .env)
+   cp config/examples/bootstrap-remote-aossie.yaml config/config.yaml
+   # Publish org settings once:
+   #   config/examples/remote-gitcord-aossie.yaml → AOSSIE-Org/.github/gitcord.yaml
+   ```
+
+   On startup Gitcord fetches the remote YAML, caches it under `/data/remote_config_cache.yaml`, and expands `${GITHUB_TOKEN}` / `${DISCORD_TOKEN}` from `.env`. If GitHub is temporarily unreachable, the last cache is used. Set `remote_config.ref` to the `.github` repo’s default branch (`master` for AOSSIE-Org/.github, `main` for StabilityNexus/.github), or omit `ref` to use the repo default.
+
 3. **Start the bot**:
 
    ```bash

@@ -21,6 +21,8 @@ Missing required environment variable: GITHUB_TOKEN
 
 **Note:** Empty values (`GITHUB_TOKEN=`) are rejected at startup. Run `ghdcbot --config config/config.yaml validate` to confirm both tokens work against the live APIs before starting the bot.
 
+When `remote_config.enabled: true`, the same `GITHUB_TOKEN` (or GitHub App installation credentials) is also used to fetch `gitcord.yaml` from the org `.github` repo at startup.
+
 ---
 
 ## Preflight validation
