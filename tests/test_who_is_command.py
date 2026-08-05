@@ -150,3 +150,29 @@ async def test_who_is_missing_github_link() -> None:
         == "❌ GitHub user **unknown_user** is not linked or verified with any Discord account."
     )
     assert interaction.followup.messages[0]["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_who_is_case_insensitive_matching() -> None:
+    """Test /who-is resolves GitHub username regardless of character case."""
+    storage = MagicMock()
+    config = MagicMock()
+    config.identity.verified_max_age_days = 30
+
+    mapping_record = MagicMock()
+    mapping_record.github_user = "OctoCat"
+    mapping_record.discord_user_id = "999888777"
+    storage.list_verified_identity_mappings.return_value = [mapping_record]
+
+    storage.get_identity_status.return_value = {
+        "status": "verified",
+        "is_stale": False,
+        "github_user": "OctoCat",
+    }
+
+    interaction = _FakeInteraction()
+    await _run_who_is_handler(interaction, storage, config, "octocat")
+
+    assert len(interaction.followup.messages) == 1
+    assert "as Discord member <@999888777>" in interaction.followup.messages[0]["content"]
+
