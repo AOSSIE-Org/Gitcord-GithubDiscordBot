@@ -13,13 +13,17 @@ from ghdcbot.config.models import RepoFilterConfig
 
 
 class _SearchMockClient:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
+    def __init__(self, payload: dict | None = None, *, by_query: dict[str, dict] | None = None) -> None:
+        self._payload = payload or {"items": []}
+        self._by_query = by_query or {}
         self.calls: list[tuple[str, str, dict | None]] = []
 
     def request(self, method: str, path: str, params: dict | None = None, **kwargs: object) -> httpx.Response:
         self.calls.append((method, path, params))
-        return httpx.Response(200, json=self._payload, headers={"X-RateLimit-Remaining": "10"})
+        payload = self._payload
+        if params and isinstance(params.get("q"), str) and params["q"] in self._by_query:
+            payload = self._by_query[params["q"]]
+        return httpx.Response(200, json=payload, headers={"X-RateLimit-Remaining": "10"})
 
 
 def test_repo_name_from_search_issue_prefers_repository_url() -> None:
@@ -71,7 +75,8 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert method == "GET"
     assert path == "/search/issues"
     assert params is not None
-    assert params["q"] == "is:pr is:open author:alice org:AOSSIE-Org (repo:AOSSIE-Org/PictoPy)"
+    assert params["q"] == "is:pr is:open author:alice org:AOSSIE-Org"
+    assert "repo:" not in params["q"]
     assert len(prs) == 1
     assert prs[0]["repo"] == "PictoPy"
     assert prs[0]["number"] == 10
@@ -79,6 +84,57 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert prs[0]["title"] == "Allowed"
     assert prs[0]["updated_at"] == "2026-07-11T12:00:00Z"
     assert "status" not in prs[0]
+
+
+def test_large_allowlist_filters_org_search_client_side(monkeypatch) -> None:
+    """Large allowlists must not use repo: OR queries; filter org search in Python."""
+    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(40)] + [
+        "Gitcord-GithubDiscordBot"
+    ]
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient(
+        {
+            "items": [
+                {
+                    "number": 40,
+                    "title": "who-is",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40",
+                    "created_at": "2026-08-03T07:00:00Z",
+                    "updated_at": "2026-08-05T05:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot",
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                },
+                {
+                    "number": 99,
+                    "title": "outside allowlist",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/NotAllowed/pull/99",
+                    "created_at": "2026-08-03T07:00:00Z",
+                    "updated_at": "2026-08-05T06:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/NotAllowed",
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                },
+            ]
+        }
+    )
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: RepoFilterConfig(mode="allow", names=huge_allow),
+    )
+
+    prs = adapter.list_pull_requests_for_author("PrithvijitBose")
+    assert len(client.calls) == 1
+    _method, _path, params = client.calls[0]
+    assert params is not None
+    assert params["q"] == "is:pr author:PrithvijitBose org:AOSSIE-Org"
+    assert "repo:" not in params["q"]
+    assert len(prs) == 1
+    assert prs[0]["repo"] == "Gitcord-GithubDiscordBot"
+    assert prs[0]["number"] == 40
 
 
 def test_pr_status_from_search_issue() -> None:

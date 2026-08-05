@@ -75,7 +75,18 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
     return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
 
 
-_GITHUB_SEARCH_QUERY_MAX_LEN = 256
+_GITHUB_SEARCH_MAX_PAGES = 5
+
+
+def _build_author_pr_search_queries(query: str) -> list[str]:
+    """Return Search API queries for author PR listing.
+
+    Repo allow/deny lists are applied to results in Python. Embedding ``repo:`` OR
+    groups in the query is unreliable on GitHub's issue search (parenthesized
+    ``repo:a OR repo:b`` often returns empty or incomplete hits), and truncating
+    long allowlists silently drops repos such as Gitcord.
+    """
+    return [query]
 
 
 def _append_repo_search_qualifiers(
@@ -85,31 +96,8 @@ def _append_repo_search_qualifiers(
     allowed_names: set[str] | None,
     denied_names: set[str],
 ) -> str:
-    """Add allow/deny ``repo:`` qualifiers while staying within GitHub's query length limit."""
-    if allowed_names is not None and allowed_names:
-        repo_terms = [f"repo:{org}/{name}" for name in sorted(allowed_names)]
-        joined = " OR ".join(repo_terms)
-        candidate = f"{query} ({joined})"
-        if len(candidate) <= _GITHUB_SEARCH_QUERY_MAX_LEN:
-            return candidate
-        # Fit as many repos as possible; local filter remains the safety net.
-        parts: list[str] = []
-        for term in repo_terms:
-            trial = f"{query} ({' OR '.join(parts + [term])})"
-            if len(trial) > _GITHUB_SEARCH_QUERY_MAX_LEN:
-                break
-            parts.append(term)
-        if parts:
-            return f"{query} ({' OR '.join(parts)})"
-        return query
-    if denied_names:
-        result = query
-        for name in sorted(denied_names):
-            candidate = f"{result} -repo:{org}/{name}"
-            if len(candidate) > _GITHUB_SEARCH_QUERY_MAX_LEN:
-                break
-            result = candidate
-        return result
+    """Backward-compatible no-op; allow/deny filtering happens on search results."""
+    _ = (org, allowed_names, denied_names)
     return query
 
 
@@ -232,71 +220,73 @@ class GitHubRestAdapter:
                 denied_names = names
 
         extra = (query_extra or "").strip()
-        query = f"is:pr author:{author} org:{self._org}"
+        base_query = f"is:pr author:{author} org:{self._org}"
         if extra:
-            query = f"is:pr {extra} author:{author} org:{self._org}"
-        query = _append_repo_search_qualifiers(
-            query,
-            org=self._org,
-            allowed_names=allowed_names,
-            denied_names=denied_names,
-        )
+            base_query = f"is:pr {extra} author:{author} org:{self._org}"
+        # Org-scoped search only; allow/deny applied below per result.
+        queries = _build_author_pr_search_queries(base_query)
 
         results: list[dict] = []
-        page = 1
-        while page <= 5:
-            params: dict[str, str | int] = {"q": query, "per_page": 100, "page": page}
-            if sort:
-                params["sort"] = sort
-            if order:
-                params["order"] = order
-            response = self._request(
-                "GET",
-                "/search/issues",
-                params=params,
-            )
-            if response is None or response.status_code != 200:
-                if response is not None:
-                    self._logger.warning(
-                        "GitHub search failed",
-                        extra={
-                            "status_code": response.status_code,
-                            "github_user": author,
-                            "org": self._org,
-                            "log_label": log_label,
-                        },
-                    )
-                break
-            payload = response.json()
-            items = payload.get("items") if isinstance(payload, dict) else None
-            if not isinstance(items, list) or not items:
-                break
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                repo_name = _repo_name_from_search_issue(item, self._org)
-                if not repo_name:
-                    continue
-                if allowed_names is not None and repo_name not in allowed_names:
-                    continue
-                if repo_name in denied_names:
-                    continue
-                user = item.get("user") if isinstance(item.get("user"), dict) else {}
-                row: dict = {
-                    "repo": repo_name,
-                    "number": item.get("number"),
-                    "author": user.get("login") or author,
-                    "title": item.get("title"),
-                    "html_url": item.get("html_url"),
-                    "created_at": item.get("created_at"),
-                    "updated_at": item.get("updated_at"),
-                }
-                if include_status:
-                    row["status"] = _pr_status_from_search_issue(item)
-                results.append(row)
-            if len(items) < 100:
-                break
-            page += 1
+        seen: set[tuple[str, object]] = set()
+        for query in queries:
+            page = 1
+            while page <= _GITHUB_SEARCH_MAX_PAGES:
+                params: dict[str, str | int] = {"q": query, "per_page": 100, "page": page}
+                if sort:
+                    params["sort"] = sort
+                if order:
+                    params["order"] = order
+                response = self._request(
+                    "GET",
+                    "/search/issues",
+                    params=params,
+                )
+                if response is None or response.status_code != 200:
+                    if response is not None:
+                        self._logger.warning(
+                            "GitHub search failed",
+                            extra={
+                                "status_code": response.status_code,
+                                "github_user": author,
+                                "org": self._org,
+                                "log_label": log_label,
+                            },
+                        )
+                    break
+                payload = response.json()
+                items = payload.get("items") if isinstance(payload, dict) else None
+                if not isinstance(items, list) or not items:
+                    break
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    repo_name = _repo_name_from_search_issue(item, self._org)
+                    if not repo_name:
+                        continue
+                    if allowed_names is not None and repo_name not in allowed_names:
+                        continue
+                    if repo_name in denied_names:
+                        continue
+                    dedupe_key = (repo_name, item.get("number"))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                    row: dict = {
+                        "repo": repo_name,
+                        "number": item.get("number"),
+                        "author": user.get("login") or author,
+                        "title": item.get("title"),
+                        "html_url": item.get("html_url"),
+                        "created_at": item.get("created_at"),
+                        "updated_at": item.get("updated_at"),
+                    }
+                    if include_status:
+                        row["status"] = _pr_status_from_search_issue(item)
+                    results.append(row)
+                if len(items) < 100:
+                    break
+                page += 1
         return results
 
     def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
