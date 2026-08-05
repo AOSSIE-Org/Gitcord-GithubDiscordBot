@@ -75,7 +75,8 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert method == "GET"
     assert path == "/search/issues"
     assert params is not None
-    assert params["q"] == "is:pr is:open author:alice org:AOSSIE-Org (repo:AOSSIE-Org/PictoPy)"
+    assert params["q"] == "is:pr is:open author:alice org:AOSSIE-Org"
+    assert "repo:" not in params["q"]
     assert len(prs) == 1
     assert prs[0]["repo"] == "PictoPy"
     assert prs[0]["number"] == 10
@@ -85,55 +86,40 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert "status" not in prs[0]
 
 
-def test_large_allowlist_is_partitioned_into_repo_batches(monkeypatch) -> None:
-    """Oversized allowlists must batch complete repo: queries (not org-wide fallback)."""
-    from ghdcbot.adapters.github.rest import _build_repo_scoped_search_queries
-
-    # Names long enough that more than one batch is required under the 256-char cap.
-    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(20)] + [
+def test_large_allowlist_filters_org_search_client_side(monkeypatch) -> None:
+    """Large allowlists must not use repo: OR queries; filter org search in Python."""
+    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(40)] + [
         "Gitcord-GithubDiscordBot"
     ]
-    base = "is:pr author:PrithvijitBose org:AOSSIE-Org"
-    queries = _build_repo_scoped_search_queries(
-        base,
-        org="AOSSIE-Org",
-        allowed_names=set(huge_allow),
-        denied_names=set(),
-    )
-    assert len(queries) >= 2
-    assert all(len(q) <= 256 for q in queries)
-    assert all("repo:AOSSIE-Org/" in q for q in queries)
-    assert sum(q.count("repo:AOSSIE-Org/") for q in queries) == len(huge_allow)
-    assert any("Gitcord-GithubDiscordBot" in q for q in queries)
-
     adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
-    by_query = {
-        q: {
+    client = _SearchMockClient(
+        {
             "items": [
                 {
-                    "number": 40 if "Gitcord-GithubDiscordBot" in q else 1,
-                    "title": "who-is" if "Gitcord-GithubDiscordBot" in q else "other",
+                    "number": 40,
+                    "title": "who-is",
                     "state": "open",
-                    "html_url": (
-                        "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40"
-                        if "Gitcord-GithubDiscordBot" in q
-                        else "https://github.com/AOSSIE-Org/Repo00-With-A-Long-Name/pull/1"
-                    ),
+                    "html_url": "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40",
                     "created_at": "2026-08-03T07:00:00Z",
                     "updated_at": "2026-08-05T05:00:00Z",
-                    "repository_url": (
-                        "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot"
-                        if "Gitcord-GithubDiscordBot" in q
-                        else "https://api.github.com/repos/AOSSIE-Org/Repo00-With-A-Long-Name"
-                    ),
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot",
                     "user": {"login": "PrithvijitBose"},
                     "pull_request": {},
-                }
+                },
+                {
+                    "number": 99,
+                    "title": "outside allowlist",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/NotAllowed/pull/99",
+                    "created_at": "2026-08-03T07:00:00Z",
+                    "updated_at": "2026-08-05T06:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/NotAllowed",
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                },
             ]
         }
-        for q in queries
-    }
-    client = _SearchMockClient(by_query=by_query)
+    )
     adapter._client = client  # type: ignore[assignment]
     monkeypatch.setattr(
         "ghdcbot.adapters.github.rest._load_repo_filter",
@@ -141,9 +127,14 @@ def test_large_allowlist_is_partitioned_into_repo_batches(monkeypatch) -> None:
     )
 
     prs = adapter.list_pull_requests_for_author("PrithvijitBose")
-    assert len(client.calls) == len(queries)
-    assert {pr["repo"] for pr in prs} >= {"Gitcord-GithubDiscordBot"}
-    assert any(pr["number"] == 40 and pr["repo"] == "Gitcord-GithubDiscordBot" for pr in prs)
+    assert len(client.calls) == 1
+    _method, _path, params = client.calls[0]
+    assert params is not None
+    assert params["q"] == "is:pr author:PrithvijitBose org:AOSSIE-Org"
+    assert "repo:" not in params["q"]
+    assert len(prs) == 1
+    assert prs[0]["repo"] == "Gitcord-GithubDiscordBot"
+    assert prs[0]["number"] == 40
 
 
 def test_pr_status_from_search_issue() -> None:
