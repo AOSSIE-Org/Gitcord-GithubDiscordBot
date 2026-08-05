@@ -85,22 +85,18 @@ def _append_repo_search_qualifiers(
     allowed_names: set[str] | None,
     denied_names: set[str],
 ) -> str:
-    """Add allow/deny ``repo:`` qualifiers while staying within GitHub's query length limit."""
+    """Add allow/deny ``repo:`` qualifiers while staying within GitHub's query length limit.
+
+    If an allowlist cannot fit fully, return the base ``org:`` query unchanged and rely on
+    the caller's local allowlist filter. Partial ``repo:`` truncation silently drops repos
+    (e.g. Gitcord when many A* repos fill the budget) and breaks ``/pr``.
+    """
     if allowed_names is not None and allowed_names:
         repo_terms = [f"repo:{org}/{name}" for name in sorted(allowed_names)]
         joined = " OR ".join(repo_terms)
         candidate = f"{query} ({joined})"
         if len(candidate) <= _GITHUB_SEARCH_QUERY_MAX_LEN:
             return candidate
-        # Fit as many repos as possible; local filter remains the safety net.
-        parts: list[str] = []
-        for term in repo_terms:
-            trial = f"{query} ({' OR '.join(parts + [term])})"
-            if len(trial) > _GITHUB_SEARCH_QUERY_MAX_LEN:
-                break
-            parts.append(term)
-        if parts:
-            return f"{query} ({' OR '.join(parts)})"
         return query
     if denied_names:
         result = query

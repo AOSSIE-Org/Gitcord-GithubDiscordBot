@@ -81,6 +81,70 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert "status" not in prs[0]
 
 
+def test_large_allowlist_falls_back_to_org_search_then_local_filter(monkeypatch) -> None:
+    """Oversized allowlists must not truncate to A* repos only (breaks /pr for Gitcord)."""
+    from ghdcbot.adapters.github.rest import _append_repo_search_qualifiers
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient(
+        {
+            "items": [
+                {
+                    "number": 40,
+                    "title": "who-is",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40",
+                    "created_at": "2026-08-03T07:00:00Z",
+                    "updated_at": "2026-08-05T05:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot",
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                },
+                {
+                    "number": 1,
+                    "title": "Outside allowlist",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/Other/pull/1",
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "updated_at": "2026-08-01T00:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Other",
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                },
+            ]
+        }
+    )
+    adapter._client = client  # type: ignore[assignment]
+
+    # Many names so repo: OR list cannot fit in the 256-char budget.
+    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(40)] + [
+        "Gitcord-GithubDiscordBot"
+    ]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: RepoFilterConfig(mode="allow", names=huge_allow),
+    )
+
+    base = "is:pr author:PrithvijitBose org:AOSSIE-Org"
+    narrowed = _append_repo_search_qualifiers(
+        base,
+        org="AOSSIE-Org",
+        allowed_names=set(huge_allow),
+        denied_names=set(),
+    )
+    assert narrowed == base
+    assert "repo:AOSSIE-Org/Repo00" not in narrowed
+
+    prs = adapter.list_pull_requests_for_author("PrithvijitBose")
+    assert len(client.calls) == 1
+    _method, _path, params = client.calls[0]
+    assert params is not None
+    assert params["q"] == "is:pr author:PrithvijitBose org:AOSSIE-Org"
+    assert len(prs) == 1
+    assert prs[0]["repo"] == "Gitcord-GithubDiscordBot"
+    assert prs[0]["number"] == 40
+
+
 def test_pr_status_from_search_issue() -> None:
     assert _pr_status_from_search_issue({"state": "open", "pull_request": {}}) == "open"
     assert (
