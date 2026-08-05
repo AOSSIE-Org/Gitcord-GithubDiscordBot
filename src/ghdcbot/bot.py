@@ -545,7 +545,6 @@ def run_bot(config_path: str) -> None:
                     f"📝 **PRs:** {user_metrics.prs_opened} Opened / {user_metrics.prs_merged} Merged",
                     f"👀 **Reviews:** {user_metrics.reviews_submitted} Submitted",
                     f"💬 **Issues & Comments:** {user_metrics.issues_opened} Issues / {user_metrics.comments} Comments",
-                    f"⚡ **Engagement Score:** `{user_metrics.issue_engagement:.1f}`"
                 ]
                 if rank is not None:
                     metrics_lines.append(f"🏆 **Rank:** #{rank} in server activity")
