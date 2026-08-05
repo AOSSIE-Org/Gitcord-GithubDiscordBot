@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
 from datetime import datetime
 from typing import Any, Optional
+
 
 import discord
 from discord import app_commands
@@ -15,7 +20,12 @@ from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
-from ghdcbot.engine.metrics import build_contribution_summary_message
+from ghdcbot.engine.metrics import (
+    build_contribution_summary_message,
+    get_contribution_metrics,
+    rank_by_activity,
+    get_rank_for_user,
+)
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
 )
@@ -435,20 +445,158 @@ def run_bot(config_path: str) -> None:
         target = interaction.user if viewing_self else contributor
         assert target is not None
         discord_user_id = str(target.id)
-        lines: list[str] = []
-        if not viewing_self:
-            lines.append(f"**Profile for {target.mention}**")
 
-        lines.extend(
-            _identity_status_lines(storage, config, discord_user_id, viewing_self)
+        # 1. Fetch identity status from storage
+        get_status = getattr(storage, "get_identity_status", None)
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
+        status = get_status(discord_user_id, max_age_days=max_age_days) if callable(get_status) else {}
+
+        github_user = status.get("github_user")
+        st = status.get("status") or "not_linked"
+
+        # 2. Determine verification badge & color
+        if st == "verified":
+            status_label = "Verified ✅"
+            color = discord.Color.green()
+        elif st == "verified_stale":
+            status_label = "Verified ⚠️ (Stale)"
+            color = discord.Color.gold()
+        elif st == "pending":
+            status_label = "Pending ⏳"
+            color = discord.Color.orange()
+        else:
+            status_label = "Not linked ❌"
+            color = discord.Color.red()
+
+        # 3. Create the Embed
+        embed = discord.Embed(
+            color=color,
+            timestamp=datetime.now(timezone.utc)
         )
-        lines.append(
-            await _format_social_profiles_line(social_service, discord_user_id, viewing_self)
+
+        # Show github user link and avatar if linked, and set author details
+        if github_user:
+            github_profile_url = f"https://github.com/{github_user}"
+            embed.set_thumbnail(url=f"https://github.com/{github_user}.png")
+            embed.set_author(
+                name=f"{target.display_name} (@{github_user})",
+                icon_url=target.display_avatar.url if target.display_avatar else None,
+                url=github_profile_url,
+            )
+            embed.add_field(
+                name="GitHub Account",
+                value=f"[{github_user}]({github_profile_url})",
+                inline=True,
+            )
+        else:
+            embed.set_author(
+                name=f"{target.display_name}",
+                icon_url=target.display_avatar.url if target.display_avatar else None,
+            )
+            embed.add_field(name="GitHub Account", value="Not Linked ❌", inline=True)
+
+        embed.add_field(name="Verification Status", value=status_label, inline=True)
+
+        # Add verification date if verified
+        verified_at = status.get("verified_at")
+        if verified_at:
+            try:
+                dt = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+                verified_at_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+            except (ValueError, TypeError):
+                verified_at_str = verified_at
+            embed.add_field(name="Verified At", value=verified_at_str, inline=True)
+        elif github_user:
+            embed.add_field(name="Verified At", value="—", inline=True)
+
+        # Add warnings in the description if verification is stale
+        if status.get("is_stale"):
+            if viewing_self:
+                embed.description = "⚠️ **Warning:** Your identity verification is stale. Use `/verify-link` to refresh it."
+            else:
+                embed.description = "⚠️ **Warning:** Their identity verification is stale."
+
+        # 4. Fetch contribution metrics if GitHub user exists
+        if github_user:
+            metrics_available = True
+            try:
+                now_utc = datetime.now(timezone.utc)
+                start_30 = now_utc - timedelta(days=30)
+
+                def _fetch_metrics():
+                    metrics_list = get_contribution_metrics(storage, start_30, now_utc)
+                    user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
+                    ranked_30 = rank_by_activity(metrics_list)
+                    rank = get_rank_for_user(ranked_30, github_user)
+                    return user_metrics, rank
+
+                user_metrics, rank = await asyncio.to_thread(_fetch_metrics)
+            except Exception as e:
+                logging.getLogger("ghdcbot.bot").debug(
+                    "Error fetching contribution metrics for /profile: %s", e
+                )
+                metrics_available = False
+                user_metrics, rank = None, None
+
+            if user_metrics:
+                metrics_lines = [
+                    f"📝 **PRs:** {user_metrics.prs_opened} Opened / {user_metrics.prs_merged} Merged",
+                    f"👀 **Reviews:** {user_metrics.reviews_submitted} Submitted",
+                    f"💬 **Issues & Comments:** {user_metrics.issues_opened} Issues / {user_metrics.comments} Comments",
+                ]
+                if rank is not None:
+                    metrics_lines.append(f"🏆 **Rank:** #{rank} in server activity")
+
+                embed.add_field(
+                    name="📊 Contributions (Last 30 Days)",
+                    value="\n".join(metrics_lines),
+                    inline=False,
+                )
+            elif metrics_available:
+                embed.add_field(
+                    name="📊 Contributions (Last 30 Days)",
+                    value="No activity recorded in the last 30 days.",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="📊 Contributions (Last 30 Days)",
+                    value="Contribution data is temporarily unavailable.",
+                    inline=False,
+                )
+        def _truncate_embed_field_value(value: str, limit: int = 1024) -> str:
+            if len(value) <= limit:
+                return value
+            return f"{value[:limit - 1]}…"
+        # 5. Fetch and add Social Profiles
+        socials_line = await _format_social_profiles_line(social_service, discord_user_id, viewing_self)
+        if socials_line.startswith("**Social Profiles:**"):
+            socials_value = socials_line.replace("**Social Profiles:**", "").strip()
+        else:
+            socials_value = socials_line.strip()
+        embed.add_field(
+            name="Connected Socials",
+            value=_truncate_embed_field_value(socials_value),
+            inline=False,
         )
-        lines.append(await _format_roles_line(discord_reader, discord_user_id))
-        await interaction.followup.send(
-            "\n".join(lines), ephemeral=True, suppress_embeds=True
+        # 6. Fetch and add Discord Roles
+        roles_line = await _format_roles_line(discord_reader, discord_user_id)
+        if roles_line.startswith("**Roles:**"):
+            roles_value = roles_line.replace("**Roles:**", "").strip()
+        else:
+            roles_value = roles_line.strip()
+        
+        embed.add_field(
+            name="Server Roles",
+            value=_truncate_embed_field_value(roles_value),
+            inline=False,
         )
+
+        embed.set_footer(text="Gitcord Automation Engine")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @tree.command(
         name="summary",
