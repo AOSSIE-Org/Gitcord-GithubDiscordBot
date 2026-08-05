@@ -13,13 +13,17 @@ from ghdcbot.config.models import RepoFilterConfig
 
 
 class _SearchMockClient:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
+    def __init__(self, payload: dict | None = None, *, by_query: dict[str, dict] | None = None) -> None:
+        self._payload = payload or {"items": []}
+        self._by_query = by_query or {}
         self.calls: list[tuple[str, str, dict | None]] = []
 
     def request(self, method: str, path: str, params: dict | None = None, **kwargs: object) -> httpx.Response:
         self.calls.append((method, path, params))
-        return httpx.Response(200, json=self._payload, headers={"X-RateLimit-Remaining": "10"})
+        payload = self._payload
+        if params and isinstance(params.get("q"), str) and params["q"] in self._by_query:
+            payload = self._by_query[params["q"]]
+        return httpx.Response(200, json=payload, headers={"X-RateLimit-Remaining": "10"})
 
 
 def test_repo_name_from_search_issue_prefers_repository_url() -> None:
@@ -81,68 +85,65 @@ def test_list_open_pull_requests_for_author_uses_search_and_allowlist(monkeypatc
     assert "status" not in prs[0]
 
 
-def test_large_allowlist_falls_back_to_org_search_then_local_filter(monkeypatch) -> None:
-    """Oversized allowlists must not truncate to A* repos only (breaks /pr for Gitcord)."""
-    from ghdcbot.adapters.github.rest import _append_repo_search_qualifiers
+def test_large_allowlist_is_partitioned_into_repo_batches(monkeypatch) -> None:
+    """Oversized allowlists must batch complete repo: queries (not org-wide fallback)."""
+    from ghdcbot.adapters.github.rest import _build_repo_scoped_search_queries
 
-    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
-    client = _SearchMockClient(
-        {
-            "items": [
-                {
-                    "number": 40,
-                    "title": "who-is",
-                    "state": "open",
-                    "html_url": "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40",
-                    "created_at": "2026-08-03T07:00:00Z",
-                    "updated_at": "2026-08-05T05:00:00Z",
-                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot",
-                    "user": {"login": "PrithvijitBose"},
-                    "pull_request": {},
-                },
-                {
-                    "number": 1,
-                    "title": "Outside allowlist",
-                    "state": "open",
-                    "html_url": "https://github.com/AOSSIE-Org/Other/pull/1",
-                    "created_at": "2026-08-01T00:00:00Z",
-                    "updated_at": "2026-08-01T00:00:00Z",
-                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/Other",
-                    "user": {"login": "PrithvijitBose"},
-                    "pull_request": {},
-                },
-            ]
-        }
-    )
-    adapter._client = client  # type: ignore[assignment]
-
-    # Many names so repo: OR list cannot fit in the 256-char budget.
-    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(40)] + [
+    # Names long enough that more than one batch is required under the 256-char cap.
+    huge_allow = [f"Repo{i:02d}-With-A-Long-Name" for i in range(20)] + [
         "Gitcord-GithubDiscordBot"
     ]
-    monkeypatch.setattr(
-        "ghdcbot.adapters.github.rest._load_repo_filter",
-        lambda: RepoFilterConfig(mode="allow", names=huge_allow),
-    )
-
     base = "is:pr author:PrithvijitBose org:AOSSIE-Org"
-    narrowed = _append_repo_search_qualifiers(
+    queries = _build_repo_scoped_search_queries(
         base,
         org="AOSSIE-Org",
         allowed_names=set(huge_allow),
         denied_names=set(),
     )
-    assert narrowed == base
-    assert "repo:AOSSIE-Org/Repo00" not in narrowed
+    assert len(queries) >= 2
+    assert all(len(q) <= 256 for q in queries)
+    assert all("repo:AOSSIE-Org/" in q for q in queries)
+    assert sum(q.count("repo:AOSSIE-Org/") for q in queries) == len(huge_allow)
+    assert any("Gitcord-GithubDiscordBot" in q for q in queries)
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    by_query = {
+        q: {
+            "items": [
+                {
+                    "number": 40 if "Gitcord-GithubDiscordBot" in q else 1,
+                    "title": "who-is" if "Gitcord-GithubDiscordBot" in q else "other",
+                    "state": "open",
+                    "html_url": (
+                        "https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/pull/40"
+                        if "Gitcord-GithubDiscordBot" in q
+                        else "https://github.com/AOSSIE-Org/Repo00-With-A-Long-Name/pull/1"
+                    ),
+                    "created_at": "2026-08-03T07:00:00Z",
+                    "updated_at": "2026-08-05T05:00:00Z",
+                    "repository_url": (
+                        "https://api.github.com/repos/AOSSIE-Org/Gitcord-GithubDiscordBot"
+                        if "Gitcord-GithubDiscordBot" in q
+                        else "https://api.github.com/repos/AOSSIE-Org/Repo00-With-A-Long-Name"
+                    ),
+                    "user": {"login": "PrithvijitBose"},
+                    "pull_request": {},
+                }
+            ]
+        }
+        for q in queries
+    }
+    client = _SearchMockClient(by_query=by_query)
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: RepoFilterConfig(mode="allow", names=huge_allow),
+    )
 
     prs = adapter.list_pull_requests_for_author("PrithvijitBose")
-    assert len(client.calls) == 1
-    _method, _path, params = client.calls[0]
-    assert params is not None
-    assert params["q"] == "is:pr author:PrithvijitBose org:AOSSIE-Org"
-    assert len(prs) == 1
-    assert prs[0]["repo"] == "Gitcord-GithubDiscordBot"
-    assert prs[0]["number"] == 40
+    assert len(client.calls) == len(queries)
+    assert {pr["repo"] for pr in prs} >= {"Gitcord-GithubDiscordBot"}
+    assert any(pr["number"] == 40 and pr["repo"] == "Gitcord-GithubDiscordBot" for pr in prs)
 
 
 def test_pr_status_from_search_issue() -> None:
