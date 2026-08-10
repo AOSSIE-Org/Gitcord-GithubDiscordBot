@@ -25,12 +25,12 @@
 <!-- Auto-updated by checklist-score.yml workflow — do not edit manually -->
 | Category           | Met | Total | Status |
 |--------------------|-----|-------|--------|
-| Basics             | 8   | 8     | 🟢      |
-| Change Control     | 6   | 6     | 🟢      |
-| Reporting          | 8   | 8     | 🟢      |
-| Quality            | 9   | 11    | 🟡      |
-| Security           | 9   | 9     | 🟢      |
-| Analysis           | 6   | 7     | 🟡      |
+| Basics             | 8   | 8     | ✅     |
+| Change Control     | 6   | 6     | ✅     |
+| Reporting          | 8   | 8     | ✅     |
+| Quality            | 9   | 11     | 🟡     |
+| Security           | 9   | 9     | ✅     |
+| Analysis           | 6   | 7     | 🟡     |
 | **Total**          | **46** | **49** | **94%** |
 ---
 
