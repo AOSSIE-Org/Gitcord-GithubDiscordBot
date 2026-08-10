@@ -13,6 +13,9 @@
 <div align="center">
 
 [![Static Badge](https://img.shields.io/badge/aossie.org/Gitcord-228B22?style=for-the-badge&labelColor=FFC517)](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
+<br/>
+[![Best Practices](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/AOSSIE-Org/Gitcord-GithubDiscordBot/main/checklist-status.json)](./BestPracticesChecklist.md)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/badge)](https://scorecard.dev/viewer/?uri=github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
 
 </div>
 
@@ -78,6 +81,9 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 1. [Main Repository](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot)
 2. [Installation Guide](INSTALLATION.md) - Complete setup instructions (Docker and local)
 3. [Environment Variables](environment_variables.md) - `.env` reference
+4. [Brand kit](brand/Brand.md) - Logo, colors, typography, icons
+5. [Maintainers](MAINTAINERS.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Best Practices](BestPracticesChecklist.md)
+6. [AOSSIE Discord — Gitcord thread](https://discord.com/channels/1022871757289422898/1465995983791063140)
 4. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
 5. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
 
