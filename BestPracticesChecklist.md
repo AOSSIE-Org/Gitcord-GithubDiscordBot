@@ -2,7 +2,7 @@
 
 > Criteria adapted from the [OpenSSF Best Practices Badge](https://github.com/coreinfrastructure/best-practices-badge)
 > (MIT / CC BY 3.0) by OpenSSF contributors. Modified for AOSSIE multi-repo template use.
-
+>
 > **Purpose:** Covers OpenSSF Best Practices criteria that are NOT auto-detected by OpenSSF Scorecard.
 > Scorecard already handles: License, SAST tools, CI tests, Security Policy file, Branch Protection,
 > Pinned Dependencies, Signed Releases, Maintained status, and Known Vulnerabilities.
@@ -289,15 +289,18 @@
 > Add domain-specific notes here for Web3, Full-Stack, or AI projects.
 
 ### Web3 / Solidity Notes
+
 - Scorecard does not audit Solidity-specific security. Use [Slither](https://github.com/crytic/slither) for `static_analysis` and `warnings` criteria.
 - For `crypto_*` criteria, document which cryptographic primitives your contracts rely on (e.g., ECDSA in EVM is standard).
 - Smart contract audit reports count as evidence for `know_secure_design`.
 
 ### Full-Stack / Next.js Notes
+
 - For `crypto_password_storage`: document which auth library handles hashing (e.g., NextAuth + bcrypt).
 - For `dynamic_analysis`: [OWASP ZAP](https://www.zaproxy.org/) can be run as a GitHub Action.
 
 ### AI / LLM Notes
+
 - For `know_common_errors`: include awareness of prompt injection, data leakage, and model output validation.
 - For `dynamic_analysis`: consider adversarial input testing as a form of dynamic analysis.
 

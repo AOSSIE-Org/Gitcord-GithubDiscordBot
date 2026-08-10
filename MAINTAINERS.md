@@ -8,7 +8,7 @@ This document lists the individuals fulfilling the key roles of [Maintainer](htt
 
 | Name | GitHub Username | Discord Username | Project / Feature Idea | Area / Focus | Proposal / Discussion Link |
 | ---- | --------------- | ---------------- | ---------------------- | ------------ | -------------------------- |
-| Bruno | [@Zahnentferner](https://github.com/Zahnentferner) | Bruno | Gitcord (GitHub–Discord automation for orgs) | Product direction & org deployment | AOSSIE GSoC 2026 / Discord |
+| Bruno | [@Zahnentferner](https://github.com/Zahnentferner) | Bruno | Gitcord (GitHub–Discord automation for orgs) | Product direction & org deployment | [Gitcord Discord thread](https://discord.com/channels/1022871757289422898/1465995983791063140) |
 
 ## Mentors
 

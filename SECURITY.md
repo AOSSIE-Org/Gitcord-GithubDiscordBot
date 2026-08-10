@@ -11,8 +11,12 @@
 
 Please **do not** open a public GitHub Issue for security vulnerabilities.
 
-1. Email the maintainers listed in [`MAINTAINERS.md`](MAINTAINERS.md), or
-2. Use [GitHub private vulnerability reporting](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/security/advisories/new) if enabled for this repository.
+Use one of these private channels:
+
+1. Email the maintainer: **shubhamshinde5080@gmail.com**
+2. [GitHub private vulnerability reporting](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/security/advisories/new) (preferred when available)
+
+You may also contact mentors listed in [`MAINTAINERS.md`](MAINTAINERS.md) via Discord for triage, but email or GitHub private reporting is the guaranteed path for sensitive details.
 
 Include:
 
@@ -24,4 +28,6 @@ We aim to acknowledge reports within **14 days**.
 
 ## Scope notes
 
-Gitcord handles Discord and GitHub tokens and may post messages or assign reviews when configured. Treat `.env`, App private keys, and SQLite identity data as sensitive. Never commit secrets.
+Gitcord handles Discord and GitHub tokens and may post messages or assign reviews when configured. Treat `.env`, App private keys, and SQLite identity data as sensitive.
+
+Never commit secrets, credentials, live tokens, production SQLite databases, or unredacted identity data. Provide tokens through `.env` files or environment-variable expansion instead.
