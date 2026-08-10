@@ -167,8 +167,10 @@ jobs:
       github.repository == 'AOSSIE-Org/Template-Repo' &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     steps:
-      # actions/checkout@v7.0.1
+      # actions/checkout@v7.0.1 — always sync from main, not a manually selected ref
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
 
       - name: Fetch upstream OpenSSF criteria
         run: |
@@ -199,9 +201,11 @@ jobs:
           with open("BestPracticesChecklist.md") as f:
               local_content = f.read()
 
+          # Support Markdown self-links and HTML <a name="..."> anchors (fallback URL).
           upstream_ids = set(re.findall(r'\[([a-z][a-z0-9_]+)\]\(#\1\)', upstream_content))
+          upstream_ids |= set(re.findall(r'<a name="([a-z][a-z0-9_]+)"></a>', upstream_content))
           local_ids    = set(re.findall(r'\*\*([a-z][a-z0-9_]+)\*\*', local_content))
-          
+
           if not upstream_ids:
               print("⚠️ Warning: No criteria IDs found in upstream. Format may have changed.")
               sys.exit(0)
