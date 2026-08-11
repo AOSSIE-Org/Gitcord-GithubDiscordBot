@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -175,4 +175,30 @@ async def test_who_is_case_insensitive_matching() -> None:
 
     assert len(interaction.followup.messages) == 1
     assert "as Discord member <@999888777>" in interaction.followup.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_who_is_mocked_resolver_dependency() -> None:
+    """Test /who-is by explicitly mocking resolve_github_to_discord dependency."""
+    storage = MagicMock()
+    config = MagicMock()
+    config.identity.verified_max_age_days = 30
+    storage.get_identity_status.return_value = {
+        "status": "verified",
+        "is_stale": False,
+        "github_user": "mock_user",
+    }
+
+    interaction = _FakeInteraction()
+    with patch("ghdcbot.engine.issue_assignment.resolve_github_to_discord", return_value="555666777") as mock_resolve:
+        await _run_who_is_handler(interaction, storage, config, "mock_user")
+        mock_resolve.assert_called_once_with(storage, "mock_user")
+
+    assert len(interaction.followup.messages) == 1
+    assert (
+        interaction.followup.messages[0]["content"]
+        == "GitHub user **mock_user** is **✅ Verified** as Discord member <@555666777>."
+    )
+    assert interaction.followup.messages[0]["ephemeral"] is True
+
 
