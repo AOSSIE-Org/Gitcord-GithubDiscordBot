@@ -282,6 +282,7 @@ Wait 30 seconds for commands to sync.
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
 - `/profile` - Show contributor profile (GitHub, verification, socials, roles); optional Discord member
+- `/who-is` - Look up a GitHub username, find the verified Discord account, and see whether verification is current or stale
 - `/unlink` - Unlink your GitHub identity
 - `/connect-social` - Connect X or LinkedIn (enter your username or profile URL)
 - `/disconnect-social` - Disconnect X or LinkedIn from Gitcord
