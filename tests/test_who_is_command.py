@@ -177,6 +177,9 @@ async def test_who_is_case_insensitive_matching() -> None:
     assert "as Discord member <@999888777>" in interaction.followup.messages[0]["content"]
 
 
+import sys
+
+
 @pytest.mark.asyncio
 async def test_who_is_mocked_resolver_dependency() -> None:
     """Test /who-is by explicitly mocking resolve_github_to_discord dependency."""
@@ -190,7 +193,7 @@ async def test_who_is_mocked_resolver_dependency() -> None:
     }
 
     interaction = _FakeInteraction()
-    with patch("ghdcbot.engine.issue_assignment.resolve_github_to_discord", return_value="555666777") as mock_resolve:
+    with patch.object(sys.modules[__name__], "resolve_github_to_discord", return_value="555666777") as mock_resolve:
         await _run_who_is_handler(interaction, storage, config, "mock_user")
         mock_resolve.assert_called_once_with(storage, "mock_user")
 
