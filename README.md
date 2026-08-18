@@ -84,8 +84,8 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 4. [Brand kit](brand/Brand.md) - Logo, colors, typography, icons
 5. [Maintainers](MAINTAINERS.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Best Practices](BestPracticesChecklist.md)
 6. [AOSSIE Discord — Gitcord thread](https://discord.com/channels/1022871757289422898/1465995983791063140)
-4. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
-5. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
+7. [Technical Documentation](TECHNICAL_DOCUMENTATION.md) - Architecture and design
+8. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
 
 ---
 
