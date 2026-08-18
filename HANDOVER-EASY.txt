@@ -12,6 +12,8 @@ ON THE OLD COMPUTER
 
      ./scripts/gitcord-handover pack
 
+   (It briefly stops the bots so the database copy is safe, then starts them again.)
+
 3. Find the new file on your Desktop (or Downloads):
 
      gitcord-handover-________.tar.gz

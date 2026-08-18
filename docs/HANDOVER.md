@@ -13,10 +13,12 @@
 
 **AI:** paste [`HANDOVER_AI_PROMPT.md`](HANDOVER_AI_PROMPT.md) into Cursor and give the `.tar.gz` path.
 
-### Rules
+## Rules
+
 - Do not commit the `.tar.gz` or `.env` / `.pem`
 - Do not run bots on two PCs with the same Discord token
 - Keep AOSSIE and Stability Nexus separate (the script already does)
 
-### Details
+## Details
+
 Docker background: [DOCKER.md](DOCKER.md). Safety: [AGENTS.md](../AGENTS.md).

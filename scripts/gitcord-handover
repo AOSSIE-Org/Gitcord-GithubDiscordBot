@@ -16,10 +16,25 @@ cd "$ROOT"
 AOSSIE_VOL=gitcord-githubdiscordbot_gitcord_data
 SN_VOL=gitcord-stability_gitcord_stability_data
 DEFAULT_PEM="${HOME}/privateKeys/gitcordapp.pem"
+PEM_COMPOSE_LINE='- ${GITCORD_PEM_HOST:?Set GITCORD_PEM_HOST to the host path of the GitHub App PEM}:/secrets/gitcordapp.pem:ro'
+FORCE=0
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 ok() { echo "✓ $*"; }
 info() { echo "→ $*"; }
+
+confirm() {
+  local prompt="$1"
+  if [[ "$FORCE" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    die "$prompt (non-interactive: pass --force to confirm)"
+  fi
+  local ans=""
+  read -r -p "$prompt [y/N] " ans || true
+  [[ "$ans" == "y" || "$ans" == "Y" || "$ans" == "yes" ]]
+}
 
 need_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker is not installed. Install Docker Desktop (or Docker Engine), then retry."
@@ -35,14 +50,11 @@ detect_pem() {
     printf '%s' "$DEFAULT_PEM"
     return
   fi
-  # Legacy / current maintainer path from older compose mounts
-  local legacy
-  for legacy in \
-    "${HOME}/privateKeys/gitcordapp.2026-07-29.private-key.pem" \
-    /home/shubham/privateKeys/gitcordapp.2026-07-29.private-key.pem
-  do
-    if [[ -f "$legacy" ]]; then
-      printf '%s' "$legacy"
+  # Dated App key filenames under ~/privateKeys/
+  local candidate
+  for candidate in "${HOME}/privateKeys"/gitcordapp*.pem "${HOME}/privateKeys"/*.private-key.pem; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
       return
     fi
   done
@@ -65,16 +77,75 @@ ensure_pem_host_in_env() {
   if [[ ! -f "$envfile" ]]; then
     return
   fi
+  local tmp
+  tmp="$(mktemp)"
   if grep -q '^GITCORD_PEM_HOST=' "$envfile" 2>/dev/null; then
-    # portable replace
-    local tmp
-    tmp="$(mktemp)"
     grep -v '^GITCORD_PEM_HOST=' "$envfile" >"$tmp"
-    echo "GITCORD_PEM_HOST=${pem_path}" >>"$tmp"
-    mv "$tmp" "$envfile"
   else
-    printf '\n# Host path to GitHub App PEM (used by docker compose mount)\nGITCORD_PEM_HOST=%s\n' "$pem_path" >>"$envfile"
+    cp "$envfile" "$tmp"
   fi
+  printf '\n# Host path to GitHub App PEM (required by docker compose mount)\nGITCORD_PEM_HOST=%s\n' "$pem_path" >>"$tmp"
+  mv "$tmp" "$envfile"
+}
+
+rewrite_compose_pem_mount() {
+  local compose="$1"
+  [[ -f "$compose" ]] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  # Replace any host-path PEM mount with the required GITCORD_PEM_HOST form.
+  sed -E "s#- [^:]+:/secrets/gitcordapp\\.pem:ro#${PEM_COMPOSE_LINE}#g" "$compose" >"$tmp"
+  mv "$tmp" "$compose"
+}
+
+volume_nonempty() {
+  local vol="$1"
+  docker volume inspect "$vol" >/dev/null 2>&1 || return 1
+  local count
+  count="$(
+    docker run --rm -v "${vol}:/data:ro" alpine \
+      sh -c 'find /data -mindepth 1 -maxdepth 1 | wc -l' | tr -d ' '
+  )"
+  [[ "${count:-0}" -gt 0 ]]
+}
+
+stop_stacks() {
+  info "Stopping AOSSIE + Stability Nexus (safe DB snapshot / cutover)…"
+  docker compose -p gitcord-githubdiscordbot --profile scheduler down || true
+  if [[ -f docker-compose.stability-nexus.yml ]]; then
+    docker compose -p gitcord-stability \
+      -f docker-compose.stability-nexus.yml \
+      --env-file .env.stability-nexus \
+      --profile scheduler down || true
+  fi
+}
+
+start_stacks() {
+  local pem_host="${1:-${GITCORD_PEM_HOST:-}}"
+  [[ -n "$pem_host" ]] || die "GITCORD_PEM_HOST is not set"
+  export GITCORD_PEM_HOST="$pem_host"
+  info "Starting AOSSIE…"
+  docker compose -p gitcord-githubdiscordbot --profile scheduler up -d --build
+  info "Starting Stability Nexus…"
+  docker compose -p gitcord-stability \
+    -f docker-compose.stability-nexus.yml \
+    --env-file .env.stability-nexus \
+    --profile scheduler up -d --build
+}
+
+install_pem() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]]; then
+    local bak="${dest}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+    info "Backing up existing PEM to $bak"
+    cp -p "$dest" "$bak"
+    chmod 600 "$bak" 2>/dev/null || true
+  fi
+  # Create with mode 600 immediately (no world-readable window).
+  (umask 077 && cat "$src" >"$dest")
+  chmod 600 "$dest"
 }
 
 cmd_pack() {
@@ -88,12 +159,19 @@ cmd_pack() {
   pem="$(detect_pem)"
   [[ -n "$pem" ]] || die "GitHub App key (.pem) not found. Set GITCORD_PEM_HOST=/full/path/to/key.pem"
 
+  confirm "Pack will briefly STOP both bots so the database copy is consistent. Continue?" \
+    || die "Pack cancelled."
+
   local out_dir stamp work archive
   out_dir="${1:-$(pick_out_dir)}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  umask 077
   work="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-handover.XXXXXX")"
+  trap 'rm -rf "$work"' EXIT INT TERM
   archive="${out_dir}/gitcord-handover-${stamp}.tar.gz"
   mkdir -p "$out_dir" "$work/bundle/volumes"
+
+  stop_stacks
 
   info "Packing secrets + databases (this is the whole live bot state)…"
   cp .env "$work/bundle/aossie.env"
@@ -101,7 +179,6 @@ cmd_pack() {
   cp config/config.yaml "$work/bundle/config.yaml"
   cp config/stability-nexus.yaml "$work/bundle/stability-nexus.yaml"
   cp "$pem" "$work/bundle/gitcordapp.pem"
-  # SN compose is usually gitignored on the maintainer machine — ship it in the pack.
   if [[ -f docker-compose.stability-nexus.yml ]]; then
     cp docker-compose.stability-nexus.yml "$work/bundle/docker-compose.stability-nexus.yml"
   fi
@@ -131,7 +208,14 @@ On their PC:
 EOF
 
   tar -czf "$archive" -C "$work/bundle" .
+  chmod 600 "$archive" 2>/dev/null || true
   rm -rf "$work"
+  trap - EXIT INT TERM
+
+  # Bring bots back so the old PC keeps serving until cutover.
+  ensure_pem_host_in_env "$pem" .env
+  ensure_pem_host_in_env "$pem" .env.stability-nexus
+  start_stacks "$pem" || info "Could not auto-restart bots — start them manually if needed."
 
   echo
   ok "DONE — one file created:"
@@ -140,7 +224,8 @@ EOF
   echo "Next:"
   echo "  1) Copy that file to a USB (or send encrypted)."
   echo "  2) On the new PC run:  ./scripts/gitcord-handover restore <that-file>"
-  echo "  3) After Discord works there, stop bots on THIS PC."
+  echo "  3) After Discord works there, stop bots on THIS PC:"
+  echo "       ./scripts/gitcord-handover stop-old"
   echo
   echo "Do NOT upload this file to public GitHub."
 }
@@ -148,11 +233,13 @@ EOF
 cmd_restore() {
   need_docker
   local archive="${1:-}"
-  [[ -n "$archive" ]] || die "Usage: ./scripts/gitcord-handover restore /path/to/gitcord-handover-*.tar.gz"
+  [[ -n "$archive" ]] || die "Usage: ./scripts/gitcord-handover restore [--force] /path/to/gitcord-handover-*.tar.gz"
   [[ -f "$archive" ]] || die "File not found: $archive"
 
   local work pem_host
+  umask 077
   work="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-restore.XXXXXX")"
+  trap 'rm -rf "$work"' EXIT INT TERM
   info "Opening handover file…"
   tar -xzf "$archive" -C "$work"
 
@@ -164,10 +251,13 @@ cmd_restore() {
   [[ -f "$work/volumes/aossie-data.tgz" ]] || die "Bad handover file (missing volumes/aossie-data.tgz)."
   [[ -f "$work/volumes/stability-data.tgz" ]] || die "Bad handover file (missing volumes/stability-data.tgz)."
 
+  if volume_nonempty "$AOSSIE_VOL" || volume_nonempty "$SN_VOL"; then
+    confirm "Existing Gitcord data found on this PC. Restore will REPLACE it. Continue?" \
+      || die "Restore cancelled (existing volumes left untouched)."
+  fi
+
   pem_host="${GITCORD_PEM_HOST:-$DEFAULT_PEM}"
-  mkdir -p "$(dirname "$pem_host")"
-  cp "$work/gitcordapp.pem" "$pem_host"
-  chmod 600 "$pem_host"
+  install_pem "$work/gitcordapp.pem" "$pem_host"
   ok "Saved GitHub App key to $pem_host"
 
   cp "$work/aossie.env" .env
@@ -180,15 +270,20 @@ cmd_restore() {
   elif [[ ! -f docker-compose.stability-nexus.yml ]]; then
     die "Missing docker-compose.stability-nexus.yml (not in repo clone or handover file)."
   fi
-  # Ensure PEM mount uses GITCORD_PEM_HOST on both compose files.
-  for compose in docker-compose.yml docker-compose.stability-nexus.yml; do
-    if [[ -f "$compose" ]] && ! grep -q 'GITCORD_PEM_HOST' "$compose"; then
-      sed -i -E "s#- [^:]+:/secrets/gitcordapp\.pem:ro#- \$\{GITCORD_PEM_HOST:-$\{HOME\}/privateKeys/gitcordapp.pem\}:/secrets/gitcordapp.pem:ro#g" "$compose"
-    fi
-  done
+  rewrite_compose_pem_mount docker-compose.yml
+  rewrite_compose_pem_mount docker-compose.stability-nexus.yml
   ensure_pem_host_in_env "$pem_host" .env
   ensure_pem_host_in_env "$pem_host" .env.stability-nexus
   ok "Installed env + config"
+
+  echo
+  info "IMPORTANT: Only one PC should run the bots."
+  echo "  If the old PC is still running Gitcord, stop it first."
+  if [[ -t 0 ]]; then
+    read -r -p "Press Enter to wipe local volumes (if any) and start both bots… " _ || true
+  else
+    info "Non-interactive shell: continuing without confirmation."
+  fi
 
   info "Restoring bot databases (verified users + sync progress)…"
   docker volume create "$AOSSIE_VOL" >/dev/null
@@ -203,21 +298,9 @@ cmd_restore() {
     alpine sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf /in/stability-data.tgz -C /data'
   ok "Databases restored"
   rm -rf "$work"
+  trap - EXIT INT TERM
 
-  echo
-  info "IMPORTANT: Only one PC should run the bots."
-  echo "  If the old PC is still running Gitcord, stop it first, then press Enter."
-  echo "  If this is the only PC, just press Enter."
-  read -r -p "Press Enter to start both bots… " _
-
-  export GITCORD_PEM_HOST="$pem_host"
-  info "Starting AOSSIE…"
-  docker compose -p gitcord-githubdiscordbot --profile scheduler up -d --build
-  info "Starting Stability Nexus…"
-  docker compose -p gitcord-stability \
-    -f docker-compose.stability-nexus.yml \
-    --env-file .env.stability-nexus \
-    --profile scheduler up -d --build
+  start_stacks "$pem_host"
 
   echo
   cmd_check
@@ -247,12 +330,7 @@ cmd_check() {
 
 cmd_stop_old() {
   need_docker
-  info "Stopping AOSSIE + Stability Nexus on this machine…"
-  docker compose -p gitcord-githubdiscordbot --profile scheduler down || true
-  docker compose -p gitcord-stability \
-    -f docker-compose.stability-nexus.yml \
-    --env-file .env.stability-nexus \
-    --profile scheduler down || true
+  stop_stacks
   ok "Stopped. Safe for the other PC to be the only host."
 }
 
@@ -260,10 +338,12 @@ usage() {
   cat <<EOF
 Gitcord easy handover (local PC → local PC)
 
-  ./scripts/gitcord-handover pack              Create ONE handover file (USB this)
-  ./scripts/gitcord-handover restore FILE.tar.gz   Install on a new PC and start bots
-  ./scripts/gitcord-handover check             See if bots are running
-  ./scripts/gitcord-handover stop-old          Stop bots on this PC (after move)
+  ./scripts/gitcord-handover pack [--force]              Create ONE handover file (USB this)
+  ./scripts/gitcord-handover restore [--force] FILE.tar.gz   Install on a new PC and start bots
+  ./scripts/gitcord-handover check                       See if bots are running
+  ./scripts/gitcord-handover stop-old                    Stop bots on this PC (after move)
+
+  --force   Skip y/N confirms (for AI / non-interactive use)
 
 Need help? Open HANDOVER-EASY.txt or docs/HANDOVER.md
 AI users: paste docs/HANDOVER_AI_PROMPT.md into Cursor
@@ -271,6 +351,16 @@ EOF
 }
 
 main() {
+  local args=()
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --force) FORCE=1 ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- "${args[@]+"${args[@]}"}"
+
   local cmd="${1:-}"
   case "$cmd" in
     pack) shift; cmd_pack "${1:-}" ;;

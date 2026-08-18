@@ -82,6 +82,10 @@ When the user is **taking over** Gitcord or **moving bots to another PC**:
 4. Do not commit secrets; do not mix AOSSIE/SN; warn if both PCs might run the same Discord tokens.
 5. After restore: `check` → user tests `/profile` + `/who-is` → `stop-old` on the previous PC.
 
+---
+
+## Testing expectations
+
 - Add/adjust tests under `tests/` for engine and adapter behavior.
 - CI: `.github/workflows/tests.yml` runs `pytest` on PRs.
 - Do not commit credentials or production SQLite DBs.

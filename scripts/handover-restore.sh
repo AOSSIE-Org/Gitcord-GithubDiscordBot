@@ -2,16 +2,24 @@
 # Back-compat wrapper — use ./scripts/gitcord-handover restore FILE.tar.gz
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-BUNDLE="${1:-}"
+FORCE_ARGS=()
+BUNDLE=""
+for arg in "$@"; do
+  case "$arg" in
+    --force|--start) FORCE_ARGS+=(--force) ;;
+    *) BUNDLE="$arg" ;;
+  esac
+done
 if [[ -z "$BUNDLE" ]]; then
-  echo "Usage: $0 /path/to/gitcord-handover-*.tar.gz   (or a extracted bundle dir)" >&2
+  echo "Usage: $0 [--force] /path/to/gitcord-handover-*.tar.gz" >&2
   exit 1
 fi
 if [[ -d "$BUNDLE" ]]; then
-  # Old folder-style bundle → wrap to tar then restore
-  TMP="$(mktemp -d)"
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-handover-compat.XXXXXX")"
+  trap 'rm -rf "$TMP"' EXIT INT TERM
   TAR="$TMP/gitcord-handover-compat.tar.gz"
   tar -czf "$TAR" -C "$BUNDLE" .
-  exec "$ROOT/gitcord-handover" restore "$TAR"
+  "$ROOT/gitcord-handover" restore "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$TAR"
+  exit $?
 fi
-exec "$ROOT/gitcord-handover" restore "$BUNDLE"
+exec "$ROOT/gitcord-handover" restore "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$BUNDLE"

@@ -14,7 +14,7 @@ I will give you the path to: gitcord-handover-*.tar.gz
 Do exactly:
 1. Confirm Docker is installed and running.
 2. From repo root run:
-   ./scripts/gitcord-handover restore /ABS/PATH/TO/gitcord-handover-*.tar.gz
+   ./scripts/gitcord-handover restore --force /ABS/PATH/TO/gitcord-handover-*.tar.gz
 3. Run: ./scripts/gitcord-handover check
 4. Tell me to test in Discord: /profile and /who-is (AOSSIE + Stability Nexus).
 5. After I confirm OK, tell me to run on the OLD PC:
@@ -25,8 +25,10 @@ Rules:
 - Never invent tokens or skip restore (empty DB is wrong).
 - Never mix AOSSIE and Stability Nexus.
 - Warn if old PC might still be running the same Discord tokens.
+- Use --force only when I already confirmed wipe/replace is OK.
 - Explain in simple language.
 - If pack is needed on old PC: ./scripts/gitcord-handover pack
+  (pack briefly stops bots for a consistent DB snapshot, then restarts them)
 ```
 
 ---
