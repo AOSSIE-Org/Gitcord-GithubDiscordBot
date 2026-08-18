@@ -24,3 +24,5 @@ This document lists the individuals fulfilling the key roles of [Maintainer](htt
 | Name | GitHub Username | Discord Username | Area / Focus |
 | ---- | --------------- | ---------------- | ------------ |
 | Shubham Shinde | [@shubham5080](https://github.com/shubham5080) | shubham_5080 | Repository maintenance, GSoC implementation, AOSSIE + Stability Nexus live stacks |
+
+When transferring live **local** bots PC → PC, start with **[HANDOVER-EASY.txt](HANDOVER-EASY.txt)** (`./scripts/gitcord-handover pack` → USB → `restore`).

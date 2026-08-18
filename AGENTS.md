@@ -68,10 +68,19 @@ tests/          # pytest suite
 4. **Keep changes scoped** — match existing patterns; update tests + docs when behavior changes.
 5. **Remote config** — org settings may live in `org/.github/gitcord.yaml`; local bootstrap stays thin (`remote_config` + tokens + `data_dir`).
 6. **Multi-org** — AOSSIE and Stability Nexus use **separate** Compose projects, env files, and volumes.
+7. **Local handover** — use `./scripts/gitcord-handover pack|restore` and [`HANDOVER-EASY.txt`](HANDOVER-EASY.txt). AI paste prompt: [`docs/HANDOVER_AI_PROMPT.md`](docs/HANDOVER_AI_PROMPT.md). Never treat “git clone alone” as a full handover.
 
 ---
 
-## Testing expectations
+## Local handover (for AI agents)
+
+When the user is **taking over** Gitcord or **moving bots to another PC**:
+
+1. Prefer `./scripts/gitcord-handover` (`pack` / `restore FILE.tar.gz` / `check` / `stop-old`).
+2. Follow [`HANDOVER-EASY.txt`](HANDOVER-EASY.txt) and [`docs/HANDOVER_AI_PROMPT.md`](docs/HANDOVER_AI_PROMPT.md).
+3. Ask for the absolute path to `gitcord-handover-*.tar.gz` if missing.
+4. Do not commit secrets; do not mix AOSSIE/SN; warn if both PCs might run the same Discord tokens.
+5. After restore: `check` → user tests `/profile` + `/who-is` → `stop-old` on the previous PC.
 
 - Add/adjust tests under `tests/` for engine and adapter behavior.
 - CI: `.github/workflows/tests.yml` runs `pytest` on PRs.
