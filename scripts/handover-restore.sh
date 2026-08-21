@@ -6,7 +6,10 @@ FORCE_ARGS=()
 BUNDLE=""
 for arg in "$@"; do
   case "$arg" in
-    --force|--start) FORCE_ARGS+=(--force) ;;
+    --force) FORCE_ARGS+=(--force) ;;
+    --start)
+      # Legacy flag: restore always starts stacks; do NOT treat as --force.
+      ;;
     *) BUNDLE="$arg" ;;
   esac
 done

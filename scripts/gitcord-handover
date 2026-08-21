@@ -110,13 +110,30 @@ volume_nonempty() {
 }
 
 stop_stacks() {
+  # Usage: stop_stacks [strict]
+  # strict=1 → missing SN compose or compose-down failure aborts (pack/restore).
+  local strict="${1:-0}"
   info "Stopping AOSSIE + Stability Nexus (safe DB snapshot / cutover)…"
-  docker compose -p gitcord-githubdiscordbot --profile scheduler down || true
-  if [[ -f docker-compose.stability-nexus.yml ]]; then
-    docker compose -p gitcord-stability \
-      -f docker-compose.stability-nexus.yml \
-      --env-file .env.stability-nexus \
-      --profile scheduler down || true
+  if ! docker compose -p gitcord-githubdiscordbot --profile scheduler down; then
+    if [[ "$strict" == "1" ]]; then
+      die "Failed to stop AOSSIE stack (gitcord-githubdiscordbot)."
+    fi
+    info "AOSSIE stop returned non-zero (continuing)."
+  fi
+  if [[ ! -f docker-compose.stability-nexus.yml ]]; then
+    if [[ "$strict" == "1" ]]; then
+      die "Missing docker-compose.stability-nexus.yml (required for both stacks)."
+    fi
+    return 0
+  fi
+  if ! docker compose -p gitcord-stability \
+    -f docker-compose.stability-nexus.yml \
+    --env-file .env.stability-nexus \
+    --profile scheduler down; then
+    if [[ "$strict" == "1" ]]; then
+      die "Failed to stop Stability Nexus stack (gitcord-stability)."
+    fi
+    info "Stability Nexus stop returned non-zero (continuing)."
   fi
 }
 
@@ -154,6 +171,8 @@ cmd_pack() {
   [[ -f .env.stability-nexus ]] || die "Missing .env.stability-nexus"
   [[ -f config/config.yaml ]] || die "Missing config/config.yaml"
   [[ -f config/stability-nexus.yaml ]] || die "Missing config/stability-nexus.yaml"
+  [[ -f docker-compose.stability-nexus.yml ]] \
+    || die "Missing docker-compose.stability-nexus.yml (required so the pack can restore SN)."
 
   local pem
   pem="$(detect_pem)"
@@ -162,16 +181,27 @@ cmd_pack() {
   confirm "Pack will briefly STOP both bots so the database copy is consistent. Continue?" \
     || die "Pack cancelled."
 
-  local out_dir stamp work archive
+  local out_dir stamp work archive pack_need_restart=0
   out_dir="${1:-$(pick_out_dir)}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   umask 077
   work="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-handover.XXXXXX")"
-  trap 'rm -rf "$work"' EXIT INT TERM
   archive="${out_dir}/gitcord-handover-${stamp}.tar.gz"
   mkdir -p "$out_dir" "$work/bundle/volumes"
 
-  stop_stacks
+  pack_cleanup() {
+    rm -rf "$work"
+    if [[ "${pack_need_restart:-0}" -eq 1 ]]; then
+      info "Pack did not finish — restarting bots on this PC…"
+      ensure_pem_host_in_env "$pem" .env || true
+      ensure_pem_host_in_env "$pem" .env.stability-nexus || true
+      start_stacks "$pem" || info "Could not auto-restart bots — start them manually."
+    fi
+  }
+  trap pack_cleanup EXIT INT TERM
+
+  stop_stacks 1
+  pack_need_restart=1
 
   info "Packing secrets + databases (this is the whole live bot state)…"
   cp .env "$work/bundle/aossie.env"
@@ -179,9 +209,7 @@ cmd_pack() {
   cp config/config.yaml "$work/bundle/config.yaml"
   cp config/stability-nexus.yaml "$work/bundle/stability-nexus.yaml"
   cp "$pem" "$work/bundle/gitcordapp.pem"
-  if [[ -f docker-compose.stability-nexus.yml ]]; then
-    cp docker-compose.stability-nexus.yml "$work/bundle/docker-compose.stability-nexus.yml"
-  fi
+  cp docker-compose.stability-nexus.yml "$work/bundle/docker-compose.stability-nexus.yml"
 
   docker volume inspect "$AOSSIE_VOL" >/dev/null 2>&1 || die "AOSSIE volume missing ($AOSSIE_VOL). Are the bots on this PC?"
   docker volume inspect "$SN_VOL" >/dev/null 2>&1 || die "Stability Nexus volume missing ($SN_VOL)."
@@ -209,10 +237,11 @@ EOF
 
   tar -czf "$archive" -C "$work/bundle" .
   chmod 600 "$archive" 2>/dev/null || true
-  rm -rf "$work"
-  trap - EXIT INT TERM
 
-  # Bring bots back so the old PC keeps serving until cutover.
+  pack_need_restart=0
+  trap - EXIT INT TERM
+  rm -rf "$work"
+
   ensure_pem_host_in_env "$pem" .env
   ensure_pem_host_in_env "$pem" .env.stability-nexus
   start_stacks "$pem" || info "Could not auto-restart bots — start them manually if needed."
@@ -251,9 +280,11 @@ cmd_restore() {
   [[ -f "$work/volumes/aossie-data.tgz" ]] || die "Bad handover file (missing volumes/aossie-data.tgz)."
   [[ -f "$work/volumes/stability-data.tgz" ]] || die "Bad handover file (missing volumes/stability-data.tgz)."
 
-  if volume_nonempty "$AOSSIE_VOL" || volume_nonempty "$SN_VOL"; then
-    confirm "Existing Gitcord data found on this PC. Restore will REPLACE it. Continue?" \
-      || die "Restore cancelled (existing volumes left untouched)."
+  if volume_nonempty "$AOSSIE_VOL" || volume_nonempty "$SN_VOL" \
+    || [[ -f .env ]] || [[ -f .env.stability-nexus ]] \
+    || [[ -f config/config.yaml ]] || [[ -f config/stability-nexus.yaml ]]; then
+    confirm "Existing Gitcord config and/or data found on this PC. Restore will REPLACE it. Continue?" \
+      || die "Restore cancelled (existing files/volumes left untouched)."
   fi
 
   pem_host="${GITCORD_PEM_HOST:-$DEFAULT_PEM}"
@@ -280,10 +311,12 @@ cmd_restore() {
   info "IMPORTANT: Only one PC should run the bots."
   echo "  If the old PC is still running Gitcord, stop it first."
   if [[ -t 0 ]]; then
-    read -r -p "Press Enter to wipe local volumes (if any) and start both bots… " _ || true
+    read -r -p "Press Enter to stop any local bots, wipe volumes, and start both stacks… " _ || true
   else
     info "Non-interactive shell: continuing without confirmation."
   fi
+
+  stop_stacks 1
 
   info "Restoring bot databases (verified users + sync progress)…"
   docker volume create "$AOSSIE_VOL" >/dev/null
