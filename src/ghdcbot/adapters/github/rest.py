@@ -110,7 +110,9 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        self.last_error: str | None = None
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
+
 
     def close(self) -> None:
         self._client.close()
@@ -525,6 +527,125 @@ class GitHubRestAdapter:
             },
         )
         return False
+
+    def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict | None:
+        """Create a new GitHub issue via POST /repos/{owner}/{repo}/issues.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            title: Issue title
+            body: Issue body (Markdown)
+            labels: Optional list of label names
+
+        Returns:
+            Created issue dict (with html_url, number) or None on failure.
+        """
+        payload: dict[str, object] = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        try:
+            self._increment_sync_request_count()
+            response = self._client.post(
+                f"/repos/{owner}/{repo}/issues",
+                json=payload,
+            )
+        except Exception as exc:
+            self.last_error = f"Network connection error: {exc}"
+            self._logger.warning(
+                "GitHub create issue failed (network)",
+                extra={"owner": owner, "repo": repo, "error": str(exc)},
+            )
+            return None
+
+        if response.status_code in {200, 201}:
+            self.last_error = None
+            data = response.json()
+            self._logger.info(
+                "GitHub issue created",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "issue_number": data.get("number"),
+                    "html_url": data.get("html_url"),
+                },
+            )
+            return data
+
+        if response.status_code == 404:
+            self.last_error = (
+                f"Repository `{owner}/{repo}` not found (404). "
+                f"Please verify that the repository name is spelled correctly and exists in `{owner}`."
+            )
+        elif response.status_code == 403:
+            self.last_error = (
+                f"Permission denied (403 Forbidden). "
+                f"Your GitHub token does not have write/issue permissions for `{owner}/{repo}`."
+            )
+        elif response.status_code == 401:
+            self.last_error = (
+                "Authentication failed (401 Bad credentials). Please check your GITHUB_TOKEN."
+            )
+        else:
+            self.last_error = (
+                f"GitHub API returned HTTP {response.status_code}: "
+                f"{(response.text or '')[:200]}"
+            )
+
+        self._logger.warning(
+            "GitHub create issue failed (API)",
+            extra={
+                "owner": owner,
+                "repo": repo,
+                "status_code": response.status_code,
+                "error_response": (response.text or "")[:500],
+            },
+        )
+        return None
+
+
+    def get_issue_template(
+        self,
+        owner: str,
+        repo: str,
+        template_name: str,
+    ) -> str | None:
+        """Fetch a GitHub issue template from .github/ISSUE_TEMPLATE/{name}.md.
+
+        Tries .md first, then .yml/.yaml. Returns the raw file content
+        (with YAML frontmatter still included — caller should strip it)
+        or None if not found.
+        """
+        import base64
+
+        extensions = [".md", ".yml", ".yaml"]
+        for ext in extensions:
+            path = f".github/ISSUE_TEMPLATE/{template_name}{ext}"
+            response = self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/contents/{path}",
+                params={},
+            )
+            if response and response.status_code == 200:
+                data = response.json()
+                content_b64 = data.get("content", "")
+                if content_b64:
+                    try:
+                        return base64.b64decode(content_b64).decode("utf-8")
+                    except Exception:
+                        self._logger.warning(
+                            "Failed to decode issue template content",
+                            extra={"owner": owner, "repo": repo, "path": path},
+                        )
+                        return None
+        return None
 
     def delete_file(
         self,

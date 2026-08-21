@@ -345,9 +345,9 @@ def run_bot(config_path: str) -> None:
     )
 
     intents = discord.Intents.default()
-    # Enable message content intent if passive PR preview is enabled
-    if getattr(config.discord, "pr_preview_channels", None):
-        intents.message_content = True
+    # Enable message content intent — required for /thread to read channel messages
+    # and for passive PR preview when pr_preview_channels is configured
+    intents.message_content = True
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
@@ -815,6 +815,42 @@ def run_bot(config_path: str) -> None:
                 suppress_embeds=True,
             )
 
+    @tree.command(
+        name="who-is",
+        description="Lookup a GitHub username to find their verified Discord account",
+        guild=discord.Object(id=guild_id)
+    )
+    @app_commands.describe(github_username="GitHub username to look up")
+    async def who_is_cmd(interaction: discord.Interaction, github_username: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        github_username = github_username.strip()
+        # Pass storage into the standalone resolve_github_to_discord helper function
+        discord_user_id = resolve_github_to_discord(storage, github_username)
+        if discord_user_id:
+            get_status = getattr(storage, "get_identity_status", None)
+            max_age_days = None
+            if getattr(config, "identity", None) is not None:
+                max_age_days = getattr(config.identity, "verified_max_age_days", None)
+            
+            status_info = {}
+            if callable(get_status):
+                try:
+                    status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
+                except Exception:
+                    status_info = {}
+            
+            is_stale = status_info.get("is_stale", True) if status_info else True
+            status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+            await interaction.followup.send(
+                f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"❌ GitHub user **{github_username}** is not linked or verified with any Discord account.",
+                ephemeral=True
+            )
+        
     def command_permission_check(command_name: str):
         """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
 
