@@ -279,6 +279,8 @@ Wait 30 seconds for commands to sync.
 
 ## 🤖 Discord Bot Commands
 
+Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt).
+
 ### Identity Linking
 
 - `/link` - Link your Discord account to GitHub (creates verification code)
