@@ -39,3 +39,9 @@ package-lock.json
 venv/
 gitcord_status.pdf
 gitcord-portfolio-thumbnail.jpg
+# Local handover packs (never commit)
+gitcord-handover-SECRET/
+**/gitcord-handover-*/
+gitcord-handover-*.tar.gz
+**/gitcord-handover-*.tar.gz
+*.pem
