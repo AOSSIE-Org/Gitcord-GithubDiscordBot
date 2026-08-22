@@ -392,7 +392,7 @@ def summarize_thread_messages(messages: list[dict]) -> str:
 
         # Check for feature explanations & point system / mechanisms
         has_feature = False
-        if "point system" in s_lower or "point-system" in s_lower or "points system" in s_lower or "point" in s_lower:
+        if re.search(r"\bpoints?\s*-?\s*system\b", s_lower):
             desc = (
                 "**Internal Developer Adaptation Point System**: Work internally to adapt Knowledge to "
                 "developer understanding without exposing points to end users."
@@ -407,7 +407,7 @@ def summarize_thread_messages(messages: list[dict]) -> str:
                 feature_details.append(desc)
             has_feature = True
 
-        if "workflow" in s_lower or "creating prs" in s_lower or "creating issues" in s_lower:
+        if "creating prs" in s_lower or "creating issues" in s_lower:
             desc = "**Issue & PR Creation Workflow**: Implement structured issue and PR creation in manageable chunks for careful review."
             if desc not in feature_details:
                 feature_details.append(desc)
