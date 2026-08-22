@@ -233,8 +233,9 @@ def test_write_activity_report(base_config: BotConfig, tmp_path: Path) -> None:
     start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     end = datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC)
 
-    path, _ = write_activity_report([], start, end, base_config)
+    path, markdown = write_activity_report([], start, end, base_config)
 
     assert path == tmp_path / "reports" / "activity.md"
     assert path.exists()
+    assert "No PR or issue activity" in markdown
     assert "No PR or issue activity" in path.read_text()
