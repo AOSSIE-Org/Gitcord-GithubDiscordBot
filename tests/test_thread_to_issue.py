@@ -270,6 +270,46 @@ class TestFormatIssueBodyWithTemplate:
         assert "@alice-gh" in body
         assert "Gitcord" in body
 
+    def test_fill_template_preserves_backslashes_and_regex_escapes(self) -> None:
+        template = (
+            "### Description\n\n"
+            "### Steps to Reproduce\n\n"
+            "### Environment\n\n"
+            "### Error Logs\n\n"
+        )
+        messages = [
+            {
+                "author_name": "Alice",
+                "github_user": "@alice-gh",
+                "content": r"Issue with regex \1 and path C:\Users\name\test and group \g<0>",
+                "timestamp": "2026-01-15 12:00 UTC",
+                "attachments": [],
+                "code_blocks": [],
+            },
+            {
+                "author_name": "Bob",
+                "github_user": "@bob-gh",
+                "content": r"OS: C:\Windows\System32\os.dll",
+                "timestamp": "2026-01-15 12:01 UTC",
+                "attachments": [],
+                "code_blocks": [],
+            },
+            {
+                "author_name": "Bob",
+                "github_user": "@bob-gh",
+                "content": "Traceback (most recent call last):\n  File \"C:\\test\\app.py\", line 10\n    re.sub(r'\\1', x)",
+                "timestamp": "2026-01-15 12:02 UTC",
+                "attachments": [],
+                "code_blocks": [],
+            },
+        ]
+        body = format_issue_body(messages, template_body=template)
+        assert r"\1" in body
+        assert r"\g<0>" in body
+        assert "### Environment" in body
+        assert "### Error Logs" in body
+
+
 
 # ---------------------------------------------------------------------------
 # resolve_authors
@@ -339,6 +379,32 @@ class TestStripTemplateFrontmatter:
         # Should return as-is since there's no closing ---
         assert result == raw
 
+    def test_delimiter_within_yaml_value_does_not_prematurely_strip(self) -> None:
+        raw = (
+            "---\n"
+            "name: 'Bug Report --- Important'\n"
+            "about: 'File a bug report --- please attach logs'\n"
+            "title: ''\n"
+            "---\n"
+            "### Description\n\n"
+            "Describe the bug."
+        )
+        result = strip_template_frontmatter(raw)
+        assert result.startswith("### Description")
+        assert "Bug Report --- Important" not in result
+        assert "about:" not in result
+
+    def test_crlf_yaml_frontmatter_stripped(self) -> None:
+        raw = "---\r\nname: Bug Report\r\nabout: File a bug\r\n---\r\n### Description\r\n\r\nDescribe the bug."
+        result = strip_template_frontmatter(raw)
+        assert result.startswith("### Description")
+        assert "name: Bug Report" not in result
+
+    def test_non_frontmatter_dash_preserved(self) -> None:
+        raw = "---not-frontmatter\n### Description"
+        result = strip_template_frontmatter(raw)
+        assert result == raw
+
 
 # ---------------------------------------------------------------------------
 # summarize_thread_messages
@@ -391,6 +457,62 @@ class TestSummarizeThreadMessages:
         # Ensure raw mention tokens and conversational chatter are not copied blindly
         assert "<@1533304803537584279>" not in summary
         assert "i will make issues for all of them soon" not in summary.lower()
+
+
+class TestGetIssueTemplate:
+    def test_get_issue_template_markdown_success(self, monkeypatch) -> None:
+        import base64
+        import httpx
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+        raw_content = "---\nname: Bug Report\n---\n### Description\nDescribe the bug"
+        encoded = base64.b64encode(raw_content.encode("utf-8")).decode("utf-8")
+
+        def mock_request(method: str, path: str, params: dict) -> httpx.Response:
+            assert path == "/repos/AOSSIE/Gitcord/contents/.github/ISSUE_TEMPLATE/bug_report.md"
+            return httpx.Response(200, json={"content": encoded})
+
+        monkeypatch.setattr(adapter, "_request", mock_request)
+        result = adapter.get_issue_template("AOSSIE", "Gitcord", "bug_report")
+        assert result == raw_content
+
+    def test_get_issue_template_markdown_with_extension(self, monkeypatch) -> None:
+        import base64
+        import httpx
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+        raw_content = "### Feature\nDescribe feature"
+        encoded = base64.b64encode(raw_content.encode("utf-8")).decode("utf-8")
+
+        def mock_request(method: str, path: str, params: dict) -> httpx.Response:
+            assert path == "/repos/AOSSIE/Gitcord/contents/.github/ISSUE_TEMPLATE/feature_request.md"
+            return httpx.Response(200, json={"content": encoded})
+
+        monkeypatch.setattr(adapter, "_request", mock_request)
+        result = adapter.get_issue_template("AOSSIE", "Gitcord", "feature_request.md")
+        assert result == raw_content
+
+    def test_get_issue_template_ignores_yaml_and_returns_none_when_md_missing(self, monkeypatch) -> None:
+        import httpx
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+        requested_paths: list[str] = []
+
+        def mock_request(method: str, path: str, params: dict) -> httpx.Response:
+            requested_paths.append(path)
+            return httpx.Response(404)
+
+        monkeypatch.setattr(adapter, "_request", mock_request)
+        result = adapter.get_issue_template("AOSSIE", "Gitcord", "form_template")
+        assert result is None
+        assert requested_paths == [
+            "/repos/AOSSIE/Gitcord/contents/.github/ISSUE_TEMPLATE/form_template.md"
+        ]
+        assert not any(".yml" in p or ".yaml" in p for p in requested_paths)
+
 
 
 

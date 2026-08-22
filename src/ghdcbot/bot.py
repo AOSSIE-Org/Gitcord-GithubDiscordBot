@@ -28,6 +28,7 @@ from ghdcbot.engine.metrics import (
 )
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
+    resolve_github_to_discord,
 )
 from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_list import (
@@ -346,7 +347,9 @@ def run_bot(config_path: str) -> None:
 
     intents = discord.Intents.default()
     # Enable message content intent — required for /thread to read channel messages
-    # and for passive PR preview when pr_preview_channels is configured
+    # and for passive PR preview when pr_preview_channels is configured.
+    # NOTE: Discord deployments must enable the privileged 'MESSAGE_CONTENT' intent
+    # in the Discord Developer Portal (Applications -> Bot -> Privileged Gateway Intents).
     intents.message_content = True
 
     client = discord.Client(intents=intents)
@@ -832,15 +835,25 @@ def run_bot(config_path: str) -> None:
             if getattr(config, "identity", None) is not None:
                 max_age_days = getattr(config.identity, "verified_max_age_days", None)
             
-            status_info = {}
+            status_info = None
             if callable(get_status):
                 try:
-                    status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
-                except Exception:
-                    status_info = {}
+                    status_info = get_status(discord_user_id, max_age_days=max_age_days)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to get identity status for user %s: %s",
+                        discord_user_id,
+                        exc,
+                    )
+                    status_info = None
             
-            is_stale = status_info.get("is_stale", True) if status_info else True
-            status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+            if status_info is None or "is_stale" not in status_info:
+                status_badge = "ℹ️ Link status unavailable"
+            elif status_info.get("is_stale", False) or status_info.get("status") == "verified_stale":
+                status_badge = "⚠️ Verification may be outdated"
+            else:
+                status_badge = "✅ Verified"
+
             await interaction.followup.send(
                 f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
                 ephemeral=True
@@ -1063,7 +1076,15 @@ def run_bot(config_path: str) -> None:
         cmd_names = [c.name for c in synced]
         logger.info("Bot ready; slash commands synced for guild %s: %s", guild_id, cmd_names)
 
-    client.run(config.discord.token)
+    try:
+        client.run(config.discord.token)
+    except discord.errors.PrivilegedIntentsRequired as e:
+        logger.error(
+            "Discord bot startup failed: Privileged intent 'MESSAGE_CONTENT' is required but not enabled. "
+            "Please enable 'Message Content Intent' in the Discord Developer Portal: "
+            "https://discord.com/developers/applications -> Your Application -> Bot -> Privileged Gateway Intents."
+        )
+        raise SystemExit(1) from e
 
 
 def main(config_path: str) -> None:

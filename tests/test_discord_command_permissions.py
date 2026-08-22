@@ -219,3 +219,30 @@ def test_config_accepts_command_permissions_in_yaml_shape() -> None:
     rule = config.discord.command_permissions["assign-issue"]
     assert rule.role_names == ["Mentor"]
     assert rule.allow_discord_administrators is True
+
+
+def test_bot_startup_reports_missing_privileged_intents(monkeypatch, capsys) -> None:
+    """Startup failure due to missing MESSAGE_CONTENT intent logs clear diagnostic and exits with code 1."""
+    import discord
+    import pytest
+    from unittest.mock import MagicMock
+    from ghdcbot.bot import run_bot
+
+    mock_config = BotConfig.model_validate(_minimal_config_payload())
+    monkeypatch.setattr("ghdcbot.bot.load_config", lambda _path: mock_config)
+    monkeypatch.setattr("ghdcbot.bot.build_adapter", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr("ghdcbot.bot.resolve_github_token", lambda *args, **kwargs: "gh-token")
+
+    def mock_run(_self, _token):
+        raise discord.errors.PrivilegedIntentsRequired(discord.flags.Intents(message_content=True).value)
+
+    monkeypatch.setattr(discord.Client, "run", mock_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_bot("dummy_path.yaml")
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "MESSAGE_CONTENT" in captured.err
+    assert "Privileged Gateway Intents" in captured.err
+

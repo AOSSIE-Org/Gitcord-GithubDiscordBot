@@ -111,6 +111,7 @@ class GitHubRestAdapter:
         self._sync_request_count = 0
         self._sync_repos_processed = 0
         self.last_error: str | None = None
+        self._publish_claims: dict[tuple[str, str, str], dict] = {}
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
 
@@ -528,6 +529,33 @@ class GitHubRestAdapter:
         )
         return False
 
+    def _reconcile_issue_claim(self, owner: str, repo: str, title: str) -> dict | None:
+        """Check if an issue with the matching title already exists in the repo.
+
+        Used to reconcile pending publish claims after timeouts or network errors
+        to prevent duplicate issue creation.
+        """
+        try:
+            self._increment_sync_request_count()
+            response = self._client.get(
+                f"/repos/{owner}/{repo}/issues",
+                params={"state": "all", "sort": "created", "direction": "desc", "per_page": 30},
+            )
+            if response.status_code in {200, 201}:
+                issues = response.json()
+                if isinstance(issues, list):
+                    for item in issues:
+                        if isinstance(item, dict) and item.get("title") == title:
+                            if "pull_request" in item:
+                                continue
+                            return item
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            self._logger.warning(
+                "GitHub reconcile issue claim failed (network)",
+                extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
+            )
+        return None
+
     def create_issue(
         self,
         owner: str,
@@ -537,6 +565,9 @@ class GitHubRestAdapter:
         labels: list[str] | None = None,
     ) -> dict | None:
         """Create a new GitHub issue via POST /repos/{owner}/{repo}/issues.
+
+        Persists a durable publish claim before invoking POST, and reconciles that claim
+        with GitHub before any retry so timeouts after acceptance cannot create duplicates.
 
         Args:
             owner: Repository owner
@@ -548,25 +579,95 @@ class GitHubRestAdapter:
         Returns:
             Created issue dict (with html_url, number) or None on failure.
         """
+        claim_key = (owner, repo, title)
+        if not hasattr(self, "_publish_claims"):
+            self._publish_claims = {}
+
+        if claim_key in self._publish_claims:
+            self._logger.info(
+                "Found existing publish claim; reconciling with GitHub before create",
+                extra={"owner": owner, "repo": repo, "title": title},
+            )
+            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            if reconciled:
+                self.last_error = None
+                self._publish_claims.pop(claim_key, None)
+                self._logger.info(
+                    "GitHub issue reconciled from claim",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": reconciled.get("number"),
+                        "html_url": reconciled.get("html_url"),
+                    },
+                )
+                return reconciled
+
         payload: dict[str, object] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
+
+        self._publish_claims[claim_key] = {
+            "title": title,
+            "body": body,
+            "labels": labels,
+            "created_at": time.time(),
+        }
+
         try:
             self._increment_sync_request_count()
             response = self._client.post(
                 f"/repos/{owner}/{repo}/issues",
                 json=payload,
             )
-        except Exception as exc:
+        except httpx.TimeoutException as exc:
+            self.last_error = f"Request timed out: {exc}"
+            self._logger.warning(
+                "GitHub create issue timed out (outcome uncertain; reconciling claim)",
+                extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
+            )
+            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            if reconciled:
+                self.last_error = None
+                self._publish_claims.pop(claim_key, None)
+                self._logger.info(
+                    "GitHub issue reconciled following timeout",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": reconciled.get("number"),
+                        "html_url": reconciled.get("html_url"),
+                    },
+                )
+                return reconciled
+            return None
+        except httpx.RequestError as exc:
             self.last_error = f"Network connection error: {exc}"
             self._logger.warning(
                 "GitHub create issue failed (network)",
-                extra={"owner": owner, "repo": repo, "error": str(exc)},
+                extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
             )
+            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            if reconciled:
+                self.last_error = None
+                self._publish_claims.pop(claim_key, None)
+                return reconciled
             return None
+
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": f"/repos/{owner}/{repo}/issues",
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
 
         if response.status_code in {200, 201}:
             self.last_error = None
+            self._publish_claims.pop(claim_key, None)
             data = response.json()
             self._logger.info(
                 "GitHub issue created",
@@ -578,6 +679,8 @@ class GitHubRestAdapter:
                 },
             )
             return data
+
+        self._publish_claims.pop(claim_key, None)
 
         if response.status_code == 404:
             self.last_error = (
@@ -617,34 +720,33 @@ class GitHubRestAdapter:
         repo: str,
         template_name: str,
     ) -> str | None:
-        """Fetch a GitHub issue template from .github/ISSUE_TEMPLATE/{name}.md.
+        """Fetch a Markdown GitHub issue template from .github/ISSUE_TEMPLATE/{name}.md.
 
-        Tries .md first, then .yml/.yaml. Returns the raw file content
-        (with YAML frontmatter still included — caller should strip it)
-        or None if not found.
+        Returns the raw Markdown file content (with YAML frontmatter still
+        included — caller should strip it) or None if not found or if the template
+        is not a Markdown file.
         """
         import base64
 
-        extensions = [".md", ".yml", ".yaml"]
-        for ext in extensions:
-            path = f".github/ISSUE_TEMPLATE/{template_name}{ext}"
-            response = self._request(
-                "GET",
-                f"/repos/{owner}/{repo}/contents/{path}",
-                params={},
-            )
-            if response and response.status_code == 200:
-                data = response.json()
-                content_b64 = data.get("content", "")
-                if content_b64:
-                    try:
-                        return base64.b64decode(content_b64).decode("utf-8")
-                    except Exception:
-                        self._logger.warning(
-                            "Failed to decode issue template content",
-                            extra={"owner": owner, "repo": repo, "path": path},
-                        )
-                        return None
+        clean_name = template_name[:-3] if template_name.endswith(".md") else template_name
+        path = f".github/ISSUE_TEMPLATE/{clean_name}.md"
+        response = self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/contents/{path}",
+            params={},
+        )
+        if response and response.status_code == 200:
+            data = response.json()
+            content_b64 = data.get("content", "")
+            if content_b64:
+                try:
+                    return base64.b64decode(content_b64).decode("utf-8")
+                except Exception:
+                    self._logger.warning(
+                        "Failed to decode issue template content",
+                        extra={"owner": owner, "repo": repo, "path": path},
+                    )
+                    return None
         return None
 
     def delete_file(

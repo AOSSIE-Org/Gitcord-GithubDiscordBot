@@ -126,7 +126,7 @@ Under **Bot** → **Privileged Gateway Intents**:
 |--------|-----------|
 | **Server Members Intent** | ✅ **Yes** — member listing for role planning |
 | Presence Intent | ❌ No |
-| Message Content Intent | ❌ No (only if you enable `pr_preview_channels` in config) |
+| **Message Content Intent** | ✅ **Yes** — required for `/thread` to read channel messages and for passive PR previews |
 
 ### 2.6 Copy Bot Token
 

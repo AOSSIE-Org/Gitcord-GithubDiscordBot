@@ -176,3 +176,96 @@ def test_rate_limit_403_missing_reset_no_transient_retry(caplog) -> None:
     assert any(
         getattr(r, "event", None) == "github_rate_limit_missing_reset" for r in caplog.records
     )
+
+
+def test_create_issue_timeout_after_acceptance_reconciles_without_duplicate_post() -> None:
+    """Test that a timeout during POST when GitHub accepted the issue reconciles and does not re-POST."""
+    from unittest.mock import MagicMock
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+    client = MagicMock()
+
+    created_issue = {
+        "number": 42,
+        "title": "Bug in Sync",
+        "body": "Detailed description",
+        "html_url": "https://github.com/AOSSIE/Gitcord/issues/42",
+    }
+
+    client.post.side_effect = httpx.TimeoutException(
+        "Request timed out",
+        request=httpx.Request("POST", "https://api.github.com/repos/AOSSIE/Gitcord/issues"),
+    )
+    client.get.return_value = httpx.Response(
+        200,
+        json=[created_issue],
+        headers={"X-RateLimit-Remaining": "100"},
+    )
+    adapter._client = client
+
+    result = adapter.create_issue("AOSSIE", "Gitcord", "Bug in Sync", "Detailed description")
+
+    assert result is not None
+    assert result["number"] == 42
+    assert result["html_url"] == "https://github.com/AOSSIE/Gitcord/issues/42"
+    assert client.post.call_count == 1
+    assert client.get.call_count == 1
+
+
+def test_create_issue_retry_reconciles_existing_claim_before_second_post() -> None:
+    """If timeout occurs and reconciliation initially fails, retry reconciles claim before issuing duplicate POST."""
+    from unittest.mock import MagicMock
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+    client = MagicMock()
+
+    created_issue = {
+        "number": 99,
+        "title": "Feature Request",
+        "body": "Please add X",
+        "html_url": "https://github.com/AOSSIE/Gitcord/issues/99",
+    }
+
+    client.post.side_effect = httpx.TimeoutException(
+        "POST timeout",
+        request=httpx.Request("POST", "https://api.github.com/repos/AOSSIE/Gitcord/issues"),
+    )
+    client.get.side_effect = [
+        httpx.TimeoutException(
+            "GET timeout",
+            request=httpx.Request("GET", "https://api.github.com/repos/AOSSIE/Gitcord/issues"),
+        ),
+        httpx.Response(
+            200,
+            json=[created_issue],
+            headers={"X-RateLimit-Remaining": "100"},
+        ),
+    ]
+    adapter._client = client
+
+    # 1st call fails due to timeout
+    result1 = adapter.create_issue("AOSSIE", "Gitcord", "Feature Request", "Please add X")
+    assert result1 is None
+    assert client.post.call_count == 1
+
+    # 2nd call (retry) reconciles existing publish claim with GitHub before any POST
+    result2 = adapter.create_issue("AOSSIE", "Gitcord", "Feature Request", "Please add X")
+    assert result2 is not None
+    assert result2["number"] == 99
+    # Verify NO duplicate POST was made
+    assert client.post.call_count == 1
+    assert client.get.call_count == 2
+
+
+def test_create_issue_non_httpx_exception_not_masked() -> None:
+    """Verify that broad/unexpected exceptions are not caught or masked."""
+    from unittest.mock import MagicMock
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+    client = MagicMock()
+    client.post.side_effect = TypeError("Unexpected internal error")
+    adapter._client = client
+
+    with pytest.raises(TypeError, match="Unexpected internal error"):
+        adapter.create_issue("AOSSIE", "Gitcord", "Title", "Body")
+

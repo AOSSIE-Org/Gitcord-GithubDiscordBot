@@ -527,23 +527,29 @@ def _fill_template(
 
     # Map of section heading patterns -> content to insert
     section_fills: list[tuple[str, str]] = [
-        (r"(###?\s*Description[^\n]*\n)", f"\\1\n{summary}\n"),
-        (r"(###?\s*Steps\s+to\s+Reproduce[^\n]*\n)", f"\\1\n{summary}\n"),
+        (r"(###?\s*Description[^\n]*\n)", summary),
+        (r"(###?\s*Steps\s+to\s+Reproduce[^\n]*\n)", summary),
     ]
 
     if env_info:
         section_fills.append(
-            (r"(###?\s*(?:Environment|System\s*Info)[^\n]*\n)", f"\\1\n{env_info}\n")
+            (r"(###?\s*(?:Environment|System\s*Info)[^\n]*\n)", env_info)
         )
 
     if log_snippets:
         logs_md = "\n\n".join(f"```\n{s}\n```" for s in log_snippets[:3])
         section_fills.append(
-            (r"(###?\s*(?:Logs?|Error\s*(?:Output|Log))[^\n]*\n)", f"\\1\n{logs_md}\n")
+            (r"(###?\s*(?:Logs?|Error\s*(?:Output|Log))[^\n]*\n)", logs_md)
         )
 
-    for pattern, replacement in section_fills:
-        result, count = re.subn(pattern, replacement, result, count=1, flags=re.IGNORECASE)
+    for pattern, content in section_fills:
+        result, count = re.subn(
+            pattern,
+            lambda match, text=content: f"{match.group(1)}\n{text}\n",
+            result,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
     # Append summary at the bottom if Description/Steps sections were not found
     if "description" not in template_body.lower() and "steps" not in template_body.lower():
@@ -588,12 +594,12 @@ def _build_default_body(
 def strip_template_frontmatter(raw_template: str) -> str:
     """Strip YAML frontmatter (---...---) from the beginning of a GitHub issue template.
 
+    Locates the closing delimiter only when --- occupies a complete line, not when
+    it appears inside a YAML value. Templates without valid frontmatter are preserved unchanged.
+
     Returns just the Markdown body.
     """
-    if not raw_template.startswith("---"):
-        return raw_template
-    # Find the closing ---
-    end = raw_template.find("---", 3)
-    if end == -1:
-        return raw_template
-    return raw_template[end + 3:].strip()
+    match = re.match(r"^---\s*(?:\r?\n)(.*?)(?:\r?\n)---\s*(?:\r?\n|$)(.*)$", raw_template, re.DOTALL)
+    if match:
+        return match.group(2).strip()
+    return raw_template

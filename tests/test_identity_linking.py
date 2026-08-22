@@ -893,3 +893,95 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def test_who_is_cmd_status_formatting(monkeypatch) -> None:
+    """Test who-is command handles fresh, stale, and unavailable status separately."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    import discord
+    from ghdcbot.bot import run_bot
+    from ghdcbot.config.models import BotConfig
+
+    registered_cmds = {}
+
+    def fake_command(**kwargs):
+        def decorator(func):
+            name = kwargs.get("name")
+            registered_cmds[name] = func
+            return func
+        return decorator
+
+    monkeypatch.setattr(discord.app_commands.CommandTree, "command", lambda self, **kw: fake_command(**kw))
+    monkeypatch.setattr(discord.Client, "run", lambda self, token: None)
+
+    mock_storage = MagicMock()
+    mock_config = BotConfig.model_validate({
+        "runtime": {
+            "mode": "dry-run",
+            "log_level": "INFO",
+            "data_dir": "/tmp",
+            "github_adapter": "ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            "discord_adapter": "ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            "storage_adapter": "ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        },
+        "github": {"org": "x", "token": "t", "api_base": "https://api.github.com"},
+        "discord": {"guild_id": "1", "token": "t"},
+        "scoring": {"period_days": 30, "weights": {"issue_opened": 1}},
+        "role_mappings": [{"discord_role": "Contributor", "min_score": 0}],
+        "assignments": {"review_roles": [], "issue_assignees": ["Mentor"]},
+        "identity_mappings": [],
+    })
+
+    monkeypatch.setattr("ghdcbot.bot.load_config", lambda _path: mock_config)
+    monkeypatch.setattr("ghdcbot.bot.build_adapter", lambda dotted, **kw: mock_storage)
+    monkeypatch.setattr("ghdcbot.bot.resolve_github_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr("ghdcbot.bot.resolve_github_to_discord", lambda storage, gh: "12345" if gh == "octocat" else None)
+
+    run_bot("dummy.yaml")
+    who_is = registered_cmds["who-is"]
+
+    # 1. Verified (fresh)
+    mock_storage.get_identity_status.return_value = {"is_stale": False, "status": "verified"}
+    interaction = AsyncMock()
+    asyncio.run(who_is(interaction, "octocat"))
+    interaction.followup.send.assert_called_with(
+        "GitHub user **octocat** is **✅ Verified** as Discord member <@12345>.",
+        ephemeral=True,
+    )
+
+    # 2. Stale
+    mock_storage.get_identity_status.return_value = {"is_stale": True, "status": "verified_stale"}
+    interaction = AsyncMock()
+    asyncio.run(who_is(interaction, "octocat"))
+    interaction.followup.send.assert_called_with(
+        "GitHub user **octocat** is **⚠️ Verification may be outdated** as Discord member <@12345>.",
+        ephemeral=True,
+    )
+
+    # 3. Status unavailable (get_identity_status returns None or missing is_stale)
+    mock_storage.get_identity_status.return_value = None
+    interaction = AsyncMock()
+    asyncio.run(who_is(interaction, "octocat"))
+    interaction.followup.send.assert_called_with(
+        "GitHub user **octocat** is **ℹ️ Link status unavailable** as Discord member <@12345>.",
+        ephemeral=True,
+    )
+
+    # 4. Exception raised during get_identity_status
+    mock_storage.get_identity_status.side_effect = RuntimeError("DB error")
+    interaction = AsyncMock()
+    asyncio.run(who_is(interaction, "octocat"))
+    interaction.followup.send.assert_called_with(
+        "GitHub user **octocat** is **ℹ️ Link status unavailable** as Discord member <@12345>.",
+        ephemeral=True,
+    )
+
+    # 5. Not linked
+    interaction = AsyncMock()
+    asyncio.run(who_is(interaction, "unknown_user"))
+    interaction.followup.send.assert_called_with(
+        "❌ GitHub user **unknown_user** is not linked or verified with any Discord account.",
+        ephemeral=True,
+    )
+
