@@ -855,15 +855,7 @@ def run_bot(config_path: str) -> None:
                 status_badge = "⚠️ Verification may be outdated"
             else:
                 status_badge = "✅ Verified"
-            status_info = {}
-            if callable(get_status):
-                try:
-                    status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
-                except Exception:
-                    status_info = {}
-            
-            is_stale = status_info.get("is_stale", True) if status_info else True
-            status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+
             await interaction.followup.send(
                 f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
                 ephemeral=True

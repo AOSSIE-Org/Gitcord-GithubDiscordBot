@@ -51,15 +51,20 @@ async def _run_who_is_handler(
         if getattr(config, "identity", None) is not None:
             max_age_days = getattr(config.identity, "verified_max_age_days", None)
 
-        status_info = {}
+        status_info = None
         if callable(get_status):
             try:
-                status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
+                status_info = get_status(discord_user_id, max_age_days=max_age_days)
             except Exception:
-                status_info = {}
+                status_info = None
 
-        is_stale = status_info.get("is_stale", True) if status_info else True
-        status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+        if status_info is None or "is_stale" not in status_info:
+            status_badge = "ℹ️ Link status unavailable"
+        elif status_info.get("is_stale", False) or status_info.get("status") == "verified_stale":
+            status_badge = "⚠️ Verification may be outdated"
+        else:
+            status_badge = "✅ Verified"
+
         await interaction.followup.send(
             f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
             ephemeral=True,
