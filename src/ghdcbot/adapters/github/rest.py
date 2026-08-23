@@ -631,6 +631,75 @@ class GitHubRestAdapter:
             comments.extend(page)
         return comments
 
+    def get_pull_request_review_threads(
+        self, owner: str, repo: str, pr_number: int
+    ) -> list[dict]:
+        """Fetch review threads via GraphQL to check resolved/unresolved status.
+
+        Returns list of thread dicts: [{'is_resolved': bool, 'is_outdated': bool, 'authors': list[str]}]
+        Returns empty list on error or if GraphQL is unsupported.
+        """
+        query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  isResolved
+                  isOutdated
+                  comments(first: 1) {
+                    nodes {
+                      author {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        try:
+            graphql_url = "https://api.github.com/graphql"
+            if hasattr(self, "_api_base") and str(self._api_base).rstrip("/") != "https://api.github.com":
+                graphql_url = f"{str(self._api_base).rstrip('/')}/graphql"
+
+            response = self._client.post(
+                graphql_url,
+                json={"query": query, "variables": {"owner": owner, "name": repo, "number": pr_number}},
+                timeout=15.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict) and "data" in data and data["data"]:
+                    repo_data = data["data"].get("repository") or {}
+                    pr_data = repo_data.get("pullRequest") or {}
+                    raw_threads = (pr_data.get("reviewThreads") or {}).get("nodes") or []
+                    results = []
+                    for t in raw_threads:
+                        c_nodes = (t.get("comments") or {}).get("nodes") or []
+                        authors = [
+                            ((c.get("author") or {}).get("login") or "").strip().lower()
+                            for c in c_nodes
+                            if isinstance(c, dict)
+                        ]
+                        results.append(
+                            {
+                                "is_resolved": bool(t.get("isResolved")),
+                                "is_outdated": bool(t.get("isOutdated")),
+                                "authors": authors,
+                            }
+                        )
+                    return results
+        except Exception as exc:
+            self._logger.debug(
+                "GraphQL reviewThreads query failed, falling back to REST comments",
+                extra={"owner": owner, "repo": repo, "pr_number": pr_number, "error": str(exc)},
+            )
+        return []
+
     def get_pull_request_check_runs(self, owner: str, repo: str, head_sha: str) -> list[dict]:
         """Fetch check runs for a commit (used for CI status).
 

@@ -41,6 +41,13 @@ from ghdcbot.engine.pr_context import (
     fetch_pr_context,
     parse_pr_url,
 )
+from ghdcbot.engine.pr_status import (
+    fetch_all_open_pr_health,
+    fetch_pr_health,
+    format_all_pr_status,
+    format_single_pr_status,
+    PR_STATUS_MAX_PRS,
+)
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
 from ghdcbot.discord_command_permissions import (
@@ -927,6 +934,68 @@ def run_bot(config_path: str) -> None:
         
         embed = discord.Embed.from_dict(embed_dict)
         await message.channel.send(embed=embed)
+
+    @tree.command(
+        name="pr-status",
+        description="Show PR health: CI, CodeRabbit, conflicts, reviews for a repository PR",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name (e.g. Gitcord-GithubDiscordBot)",
+        pr_number="Pull request number (e.g. 7)",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def pr_status_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        pr_number: app_commands.Range[int, 1],
+    ) -> None:
+        """Show health status of a pull request."""
+        await interaction.response.defer(ephemeral=True)
+
+        repo_name = repo.strip()
+        if not repo_name:
+            await interaction.followup.send(
+                "❌ Please specify a valid repository name.",
+                ephemeral=True,
+            )
+            return
+
+        # Resolve CodeRabbit bot logins from notification config
+        notification_config = getattr(config.discord, "notifications", None)
+        coderabbit_logins = None
+        if notification_config:
+            coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None)
+
+        try:
+            health = await asyncio.to_thread(
+                fetch_pr_health,
+                github_adapter,
+                config.github.org,
+                repo_name,
+                int(pr_number),
+                coderabbit_logins,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to fetch PR health",
+                extra={"repo": repo_name, "pr_number": pr_number},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching PR status. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if health is None:
+            await interaction.followup.send(
+                f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
+                ephemeral=True,
+            )
+            return
+
+        message = format_single_pr_status(health, config.github.org)
+        await interaction.followup.send(message, ephemeral=True)
 
     @tree.command(
         name="sync",
