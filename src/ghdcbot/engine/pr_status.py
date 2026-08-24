@@ -134,7 +134,15 @@ def fetch_pr_health(
     if not coderabbit_approved:
         # First check GraphQL review threads (if supported and returns a non-empty list of dicts)
         get_threads = getattr(github_adapter, "get_pull_request_review_threads", None)
-        raw_threads = get_threads(owner, repo, pr_number) if callable(get_threads) else None
+        raw_threads = None
+        if callable(get_threads):
+            try:
+                raw_threads = get_threads(owner, repo, pr_number)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to fetch review threads for PR health",
+                    extra={"repo": repo, "pr_number": pr_number, "error": str(exc)},
+                )
         if isinstance(raw_threads, list) and raw_threads:
             for t in raw_threads:
                 if isinstance(t, dict):
