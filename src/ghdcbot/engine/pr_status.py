@@ -389,7 +389,7 @@ def format_all_pr_status(
 
         # Reviews
         if s.review_state == "approved":
-            detail_parts.append(f"Reviews ✅")
+            detail_parts.append("Reviews ✅")
         elif s.review_state == "changes_requested":
             detail_parts.append("Reviews: changes requested")
         elif s.review_state == "awaiting_review":
