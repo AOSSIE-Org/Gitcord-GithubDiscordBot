@@ -937,35 +937,81 @@ def run_bot(config_path: str) -> None:
 
     @tree.command(
         name="pr-status",
-        description="Show PR health: CI, CodeRabbit, conflicts, reviews for a repository PR",
+        description="Show PR health: CI, CodeRabbit, conflicts, reviews for PRs or full repo dashboard",
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(
-        repo="Repository name (e.g. Gitcord-GithubDiscordBot)",
-        pr_number="Pull request number (e.g. 7)",
+        repo="Repository name (optional if show_all is True)",
+        pr_number="Pull request number (optional if show_all is True)",
+        show_all="Show health dashboard for all open PRs in the organization",
+        skip="How many open PRs to skip for pagination (when show_all is True)",
     )
     @app_commands.checks.cooldown(1, 3.0)
     async def pr_status_cmd(
         interaction: discord.Interaction,
-        repo: str,
-        pr_number: app_commands.Range[int, 1],
+        repo: str | None = None,
+        pr_number: app_commands.Range[int, 1] | None = None,
+        show_all: bool = False,
+        skip: app_commands.Range[int, 0] = 0,
     ) -> None:
-        """Show health status of a pull request."""
+        """Show health status of a pull request or all open PRs."""
         await interaction.response.defer(ephemeral=True)
-
-        repo_name = repo.strip()
-        if not repo_name:
-            await interaction.followup.send(
-                "❌ Please specify a valid repository name.",
-                ephemeral=True,
-            )
-            return
 
         # Resolve CodeRabbit bot logins from notification config
         notification_config = getattr(config.discord, "notifications", None)
         coderabbit_logins = None
         if notification_config:
             coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None)
+
+        if show_all:
+            try:
+                statuses, total = await asyncio.to_thread(
+                    fetch_all_open_pr_health,
+                    github_adapter,
+                    config.github.org,
+                    coderabbit_logins,
+                    PR_STATUS_MAX_PRS,
+                    int(skip),
+                )
+            except Exception:
+                logger.exception("Failed to fetch all open PR health")
+                await interaction.followup.send(
+                    "❌ Error fetching PR dashboard. Please try again later.",
+                    ephemeral=True,
+                )
+                return
+
+            messages = format_all_pr_status(
+                statuses, config.github.org, skip=int(skip), total=total
+            )
+            for msg in messages:
+                await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
+            return
+
+        repo_name = (repo or "").strip()
+        if not repo_name or pr_number is None:
+            await interaction.followup.send(
+                "❌ Please specify both `repo` and `pr_number`, or use `show_all:True` for the dashboard.",
+                ephemeral=True,
+            )
+            return
+
+        # Validate repo_name against config.github.repos filter if configured
+        repo_filter = getattr(config.github, "repos", None)
+        if repo_filter:
+            filter_names = {name.strip() for name in repo_filter.names}
+            is_excluded = False
+            if repo_filter.mode == "allow" and repo_name not in filter_names:
+                is_excluded = True
+            elif repo_filter.mode == "deny" and repo_name in filter_names:
+                is_excluded = True
+
+            if is_excluded:
+                await interaction.followup.send(
+                    f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
+                    ephemeral=True,
+                )
+                return
 
         try:
             health = await asyncio.to_thread(

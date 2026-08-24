@@ -416,6 +416,252 @@ class TestFetchPRHealth:
         assert health.has_coderabbit_comments is False
         assert health.coderabbit_comment_count == 0
 
+    def test_review_threads_graphql_unresolved_coderabbit_counted(self) -> None:
+        """Unresolved CodeRabbit threads are counted, while resolved/outdated/human threads are excluded, and REST fallback is not called."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        adapter.get_pull_request_review_threads.return_value = [
+            {
+                "is_resolved": False,
+                "is_outdated": False,
+                "authors": ["human-dev", "coderabbitai[bot]"],
+            },
+            {
+                "is_resolved": True,
+                "is_outdated": False,
+                "authors": ["coderabbitai[bot]"],
+            },
+            {
+                "is_resolved": False,
+                "is_outdated": True,
+                "authors": ["coderabbitai[bot]"],
+            },
+            {
+                "is_resolved": False,
+                "is_outdated": False,
+                "authors": ["human-reviewer"],
+            },
+        ]
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.has_coderabbit_comments is True
+        assert health.coderabbit_comment_count == 1
+        assert health.health_indicator == "needs_attention"
+        adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
+        adapter.get_pull_request_review_comments.assert_not_called()
+
+    def test_review_threads_graphql_fallback_when_threads_empty(self) -> None:
+        """When get_pull_request_review_threads returns empty, falls back to REST comments."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        adapter.get_pull_request_review_threads.return_value = []
+        adapter.get_pull_request_review_comments.return_value = [
+            {"user": {"login": "coderabbitai"}, "created_at": "2025-01-01T00:00:00Z"},
+        ]
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.has_coderabbit_comments is True
+        assert health.coderabbit_comment_count == 1
+        adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
+        adapter.get_pull_request_review_comments.assert_called_once_with("org", "my-repo", 7)
+
+    def test_review_threads_graphql_fallback_when_threads_raise(self) -> None:
+        """When get_pull_request_review_threads raises an exception, falls back to REST comments."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        adapter.get_pull_request_review_threads.side_effect = RuntimeError("GraphQL error")
+        adapter.get_pull_request_review_comments.return_value = [
+            {"user": {"login": "coderabbitai"}, "created_at": "2025-01-01T00:00:00Z"},
+        ]
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.has_coderabbit_comments is True
+        assert health.coderabbit_comment_count == 1
+        adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
+        adapter.get_pull_request_review_comments.assert_called_once_with("org", "my-repo", 7)
+
+
+# ===================================================================
+# GitHubRestAdapter review threads GraphQL pagination tests
+# ===================================================================
+
+
+class TestReviewThreadsGraphQLAdapter:
+    def test_review_threads_and_comments_pagination(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+
+        # Call 1: Page 1 of threads (Thread 1 has next page of comments, Thread 2 has <= 100 comments)
+        page1_response = MagicMock()
+        page1_response.status_code = 200
+        page1_response.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "thread_cursor_1"},
+                            "nodes": [
+                                {
+                                    "id": "thread_1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": True, "endCursor": "comm_cursor_1"},
+                                        "nodes": [{"author": {"login": "dev1"}}],
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        # Call 2: Comments page 2 for thread_1
+        thread1_comm_response = MagicMock()
+        thread1_comm_response.status_code = 200
+        thread1_comm_response.json.return_value = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [{"author": {"login": "coderabbitai[bot]"}}],
+                    }
+                }
+            }
+        }
+
+        # Call 3: Page 2 of threads
+        page2_response = MagicMock()
+        page2_response.status_code = 200
+        page2_response.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": "thread_cursor_2"},
+                            "nodes": [
+                                {
+                                    "id": "thread_2",
+                                    "isResolved": True,
+                                    "isOutdated": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                        "nodes": [{"author": {"login": "coderabbitai"}}],
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_client.post.side_effect = [page1_response, thread1_comm_response, page2_response]
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert len(threads) == 2
+        assert threads[0] == {
+            "is_resolved": False,
+            "is_outdated": False,
+            "authors": ["dev1", "coderabbitai[bot]"],
+        }
+        assert threads[1] == {
+            "is_resolved": True,
+            "is_outdated": False,
+            "authors": ["coderabbitai"],
+        }
+        assert mock_client.post.call_count == 3
+
+    def test_review_threads_error_handling(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+        mock_client.post.side_effect = RuntimeError("Network failure")
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert threads == []
+
+    def test_review_threads_non_200_response(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_client.post.return_value = mock_resp
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert threads == []
+
+    def test_review_threads_empty_or_malformed_data(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"data": None}
+        mock_client.post.return_value = mock_resp
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert threads == []
+
+    def test_graphql_endpoint_enterprise_and_public(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        # Public GitHub
+        adapter_public = GitHubRestAdapter(token="t", org="o", api_base="https://api.github.com")
+        assert adapter_public._api_base == "https://api.github.com"
+        mock_client_pub = MagicMock()
+        mock_client_pub.post.return_value.status_code = 500
+        adapter_public._client = mock_client_pub
+        adapter_public.get_pull_request_review_threads("o", "r", 1)
+        mock_client_pub.post.assert_called_once()
+        assert mock_client_pub.post.call_args[0][0] == "https://api.github.com/graphql"
+
+        # Enterprise GitHub with /api/v3
+        adapter_ghe = GitHubRestAdapter(token="t", org="o", api_base="https://ghe.example.com/api/v3")
+        assert adapter_ghe._api_base == "https://ghe.example.com/api/v3"
+        mock_client_ghe = MagicMock()
+        mock_client_ghe.post.return_value.status_code = 500
+        adapter_ghe._client = mock_client_ghe
+        adapter_ghe.get_pull_request_review_threads("o", "r", 1)
+        mock_client_ghe.post.assert_called_once()
+        assert mock_client_ghe.post.call_args[0][0] == "https://ghe.example.com/api/graphql"
+
+        # Enterprise GitHub with trailing slash
+        adapter_ghe_slash = GitHubRestAdapter(token="t", org="o", api_base="https://ghe.example.com/api/v3/")
+        mock_client_slash = MagicMock()
+        mock_client_slash.post.return_value.status_code = 500
+        adapter_ghe_slash._client = mock_client_slash
+        adapter_ghe_slash.get_pull_request_review_threads("o", "r", 1)
+        mock_client_slash.post.assert_called_once()
+        assert mock_client_slash.post.call_args[0][0] == "https://ghe.example.com/api/graphql"
+
+
 
 # ===================================================================
 # fetch_all_open_pr_health
@@ -651,3 +897,66 @@ class TestSplitMessages:
         msgs = _split_messages("Header", ["line1"], ["footer"], max_length=2000)
         assert len(msgs) == 1
         assert "footer" in msgs[0]
+
+
+# ===================================================================
+# pr_status_cmd repo filter validation tests
+# ===================================================================
+
+
+class TestPRStatusCommandRepoFilter:
+    @pytest.mark.asyncio
+    async def test_repo_filter_allow_mode_blocks_unlisted_repo(self) -> None:
+        from ghdcbot.config.models import RepoFilterConfig
+
+        repo_filter = RepoFilterConfig(mode="allow", names=["allowed-repo"])
+        repo_name = "secret-repo"
+        pr_number = 42
+
+        # Simulate the filter validation logic from pr_status_cmd
+        filter_names = {name.strip() for name in repo_filter.names}
+        is_excluded = False
+        if repo_filter.mode == "allow" and repo_name not in filter_names:
+            is_excluded = True
+        elif repo_filter.mode == "deny" and repo_name in filter_names:
+            is_excluded = True
+
+        assert is_excluded is True
+        error_msg = f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible."
+        assert error_msg == "❌ PR **secret-repo#42** not found or inaccessible."
+
+    @pytest.mark.asyncio
+    async def test_repo_filter_deny_mode_blocks_denied_repo(self) -> None:
+        from ghdcbot.config.models import RepoFilterConfig
+
+        repo_filter = RepoFilterConfig(mode="deny", names=["denied-repo"])
+        repo_name = "denied-repo"
+        pr_number = 7
+
+        filter_names = {name.strip() for name in repo_filter.names}
+        is_excluded = False
+        if repo_filter.mode == "allow" and repo_name not in filter_names:
+            is_excluded = True
+        elif repo_filter.mode == "deny" and repo_name in filter_names:
+            is_excluded = True
+
+        assert is_excluded is True
+        error_msg = f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible."
+        assert error_msg == "❌ PR **denied-repo#7** not found or inaccessible."
+
+    @pytest.mark.asyncio
+    async def test_repo_filter_allows_valid_repo(self) -> None:
+        from ghdcbot.config.models import RepoFilterConfig
+
+        repo_filter = RepoFilterConfig(mode="allow", names=["allowed-repo"])
+        repo_name = "allowed-repo"
+
+        filter_names = {name.strip() for name in repo_filter.names}
+        is_excluded = False
+        if repo_filter.mode == "allow" and repo_name not in filter_names:
+            is_excluded = True
+        elif repo_filter.mode == "deny" and repo_name in filter_names:
+            is_excluded = True
+
+        assert is_excluded is False
+

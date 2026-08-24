@@ -106,6 +106,7 @@ class GitHubRestAdapter:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
         self._token = token
+        self._api_base = api_base
         self._last_repo_count: int | None = None
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
@@ -639,16 +640,24 @@ class GitHubRestAdapter:
         Returns list of thread dicts: [{'is_resolved': bool, 'is_outdated': bool, 'authors': list[str]}]
         Returns empty list on error or if GraphQL is unsupported.
         """
-        query = """
-        query($owner: String!, $name: String!, $number: Int!) {
+        threads_query = """
+        query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
-              reviewThreads(first: 100) {
+              reviewThreads(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
                 nodes {
                   id
                   isResolved
                   isOutdated
-                  comments(first: 1) {
+                  comments(first: 100) {
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
                     nodes {
                       author {
                         login
@@ -661,38 +670,124 @@ class GitHubRestAdapter:
           }
         }
         """
+        comments_query = """
+        query($threadId: ID!, $cursor: String) {
+          node(id: $threadId) {
+            ... on PullRequestReviewThread {
+              comments(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  author {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
         try:
-            graphql_url = "https://api.github.com/graphql"
-            if hasattr(self, "_api_base") and str(self._api_base).rstrip("/") != "https://api.github.com":
-                graphql_url = f"{str(self._api_base).rstrip('/')}/graphql"
+            base = (getattr(self, "_api_base", None) or "https://api.github.com").rstrip("/")
+            if base == "https://api.github.com":
+                graphql_url = "https://api.github.com/graphql"
+            elif base.endswith("/api/v3"):
+                graphql_url = f"{base[:-7]}/api/graphql"
+            else:
+                graphql_url = f"{base}/graphql"
 
-            response = self._client.post(
-                graphql_url,
-                json={"query": query, "variables": {"owner": owner, "name": repo, "number": pr_number}},
-                timeout=15.0,
-            )
-            if response.status_code == 200:
+            results: list[dict] = []
+            threads_cursor = None
+            has_next_threads = True
+
+            while has_next_threads:
+                response = self._client.post(
+                    graphql_url,
+                    json={
+                        "query": threads_query,
+                        "variables": {
+                            "owner": owner,
+                            "name": repo,
+                            "number": pr_number,
+                            "cursor": threads_cursor,
+                        },
+                    },
+                    timeout=15.0,
+                )
+                if response.status_code != 200:
+                    break
+
                 data = response.json()
-                if isinstance(data, dict) and "data" in data and data["data"]:
-                    repo_data = data["data"].get("repository") or {}
-                    pr_data = repo_data.get("pullRequest") or {}
-                    raw_threads = (pr_data.get("reviewThreads") or {}).get("nodes") or []
-                    results = []
-                    for t in raw_threads:
-                        c_nodes = (t.get("comments") or {}).get("nodes") or []
-                        authors = [
-                            ((c.get("author") or {}).get("login") or "").strip().lower()
-                            for c in c_nodes
-                            if isinstance(c, dict)
-                        ]
-                        results.append(
-                            {
-                                "is_resolved": bool(t.get("isResolved")),
-                                "is_outdated": bool(t.get("isOutdated")),
-                                "authors": authors,
-                            }
+                if not isinstance(data, dict) or "data" not in data or not data["data"]:
+                    break
+
+                repo_data = data["data"].get("repository") or {}
+                pr_data = repo_data.get("pullRequest") or {}
+                review_threads_data = pr_data.get("reviewThreads") or {}
+                raw_threads = review_threads_data.get("nodes") or []
+
+                for t in raw_threads:
+                    if not isinstance(t, dict):
+                        continue
+                    comments_data = t.get("comments") or {}
+                    c_nodes = comments_data.get("nodes") or []
+                    authors = [
+                        ((c.get("author") or {}).get("login") or "").strip().lower()
+                        for c in c_nodes
+                        if isinstance(c, dict)
+                    ]
+
+                    thread_id = t.get("id")
+                    comments_page_info = comments_data.get("pageInfo") or {}
+                    has_next_comments = bool(comments_page_info.get("hasNextPage"))
+                    comments_cursor = comments_page_info.get("endCursor")
+
+                    while has_next_comments and thread_id and comments_cursor:
+                        comm_resp = self._client.post(
+                            graphql_url,
+                            json={
+                                "query": comments_query,
+                                "variables": {
+                                    "threadId": thread_id,
+                                    "cursor": comments_cursor,
+                                },
+                            },
+                            timeout=15.0,
                         )
-                    return results
+                        if comm_resp.status_code != 200:
+                            break
+                        comm_data = comm_resp.json()
+                        if not isinstance(comm_data, dict) or "data" not in comm_data or not comm_data["data"]:
+                            break
+                        node_data = comm_data["data"].get("node") or {}
+                        more_comments_data = node_data.get("comments") or {}
+                        more_nodes = more_comments_data.get("nodes") or []
+                        for c in more_nodes:
+                            if isinstance(c, dict):
+                                authors.append(
+                                    ((c.get("author") or {}).get("login") or "").strip().lower()
+                                )
+                        more_page_info = more_comments_data.get("pageInfo") or {}
+                        has_next_comments = bool(more_page_info.get("hasNextPage"))
+                        comments_cursor = more_page_info.get("endCursor")
+
+                    results.append(
+                        {
+                            "is_resolved": bool(t.get("isResolved")),
+                            "is_outdated": bool(t.get("isOutdated")),
+                            "authors": authors,
+                        }
+                    )
+
+                page_info = review_threads_data.get("pageInfo") or {}
+                has_next_threads = bool(page_info.get("hasNextPage"))
+                threads_cursor = page_info.get("endCursor")
+                if not threads_cursor:
+                    break
+
+            return results
         except Exception as exc:
             self._logger.debug(
                 "GraphQL reviewThreads query failed, falling back to REST comments",
