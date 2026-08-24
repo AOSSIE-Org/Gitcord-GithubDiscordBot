@@ -534,7 +534,8 @@ class TestFormatSinglePRStatus:
     def test_draft_format(self) -> None:
         h = _make_health(is_draft=True)
         result = format_single_pr_status(h, "org")
-        assert "Draft" in result
+        assert "**Draft:** Yes" in result
+        assert "⬜ Draft" in result
 
     def test_coderabbit_singular(self) -> None:
         """Single CodeRabbit comment uses singular form."""
