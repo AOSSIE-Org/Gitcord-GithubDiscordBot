@@ -113,7 +113,7 @@ def fetch_pr_health(
         review_state = "awaiting_review"
 
     # CI status from check runs
-    head_sha = pr.get("head", {}).get("sha")
+    head_sha = (pr.get("head") or {}).get("sha")
     ci_status = "unknown"
     if head_sha:
         check_runs = github_adapter.get_pull_request_check_runs(
