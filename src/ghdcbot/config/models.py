@@ -90,6 +90,8 @@ class NotificationConfig(BaseModel):
     issue_reopened: bool = True  # Issue reopened (notifies assignee)
     pr_reopened: bool = True  # PR reopened (notifies author)
     pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
+    # When true, updates the original PR channel announcement message in-place with new lifecycle events (timeline)
+    update_pr_channel_messages: bool = True
     # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.
     pr_opened_github_comment: bool = False
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments

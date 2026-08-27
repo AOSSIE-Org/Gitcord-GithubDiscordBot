@@ -173,6 +173,7 @@ def send_pr_opened_channel_notification(
 
     Posts for every mapped-repo PR open when notifications.pr_opened is enabled.
     Verified authors are @mentioned; unverified authors show a verification notice.
+    When update_pr_channel_messages is enabled, tracks the message ID for in-place updates.
     """
     if not config.enabled or not config.pr_opened:
         return False
@@ -187,21 +188,45 @@ def send_pr_opened_channel_notification(
     if not author_github:
         return False
 
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return False
+
     discord_user_id = _resolve_github_to_discord(storage, author_github)
 
-    dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
+    dedupe_key = f"pr_opened_channel:{event.repo}:{pr_number}:{channel_id}"
 
-    message = _build_pr_opened_channel_message(
-        event, github_org, author_github, discord_user_id
-    )
+    use_timeline = getattr(config, "update_pr_channel_messages", True)
+    initial_events = [
+        {
+            "action": "opened",
+            "actor": author_github,
+            "timestamp": event.created_at.isoformat(),
+        }
+    ]
+    pr_title = event.payload.get("title") or "Untitled"
+
+    if use_timeline:
+        message = _build_pr_channel_timeline_card(
+            storage=storage,
+            repo=event.repo,
+            pr_number=int(pr_number),
+            pr_title=pr_title,
+            author_github=author_github,
+            status="open",
+            events=initial_events,
+            github_org=github_org,
+            discord_user_id=discord_user_id,
+        )
+    else:
+        message = _build_pr_opened_channel_message(
+            event, github_org, author_github, discord_user_id
+        )
+
     if not message:
         return False
 
     if not policy.allow_discord_mutations:
-        return False
-
-    send_msg = getattr(discord_writer, "send_message", None)
-    if not callable(send_msg):
         return False
 
     notify_discord_id = discord_user_id or ""
@@ -219,8 +244,18 @@ def send_pr_opened_channel_notification(
     if not claimed:
         return False
 
+    post_msg = getattr(discord_writer, "post_channel_message", None)
+    send_msg = getattr(discord_writer, "send_message", None)
+
+    msg_id: str | None = None
+    sent = False
+
     try:
-        sent = bool(send_msg(channel_id, message))
+        if callable(post_msg):
+            msg_id = post_msg(channel_id, message)
+            sent = bool(msg_id)
+        elif callable(send_msg):
+            sent = bool(send_msg(channel_id, message))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
@@ -231,10 +266,189 @@ def send_pr_opened_channel_notification(
         return False
 
     if sent:
+        if msg_id:
+            save_pr_msg = getattr(storage, "save_pr_channel_message", None)
+            if callable(save_pr_msg):
+                save_pr_msg(
+                    repo=event.repo,
+                    pr_number=int(pr_number),
+                    channel_id=channel_id,
+                    message_id=msg_id,
+                    status="open",
+                    events=initial_events,
+                    pr_title=pr_title,
+                    author_github=author_github,
+                )
         _audit_notification(storage, event, notify_discord_id, channel_id, author_github)
         return True
+
     _release_notification_claim(storage, dedupe_key)
     return False
+
+
+def update_pr_channel_notification_for_event(
+    event: ContributionEvent,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    pr_open_channels: dict[str, str],
+    github_org: str,
+) -> bool:
+    """Update tracked PR channel message in-place with new lifecycle timeline events.
+
+    Edits the Discord announcement message for the PR (e.g. status change, review, merge, closure)
+    instead of posting new channel messages.
+    """
+    if not config.enabled:
+        return False
+    if not getattr(config, "update_pr_channel_messages", True):
+        return False
+    if not policy.allow_discord_mutations:
+        return False
+
+    channel_id = pr_open_channels.get(event.repo)
+    if not channel_id:
+        return False
+
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return False
+
+    get_pr_msg = getattr(storage, "get_pr_channel_message", None)
+    if not callable(get_pr_msg):
+        return False
+
+    record = get_pr_msg(event.repo, int(pr_number), channel_id)
+    if not record or not record.get("message_id"):
+        return False
+
+    message_id = record["message_id"]
+    current_status = record.get("status") or "open"
+    events = list(record.get("events") or [])
+    pr_title = event.payload.get("title") or record.get("pr_title") or "Untitled"
+    author_github = record.get("author_github") or event.payload.get("pr_author") or ""
+
+    # Determine timeline action & new status
+    new_action: str | None = None
+    actor = event.github_user or ""
+    detail = None
+    new_status = current_status
+
+    if event.event_type == "pr_reviewed":
+        state = event.payload.get("state", "").upper()
+        review_id = event.payload.get("review_id")
+        if review_id and any(str(e.get("review_id") or "") == str(review_id) for e in events):
+            return False
+        if state == "APPROVED":
+            new_action = "approved"
+            detail = f"review:{review_id}" if review_id else None
+        elif state == "CHANGES_REQUESTED":
+            new_action = "changes_requested"
+            new_status = "changes_requested"
+            detail = f"review:{review_id}" if review_id else None
+        elif state in ("COMMENT", "COMMENTED"):
+            new_action = "commented"
+            detail = f"review:{review_id}" if review_id else None
+        else:
+            return False
+
+    elif event.event_type == "pr_review_requested":
+        requested_reviewer = event.payload.get("requested_reviewer") or event.github_user
+        new_action = "review_requested"
+        detail = requested_reviewer
+        if any(
+            e.get("action") == "review_requested" and e.get("detail") == requested_reviewer
+            for e in events
+        ):
+            return False
+
+    elif event.event_type == "pr_merged":
+        new_action = "merged"
+        new_status = "merged"
+        if any(e.get("action") == "merged" for e in events):
+            return False
+
+    elif event.event_type == "pr_closed":
+        new_action = "closed"
+        new_status = "closed"
+        if any(e.get("action") == "closed" for e in events):
+            return False
+
+    elif event.event_type == "pr_reopened":
+        new_action = "reopened"
+        new_status = "open"
+        if any(e.get("action") == "reopened" for e in events):
+            # Check if this reopen timestamp was already recorded
+            reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
+            if any(e.get("action") == "reopened" and e.get("timestamp") == reopened_at for e in events):
+                return False
+    else:
+        return False
+
+    event_entry = {
+        "action": new_action,
+        "actor": actor,
+        "detail": detail,
+        "timestamp": event.created_at.isoformat(),
+    }
+    if event.payload.get("review_id"):
+        event_entry["review_id"] = event.payload.get("review_id")
+    events.append(event_entry)
+
+    updated_message = _build_pr_channel_timeline_card(
+        storage=storage,
+        repo=event.repo,
+        pr_number=int(pr_number),
+        pr_title=pr_title,
+        author_github=author_github,
+        status=new_status,
+        events=events,
+        github_org=github_org,
+    )
+
+    edit_msg = getattr(discord_writer, "edit_message", None)
+    if not callable(edit_msg):
+        return False
+
+    try:
+        ok = bool(edit_msg(channel_id, message_id, content=updated_message))
+    except Exception as exc:
+        logger.warning(
+            "Failed to edit PR channel message",
+            exc_info=True,
+            extra={"channel_id": channel_id, "message_id": message_id, "error": str(exc)},
+        )
+        return False
+
+    if ok:
+        update_storage = getattr(storage, "update_pr_channel_message", None)
+        if callable(update_storage):
+            update_storage(
+                repo=event.repo,
+                pr_number=int(pr_number),
+                channel_id=channel_id,
+                status=new_status,
+                events=events,
+                pr_title=pr_title,
+            )
+        append_audit = getattr(storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit({
+                "event_type": "pr_channel_message_updated",
+                "context": {
+                    "repo": event.repo,
+                    "pr_number": pr_number,
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "action": new_action,
+                    "status": new_status,
+                },
+            })
+        return True
+
+    return False
+
 
 
 def send_pr_opened_github_link_comment(
@@ -365,23 +579,139 @@ def _sanitize_discord_pr_title(title: str) -> str:
     return text
 
 
+def _format_actor_mention(storage: Storage | None, github_user: str) -> str:
+    """Format an actor username with Discord mention if verified."""
+    if not github_user:
+        return "unknown"
+    if _is_github_bot_login(github_user) or github_user.lower().startswith("coderabbit"):
+        if github_user.lower().startswith("coderabbit"):
+            return "CodeRabbit"
+        return f"`{github_user}`"
+    if storage is not None:
+        discord_id = _resolve_github_to_discord(storage, github_user)
+        if discord_id:
+            return f"**@{github_user}** (<@{discord_id}>)"
+    return f"**@{github_user}**"
+
+
+def _build_pr_channel_timeline_card(
+    storage: Storage | None,
+    repo: str,
+    pr_number: int,
+    pr_title: str,
+    author_github: str,
+    status: str,
+    events: list[dict],
+    github_org: str,
+    discord_user_id: str | None = None,
+) -> str:
+    sanitized_title = _sanitize_discord_pr_title(pr_title or "Untitled")
+    url = _suppress_discord_embed(f"https://github.com/{github_org}/{repo}/pull/{pr_number}")
+
+    status_lower = (status or "open").lower()
+    if status_lower == "merged":
+        status_icon = "🟣"
+        status_text = "Merged"
+        header = f"🟣 **PR Merged: [{repo} #{pr_number} — {sanitized_title}]({url})**"
+    elif status_lower == "closed":
+        status_icon = "🔴"
+        status_text = "Closed"
+        header = f"🚫 **PR Closed: [{repo} #{pr_number} — {sanitized_title}]({url})**"
+    elif status_lower == "changes_requested":
+        status_icon = "🟡"
+        status_text = "Changes Requested"
+        header = f"🆕 **PR: [{repo} #{pr_number} — {sanitized_title}]({url})**"
+    else:
+        status_icon = "🟢"
+        status_text = "Open"
+        header = f"🆕 **New PR: [{repo} #{pr_number} — {sanitized_title}]({url})**"
+
+    if discord_user_id is None and storage is not None and author_github:
+        discord_user_id = _resolve_github_to_discord(storage, author_github)
+
+    if discord_user_id:
+        author_line = f"**Author:** {author_github} - <@{discord_user_id}>"
+    else:
+        author_line = f"**Author:** {author_github} - unknown"
+
+    status_line = f"**Status:** {status_icon} {status_text} | {author_line}"
+
+    timeline_lines = []
+    for item in events:
+        action = item.get("action", "")
+        actor = item.get("actor", "")
+        detail = item.get("detail", "")
+        actor_mention = _format_actor_mention(storage, actor) if actor else "Someone"
+
+        if action == "opened":
+            timeline_lines.append(f"• 🆕 Opened by {actor_mention}")
+        elif action == "approved":
+            timeline_lines.append(f"• ✅ Approved by {actor_mention}")
+        elif action == "changes_requested":
+            timeline_lines.append(f"• 🔁 Changes requested by {actor_mention}")
+        elif action == "commented":
+            timeline_lines.append(f"• 💬 Reviewed by {actor_mention}")
+        elif action == "review_requested":
+            target = _format_actor_mention(storage, detail or actor)
+            timeline_lines.append(f"• 👀 Review requested from {target}")
+        elif action == "merged":
+            timeline_lines.append(f"• 🟣 Merged by {actor_mention}")
+        elif action == "closed":
+            timeline_lines.append(f"• 🚫 Closed by {actor_mention}")
+        elif action == "reopened":
+            timeline_lines.append(f"• 🔄 Reopened by {actor_mention}")
+        else:
+            timeline_lines.append(f"• {action.capitalize()} by {actor_mention}")
+
+    if not timeline_lines:
+        author_mention = _format_actor_mention(storage, author_github) if author_github else "unknown"
+        timeline_lines.append(f"• 🆕 Opened by {author_mention}")
+
+    timeline_block = "**Timeline:**\n" + "\n".join(timeline_lines)
+
+    parts = [header, status_line, timeline_block]
+    if not discord_user_id and author_github and status_lower not in ("closed", "merged"):
+        link_nudge = (
+            f"If you are `{author_github}`, please use `/link {author_github}` "
+            "to link your github account to your Discord account."
+        )
+        parts.append(link_nudge)
+
+    return "\n\n".join(parts)
+
+
 def _build_pr_opened_channel_message(
     event: ContributionEvent,
     github_org: str,
     author_github: str,
     discord_user_id: str | None,
+    events: list[dict] | None = None,
+    status: str = "open",
+    storage: Storage | None = None,
 ) -> str | None:
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
-    pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
+    pr_title = event.payload.get("title") or "Untitled"
+    if events is not None:
+        return _build_pr_channel_timeline_card(
+            storage=storage,
+            repo=event.repo,
+            pr_number=int(pr_number),
+            pr_title=pr_title,
+            author_github=author_github,
+            status=status,
+            events=events,
+            github_org=github_org,
+            discord_user_id=discord_user_id,
+        )
+
+    sanitized_title = _sanitize_discord_pr_title(pr_title)
     repo = event.repo
     url = _suppress_discord_embed(
         f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     )
-    # Compact header: linked title so we don't need a separate Link line (Bruno).
-    # Author line: "GITHUB - @Discord" when verified, "GITHUB - unknown" otherwise.
-    header = f"🆕 **New PR: [{repo} #{pr_number} — {pr_title}]({url})**"
+    header = f"🆕 **New PR: [{repo} #{pr_number} — {sanitized_title}]({url})**"
     if discord_user_id:
         author_line = f"**Author:** {author_github} - <@{discord_user_id}>"
         return f"{header}\n\n{author_line}"

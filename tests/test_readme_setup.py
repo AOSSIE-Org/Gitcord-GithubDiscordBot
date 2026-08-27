@@ -62,13 +62,13 @@ def test_readme_setup_run_once_completes_and_writes_reports(
     monkeypatch.setenv("DISCORD_TOKEN", "test-token-discord")
 
     # Use isolated data_dir (README uses /tmp/ghdcbot-state; we use tmp_path)
-    config_content = EXAMPLE_CONFIG_PATH.read_text()
+    config_content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
     config_content = config_content.replace(
         'data_dir: "/tmp/ghdcbot-state"',
-        f'data_dir: "{tmp_path}"',
+        f'data_dir: "{tmp_path.as_posix()}"',
     )
     config_path = tmp_path / "ghdcbot-config.yaml"
-    config_path.write_text(config_content)
+    config_path.write_text(config_content, encoding="utf-8")
 
     load_config(str(config_path))
     orchestrator = build_orchestrator(str(config_path))

@@ -138,6 +138,21 @@ class SqliteStorage:
                     ON social_profiles (discord_user_id);
                 CREATE INDEX IF NOT EXISTS idx_social_profiles_platform 
                     ON social_profiles (platform);
+                CREATE TABLE IF NOT EXISTS pr_channel_messages (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    pr_title TEXT NOT NULL DEFAULT '',
+                    author_github TEXT NOT NULL DEFAULT '',
+                    events_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (repo, pr_number, channel_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pr_channel_messages_lookup 
+                    ON pr_channel_messages (repo, pr_number);
                 """
             )
 
@@ -949,6 +964,162 @@ class SqliteStorage:
             ).fetchone()
         
         return dict(row) if row else None
+
+    def save_pr_channel_message(
+        self,
+        repo: str,
+        pr_number: int,
+        channel_id: str,
+        message_id: str,
+        status: str = "open",
+        events: list[dict] | None = None,
+        pr_title: str = "",
+        author_github: str = "",
+    ) -> None:
+        """Save a new tracked PR channel message announcement."""
+        now = datetime.now(timezone.utc).isoformat()
+        events_json = json.dumps(events or [], separators=(",", ":"))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pr_channel_messages (
+                    repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo, pr_number, channel_id) DO UPDATE SET
+                    message_id = excluded.message_id,
+                    status = excluded.status,
+                    pr_title = CASE WHEN excluded.pr_title != '' THEN excluded.pr_title ELSE pr_channel_messages.pr_title END,
+                    author_github = CASE WHEN excluded.author_github != '' THEN excluded.author_github ELSE pr_channel_messages.author_github END,
+                    events_json = excluded.events_json,
+                    updated_at = excluded.updated_at
+                """,
+                (repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, now, now),
+            )
+
+    def get_pr_channel_message(
+        self,
+        repo: str,
+        pr_number: int,
+        channel_id: str | None = None,
+    ) -> dict | None:
+        """Retrieve tracked PR channel message record."""
+        with self._connect() as conn:
+            if channel_id:
+                row = conn.execute(
+                    """
+                    SELECT repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, created_at, updated_at
+                    FROM pr_channel_messages
+                    WHERE repo = ? AND pr_number = ? AND channel_id = ?
+                    """,
+                    (repo, pr_number, channel_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, created_at, updated_at
+                    FROM pr_channel_messages
+                    WHERE repo = ? AND pr_number = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (repo, pr_number),
+                ).fetchone()
+
+        if not row:
+            return None
+        data = dict(row)
+        try:
+            data["events"] = json.loads(data.get("events_json") or "[]")
+        except Exception:
+            data["events"] = []
+        return data
+
+    def update_pr_channel_message(
+        self,
+        repo: str,
+        pr_number: int,
+        channel_id: str,
+        status: str | None = None,
+        events: list[dict] | None = None,
+        pr_title: str | None = None,
+    ) -> bool:
+        """Update status, events timeline, or title for a PR channel message."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, events_json, pr_title
+                FROM pr_channel_messages
+                WHERE repo = ? AND pr_number = ? AND channel_id = ?
+                """,
+                (repo, pr_number, channel_id),
+            ).fetchone()
+            if not row:
+                return False
+
+            new_status = status if status is not None else row["status"]
+            new_title = pr_title if pr_title is not None else row["pr_title"]
+            new_events_json = (
+                json.dumps(events, separators=(",", ":"))
+                if events is not None
+                else row["events_json"]
+            )
+
+            conn.execute(
+                """
+                UPDATE pr_channel_messages
+                SET status = ?, pr_title = ?, events_json = ?, updated_at = ?
+                WHERE repo = ? AND pr_number = ? AND channel_id = ?
+                """,
+                (new_status, new_title, new_events_json, now, repo, pr_number, channel_id),
+            )
+            return True
+
+    def delete_pr_channel_message(self, repo: str, pr_number: int, channel_id: str) -> bool:
+        """Delete a tracked PR channel message record."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM pr_channel_messages
+                WHERE repo = ? AND pr_number = ? AND channel_id = ?
+                """,
+                (repo, pr_number, channel_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_pr_channel_messages(
+        self,
+        repo: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        """List tracked PR channel messages with optional filtering."""
+        query = """
+            SELECT repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, created_at, updated_at
+            FROM pr_channel_messages
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if repo:
+            query += " AND repo = ?"
+            params.append(repo)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["events"] = json.loads(d.get("events_json") or "[]")
+            except Exception:
+                d["events"] = []
+            results.append(d)
+        return results
 
 
 def _ensure_utc(value: datetime) -> datetime:

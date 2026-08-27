@@ -12,12 +12,11 @@ from ghdcbot.adapters.storage.sqlite import SqliteStorage
 
 
 @pytest.fixture
-def storage():
+def storage(tmp_path):
     """Create a temporary SQLite database for testing"""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        storage = SqliteStorage(tmp_dir)
-        storage.init_schema()
-        yield storage
+    store = SqliteStorage(str(tmp_path))
+    store.init_schema()
+    return store
 
 
 class TestSetSocialProfile:

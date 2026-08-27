@@ -23,6 +23,7 @@ from ghdcbot.engine.notifications import (
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
+    update_pr_channel_notification_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
@@ -324,7 +325,14 @@ def _send_notifications_for_new_events(
             ):
                 sent_count += 1
             continue
-        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened"}:
+        
+        # In-place live channel card update for PR lifecycle events
+        if event.event_type in {"pr_reviewed", "pr_review_requested", "pr_merged", "pr_closed", "pr_reopened"}:
+            update_pr_channel_notification_for_event(
+                event, storage, discord_writer, policy, config, channels, github_org
+            )
+
+        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened", "pr_review_requested"}:
             if event.event_type == "pr_reviewed":
                 pr_reviewed_count += 1
                 logger.info(

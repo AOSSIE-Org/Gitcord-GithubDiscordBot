@@ -14,13 +14,11 @@ from ghdcbot.engine.social_profiles import SocialProfileService
 
 
 @pytest_asyncio.fixture
-async def service():
+async def service(tmp_path):
     """Create a service with temporary storage for testing"""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        storage = SqliteStorage(tmp_dir)
-        storage.init_schema()
-        service = SocialProfileService(storage)
-        yield service
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    return SocialProfileService(storage)
 
 
 class TestSetProfile:

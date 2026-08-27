@@ -192,27 +192,124 @@ class DiscordApiAdapter:
                 },
             )
 
-    def send_message(self, channel_id: str, content: str) -> bool:
-        """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
-        if not content:
-            return True
-        text = content[:2000]
+    def post_channel_message(
+        self,
+        channel_id: str,
+        content: str | None = None,
+        embed: dict | None = None,
+    ) -> str | None:
+        """Post a message (with optional embed) to a channel. Returns message ID on success, None on failure."""
+        payload: dict[str, Any] = {}
+        if content:
+            payload["content"] = content[:2000]
+            payload["flags"] = 4  # SUPPRESS_EMBEDS (no auto link previews)
+        if embed:
+            payload["embeds"] = [embed]
+            # When explicit embeds are provided, do not suppress embeds
+            payload.pop("flags", None)
+
+        if not payload:
+            return None
+
         try:
             response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": text, "flags": 4},  # 4 = SUPPRESS_EMBEDS (no link previews)
+                json=payload,
             )
         except httpx.HTTPError as exc:
             self._logger.warning(
-                "Discord send_message failed",
+                "Discord post_channel_message failed",
                 extra={"channel_id": channel_id, "error": str(exc)},
             )
-            return False
+            return None
+
         if response.status_code not in (200, 201):
             self._logger.warning(
-                "Discord send_message failed",
+                "Discord post_channel_message failed",
                 extra={"channel_id": channel_id, "status_code": response.status_code},
+            )
+            return None
+
+        try:
+            data = response.json()
+            return str(data.get("id") or "")
+        except Exception:
+            return None
+
+    def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        embed: dict | None = None,
+    ) -> bool:
+        """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
+        if not content and not embed:
+            return True
+        msg_id = self.post_channel_message(channel_id, content=content, embed=embed)
+        return bool(msg_id)
+
+    def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        content: str | None = None,
+        embed: dict | None = None,
+    ) -> bool:
+        """Edit an existing message in a channel. Returns True on success, False on failure."""
+        payload: dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content[:2000]
+        if embed is not None:
+            payload["embeds"] = [embed]
+
+        try:
+            response = self._client.request(
+                "PATCH",
+                f"/channels/{channel_id}/messages/{message_id}",
+                json=payload,
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={"channel_id": channel_id, "message_id": message_id, "error": str(exc)},
+            )
+            return False
+
+        if response.status_code not in (200, 201):
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status_code": response.status_code,
+                },
+            )
+            return False
+        return True
+
+    def delete_message(self, channel_id: str, message_id: str) -> bool:
+        """Delete an existing message in a channel. Returns True on success, False on failure."""
+        try:
+            response = self._client.request(
+                "DELETE",
+                f"/channels/{channel_id}/messages/{message_id}",
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord delete_message failed",
+                extra={"channel_id": channel_id, "message_id": message_id, "error": str(exc)},
+            )
+            return False
+
+        if response.status_code not in (200, 204):
+            self._logger.warning(
+                "Discord delete_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status_code": response.status_code,
+                },
             )
             return False
         return True
