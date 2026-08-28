@@ -233,7 +233,8 @@ class DiscordApiAdapter:
 
         try:
             data = response.json()
-            return str(data.get("id") or "")
+            message_id = data.get("id")
+            return str(message_id) if message_id else None
         except Exception:
             return None
 
