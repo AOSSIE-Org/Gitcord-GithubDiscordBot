@@ -328,9 +328,16 @@ def _send_notifications_for_new_events(
         
         # In-place live channel card update for PR lifecycle events
         if event.event_type in {"pr_reviewed", "pr_review_requested", "pr_merged", "pr_closed", "pr_reopened"}:
-            update_pr_channel_notification_for_event(
-                event, storage, discord_writer, policy, config, channels, github_org
-            )
+            try:
+                update_pr_channel_notification_for_event(
+                    event, storage, discord_writer, policy, config, channels, github_org
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PR channel card update failed (non-blocking)",
+                    exc_info=True,
+                    extra={"error": str(exc), "repo": event.repo, "event_type": event.event_type},
+                )
 
         if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened", "pr_review_requested"}:
             if event.event_type == "pr_reviewed":
