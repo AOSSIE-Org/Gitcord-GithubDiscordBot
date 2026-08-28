@@ -988,10 +988,14 @@ class SqliteStorage:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repo, pr_number, channel_id) DO UPDATE SET
                     message_id = excluded.message_id,
-                    status = excluded.status,
+                    status = CASE WHEN pr_channel_messages.status = 'open' THEN excluded.status ELSE pr_channel_messages.status END,
                     pr_title = CASE WHEN excluded.pr_title != '' THEN excluded.pr_title ELSE pr_channel_messages.pr_title END,
                     author_github = CASE WHEN excluded.author_github != '' THEN excluded.author_github ELSE pr_channel_messages.author_github END,
-                    events_json = excluded.events_json,
+                    events_json = CASE
+                        WHEN json_array_length(pr_channel_messages.events_json) > json_array_length(excluded.events_json)
+                        THEN pr_channel_messages.events_json
+                        ELSE excluded.events_json
+                    END,
                     updated_at = excluded.updated_at
                 """,
                 (repo, pr_number, channel_id, message_id, status, pr_title, author_github, events_json, now, now),
