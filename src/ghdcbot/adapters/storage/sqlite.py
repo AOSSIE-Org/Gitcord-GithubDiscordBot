@@ -1051,6 +1051,7 @@ class SqliteStorage:
         """Update status, events timeline, or title for a PR channel message."""
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
                 SELECT status, events_json, pr_title
