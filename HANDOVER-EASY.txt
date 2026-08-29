@@ -1,0 +1,64 @@
+GITCORD HANDOVER — SUPER EASY (local PC only)
+============================================
+
+You are moving the running bots from one computer to another.
+No cloud. One USB file. Two commands.
+
+
+ON THE OLD COMPUTER
+-------------------
+1. Open a terminal in the Gitcord folder
+2. Run:
+
+     ./scripts/gitcord-handover pack
+
+   (It briefly stops the bots so the database copy is safe, then starts them again.)
+
+3. Find the new file on your Desktop (or Downloads):
+
+     gitcord-handover-________.tar.gz
+
+4. Copy that ONE file to a USB stick
+5. Give the new person:
+     - the USB file
+     - access to both Discord bots + GitHub App
+
+
+ON THE NEW COMPUTER
+-------------------
+1. Install Docker and start it
+2. Clone the repo:
+
+     git clone https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot.git
+     cd Gitcord-GithubDiscordBot
+
+3. Run (put the real path to the USB file):
+
+     ./scripts/gitcord-handover restore /path/to/gitcord-handover-________.tar.gz
+
+4. Press Enter when asked
+5. In Discord try:  /profile   and   /who-is
+
+
+THEN STOP THE OLD COMPUTER
+--------------------------
+On the OLD PC:
+
+     ./scripts/gitcord-handover stop-old
+
+Only one computer should run the bots.
+
+
+USING AI (Cursor)
+-----------------
+Open docs/HANDOVER_AI_PROMPT.md and paste the prompt into the chat.
+Tell the AI the path to the .tar.gz file.
+
+
+CHECK IF BOTS ARE UP
+--------------------
+
+     ./scripts/gitcord-handover check
+
+
+NEVER put the .tar.gz on public GitHub — it has secret tokens.

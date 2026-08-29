@@ -1,52 +1,65 @@
-GITCORD BOT - QUICK START GUIDE
-================================
+GITCORD — QUICK START GUIDE
+===========================
 
-1. LINK YOUR GITHUB ACCOUNT (Required First Step)
----------------------------------------------------
-Type in Discord: /link
-• Bot will DM you a verification code
-• Comment that code on any GitHub issue/PR
-• Return to Discord and type: /verify-link
+Gitcord links Discord and GitHub for verified contributors, then helps with
+profiles, contribution summaries, PR lookups, and scheduler notifications.
 
-2. AVAILABLE COMMANDS
--------------------
-/link               - Start GitHub identity linking
-/verify-link        - Complete identity verification  
-/unlink             - Remove your GitHub link
-/status             - Check your linked GitHub account
-/metrics            - View your contribution stats
-/request-issue      - Request an issue assignment (needs mentor approval)
-/assign-issue       - Directly assign yourself to an issue (mentors only)
-/sync               - Manually sync data (mentors only)
-/issue-requests     - View pending issue requests (mentors only)
+Works in the AOSSIE and Stability Nexus Discord servers (separate bot stacks).
 
-3. HOW TO REQUEST AN ISSUE
---------------------------
-1. Find an issue on GitHub you want to work on
-2. Copy the issue URL
-3. In Discord type: /request-issue <paste-url>
-4. A mentor will review and approve your request
-5. Once approved, the issue is assigned to you on GitHub
 
-4. FOR MENTORS
---------------
-• /assign-issue <url> - Instantly assign issue to yourself or others
-• /sync - Refresh all data and apply pending changes
-• /issue-requests - View all pending requests from contributors
+1. LINK YOUR GITHUB ACCOUNT (required first)
+--------------------------------------------
+In Discord:
 
-5. HOW SCORING WORKS
---------------------
-• PR merged = +10 points (base)
-• Difficulty labels adjust score (easy/medium/hard)
-• Quality bonuses: PR review (+2), helpful comment (+1)
-• Quality penalties: Reverted PR (-5), failed CI merge (-3)
-• Top contributors get Discord roles automatically
+  /link github_username:<your-github-login>
 
-6. TIPS
+• Bot replies (ephemeral) with a short verification code and a Verify button
+• Paste that code into your GitHub profile bio OR a public gist
+• Click Verify in Discord, or run: /verify-link github_username:<same-login>
+
+Tips:
+• Code is short-lived — if it expires, run /link again
+• You can remove the code from your bio/gist after you are verified
+• Need to switch accounts? /unlink, then /link again
+
+
+2. CONTRIBUTOR COMMANDS
+-----------------------
+/link                 Link Discord → GitHub (get verification code)
+/verify-link          Complete verification after placing the code
+/profile              Your (or another member’s) Gitcord profile
+/who-is               Look up a GitHub username → Discord + link freshness
+/summary              Contribution metrics (7d / 30d); optional member
+/open-prs             List currently open PRs for a contributor
+/pr                   Recent PRs by closed / merged / open (count, skip)
+/connect-social       Attach X or LinkedIn username/URL to your profile
+/disconnect-social    Remove X or LinkedIn from your profile
+/unlink               Remove your GitHub link
+
+
+3. MENTOR COMMAND
+-----------------
+/sync                 Manually sync GitHub events and send notifications
+                      (requires a mentor role from discord.command_permissions)
+
+
+4. WHAT HAPPENS AFTER YOU VERIFY
+--------------------------------
+• Scheduler cycles ingest GitHub activity for configured repos
+• Notifications go to verified Discord users only (DMs / mapped channels)
+• /profile and /summary use your verified GitHub identity
+• Org settings may live in the org’s .github/gitcord.yaml (remote config)
+
+
+5. TIPS
 -------
-• Must be verified (/link + /verify-link) to use most commands
-• Use /metrics to track your progress
-• Request issues early - they're assigned on first-come basis
-• Stay active to maintain contributor roles
+• Most commands need a verified link — start with /link
+• Use /profile to confirm you are verified and see socials/roles
+• Use /who-is when you know a GitHub login but not the Discord account
+• Use /pr or /open-prs for PR status without leaving Discord
+• Mentors: prefer dry-run / observer modes for bulk GitHub writes
 
-Need help? Type /status to check your verification status.
+
+Need help?
+• Docs: README.md, docs/IDENTITY_VERIFICATION.md, INSTALLATION.md
+• Discord: #gitcord (AOSSIE) — ask maintainers or open a GitHub issue
