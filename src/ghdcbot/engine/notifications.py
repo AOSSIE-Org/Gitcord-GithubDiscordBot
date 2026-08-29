@@ -217,6 +217,7 @@ def send_pr_opened_channel_notification(
             events=initial_events,
             github_org=github_org,
             discord_user_id=discord_user_id,
+            coderabbit_bot_logins=getattr(config, "coderabbit_bot_logins", None),
         )
     else:
         message = _build_pr_opened_channel_message(
@@ -334,6 +335,7 @@ def update_pr_channel_notification_for_event(
     actor = event.github_user or ""
     detail = None
     new_status = current_status
+    event_timestamp = event.created_at.isoformat()
 
     if event.event_type == "pr_reviewed":
         state = event.payload.get("state", "").upper()
@@ -352,6 +354,16 @@ def update_pr_channel_notification_for_event(
             detail = f"review:{review_id}" if review_id else None
         else:
             return False
+
+        if not review_id:
+            ts = event.created_at.isoformat()
+            if any(
+                e.get("action") == new_action
+                and e.get("actor") == actor
+                and e.get("timestamp") == ts
+                for e in events
+            ):
+                return False
 
     elif event.event_type == "pr_review_requested":
         requested_reviewer = event.payload.get("requested_reviewer") or event.github_user
@@ -378,11 +390,10 @@ def update_pr_channel_notification_for_event(
     elif event.event_type == "pr_reopened":
         new_action = "reopened"
         new_status = "open"
-        if any(e.get("action") == "reopened" for e in events):
-            # Check if this reopen timestamp was already recorded
-            reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
-            if any(e.get("action") == "reopened" and e.get("timestamp") == reopened_at for e in events):
-                return False
+        reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
+        if any(e.get("action") == "reopened" and e.get("timestamp") == reopened_at for e in events):
+            return False
+        event_timestamp = reopened_at
     else:
         return False
 
@@ -390,7 +401,7 @@ def update_pr_channel_notification_for_event(
         "action": new_action,
         "actor": actor,
         "detail": detail,
-        "timestamp": event.created_at.isoformat(),
+        "timestamp": event_timestamp,
     }
     if event.payload.get("review_id"):
         event_entry["review_id"] = event.payload.get("review_id")
@@ -405,6 +416,7 @@ def update_pr_channel_notification_for_event(
         status=new_status,
         events=events,
         github_org=github_org,
+        coderabbit_bot_logins=getattr(config, "coderabbit_bot_logins", None),
     )
 
     edit_msg = getattr(discord_writer, "edit_message", None)
@@ -579,19 +591,34 @@ def _sanitize_discord_pr_title(title: str) -> str:
     return text
 
 
-def _format_actor_mention(storage: Storage | None, github_user: str) -> str:
+DEFAULT_CODERABBIT_BOT_LOGINS: tuple[str, ...] = ("coderabbitai", "coderabbitai[bot]")
+
+
+def _format_actor_mention(
+    storage: Storage | None,
+    github_user: str,
+    coderabbit_bot_logins: Iterable[str] | None = None,
+) -> str:
     """Format an actor username with Discord mention if verified."""
     if not github_user:
         return "unknown"
-    if _is_github_bot_login(github_user) or github_user.lower().startswith("coderabbit"):
-        if github_user.lower().startswith("coderabbit"):
-            return "CodeRabbit"
+    coderabbit_logins = (
+        {login.lower() for login in coderabbit_bot_logins}
+        if coderabbit_bot_logins is not None
+        else set(DEFAULT_CODERABBIT_BOT_LOGINS)
+    )
+    if github_user.lower() in coderabbit_logins:
+        return "CodeRabbit"
+    if _is_github_bot_login(github_user):
         return f"`{github_user}`"
     if storage is not None:
         discord_id = _resolve_github_to_discord(storage, github_user)
         if discord_id:
             return f"**@{github_user}** (<@{discord_id}>)"
     return f"**@{github_user}**"
+
+
+_MAX_TIMELINE_EVENTS: int = 10
 
 
 def _build_pr_channel_timeline_card(
@@ -604,6 +631,8 @@ def _build_pr_channel_timeline_card(
     events: list[dict],
     github_org: str,
     discord_user_id: str | None = None,
+    coderabbit_bot_logins: Iterable[str] | None = None,
+    max_events: int = _MAX_TIMELINE_EVENTS,
 ) -> str:
     sanitized_title = _sanitize_discord_pr_title(pr_title or "Untitled")
     url = _suppress_discord_embed(f"https://github.com/{github_org}/{repo}/pull/{pr_number}")
@@ -637,11 +666,17 @@ def _build_pr_channel_timeline_card(
     status_line = f"**Status:** {status_icon} {status_text} | {author_line}"
 
     timeline_lines = []
-    for item in events:
+    omitted = len(events) - max_events if len(events) > max_events else 0
+    visible_events = events[-max_events:] if omitted > 0 else events
+
+    if omitted > 0:
+        timeline_lines.append(f"• … ({omitted} older event{'s' if omitted != 1 else ''} omitted)")
+
+    for item in visible_events:
         action = item.get("action", "")
         actor = item.get("actor", "")
         detail = item.get("detail", "")
-        actor_mention = _format_actor_mention(storage, actor) if actor else "Someone"
+        actor_mention = _format_actor_mention(storage, actor, coderabbit_bot_logins) if actor else "Someone"
 
         if action == "opened":
             timeline_lines.append(f"• 🆕 Opened by {actor_mention}")
@@ -652,7 +687,7 @@ def _build_pr_channel_timeline_card(
         elif action == "commented":
             timeline_lines.append(f"• 💬 Reviewed by {actor_mention}")
         elif action == "review_requested":
-            target = _format_actor_mention(storage, detail or actor)
+            target = _format_actor_mention(storage, detail or actor, coderabbit_bot_logins)
             timeline_lines.append(f"• 👀 Review requested from {target}")
         elif action == "merged":
             timeline_lines.append(f"• 🟣 Merged by {actor_mention}")
@@ -664,7 +699,11 @@ def _build_pr_channel_timeline_card(
             timeline_lines.append(f"• {action.capitalize()} by {actor_mention}")
 
     if not timeline_lines:
-        author_mention = _format_actor_mention(storage, author_github) if author_github else "unknown"
+        author_mention = (
+            _format_actor_mention(storage, author_github, coderabbit_bot_logins)
+            if author_github
+            else "unknown"
+        )
         timeline_lines.append(f"• 🆕 Opened by {author_mention}")
 
     timeline_block = "**Timeline:**\n" + "\n".join(timeline_lines)
@@ -685,27 +724,11 @@ def _build_pr_opened_channel_message(
     github_org: str,
     author_github: str,
     discord_user_id: str | None,
-    events: list[dict] | None = None,
-    status: str = "open",
-    storage: Storage | None = None,
 ) -> str | None:
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
     pr_title = event.payload.get("title") or "Untitled"
-    if events is not None:
-        return _build_pr_channel_timeline_card(
-            storage=storage,
-            repo=event.repo,
-            pr_number=int(pr_number),
-            pr_title=pr_title,
-            author_github=author_github,
-            status=status,
-            events=events,
-            github_org=github_org,
-            discord_user_id=discord_user_id,
-        )
-
     sanitized_title = _sanitize_discord_pr_title(pr_title)
     repo = event.repo
     url = _suppress_discord_embed(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any, Iterable, Sequence
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
+
+logger = logging.getLogger(__name__)
 
 
 class SqliteStorage:
@@ -1035,7 +1038,13 @@ class SqliteStorage:
         data = dict(row)
         try:
             data["events"] = json.loads(data.get("events_json") or "[]")
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(
+                "Failed to parse events_json for PR channel message %s#%s: %s",
+                data.get("repo", repo),
+                data.get("pr_number", pr_number),
+                e,
+            )
             data["events"] = []
         return data
 
@@ -1121,7 +1130,13 @@ class SqliteStorage:
             d = dict(r)
             try:
                 d["events"] = json.loads(d.get("events_json") or "[]")
-            except Exception:
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(
+                    "Failed to parse events_json for PR channel message %s#%s: %s",
+                    d.get("repo"),
+                    d.get("pr_number"),
+                    e,
+                )
                 d["events"] = []
             results.append(d)
         return results
