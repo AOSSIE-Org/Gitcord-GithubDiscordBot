@@ -237,5 +237,5 @@ def test_write_activity_report(base_config: BotConfig, tmp_path: Path) -> None:
 
     assert path == tmp_path / "reports" / "activity.md"
     assert path.exists()
+    assert markdown == path.read_text()
     assert "No PR or issue activity" in markdown
-    assert "No PR or issue activity" in path.read_text()
