@@ -581,7 +581,7 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
         {"discord_user_id": "discord123", "github_user": "contributor"},
     ]
     storage.notifications_sent.add(
-        "pr_reviewed:test-repo:456:contributor:9001:COMMENT"
+        "pr_reviewed:test-repo:456:contributor:reviewer:COMMENT"
     )
     discord_writer = MockDiscordWriter()
     config = NotificationConfig(enabled=True, pr_review_comment=True)
@@ -606,6 +606,69 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
 
     assert result is False
     assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_review_comment_coalesces_multiple_review_ids_from_same_reviewer() -> None:
+    """CodeRabbit-style spam: many COMMENT reviews on one PR → one DM."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    def _event(review_id: int) -> ContributionEvent:
+        return ContributionEvent(
+            github_user="coderabbitai[bot]",
+            event_type="pr_reviewed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=datetime.now(UTC),
+            payload={
+                "pr_number": 56,
+                "state": "COMMENTED",
+                "pr_author": "contributor",
+                "review_id": review_id,
+            },
+        )
+
+    assert send_notification_for_event(
+        _event(1001), storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert send_notification_for_event(
+        _event(1002), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert send_notification_for_event(
+        _event(1003), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert len(discord_writer.dms_sent) == 1
+    assert "New Review Comments" in discord_writer.dms_sent[0][1]
+
+
+def test_build_dedupe_key_comment_reviews_ignore_review_id() -> None:
+    base = {
+        "pr_number": 56,
+        "state": "COMMENT",
+        "pr_author": "contributor",
+    }
+    e1 = ContributionEvent(
+        github_user="coderabbitai[bot]",
+        event_type="pr_reviewed",
+        repo="r",
+        created_at=datetime.now(UTC),
+        payload={**base, "review_id": 1},
+    )
+    e2 = ContributionEvent(
+        github_user="coderabbitai[bot]",
+        event_type="pr_reviewed",
+        repo="r",
+        created_at=datetime.now(UTC),
+        payload={**base, "review_id": 2, "state": "COMMENTED"},
+    )
+    key1 = _build_dedupe_key(e1, "contributor")
+    key2 = _build_dedupe_key(e2, "contributor")
+    assert key1 == key2
+    assert key1 == "pr_reviewed:r:56:contributor:coderabbitai[bot]:COMMENT"
 
 
 def test_send_notification_channel_mode() -> None:

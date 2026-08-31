@@ -415,17 +415,22 @@ def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None
 
 def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     """Build deduplication key: event_type:repo:target:target_github_user (lowercase for case-insensitivity).
-    
-    For pr_reviewed events, includes review_id to allow multiple notifications for different reviews.
+
+    For pr_reviewed COMMENT/COMMENTED events, coalesce by reviewer (not review_id) so
+    bots like CodeRabbit that submit many review rounds on one PR only DM once.
+    APPROVED / CHANGES_REQUESTED still include review_id so distinct reviews notify.
     """
     target = event.payload.get("issue_number") or event.payload.get("pr_number") or "unknown"
     # Use target_github_user (who receives notification) for dedupe; normalize to lowercase (GitHub is case-insensitive)
     user_key = (target_github_user or "").strip().lower()
-    
-    # For pr_reviewed events, include review_id and state to allow separate notifications for different reviews
+
     if event.event_type == "pr_reviewed":
+        state = (event.payload.get("state") or "").upper()
+        reviewer = (event.github_user or "").strip().lower() or "unknown"
+        # Comment-only reviews: one DM per reviewer per PR (stops CodeRabbit spam).
+        if state in {"COMMENT", "COMMENTED"}:
+            return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reviewer}:COMMENT"
         review_id = event.payload.get("review_id")
-        state = event.payload.get("state", "").upper()
         if review_id:
             return f"{event.event_type}:{event.repo}:{target}:{user_key}:{review_id}:{state}"
 
@@ -436,7 +441,7 @@ def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     if event.event_type in {"issue_reopened", "pr_reopened"}:
         reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
         return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reopened_at}"
-    
+
     return f"{event.event_type}:{event.repo}:{target}:{user_key}"
 
 
