@@ -92,6 +92,9 @@ class NotificationConfig(BaseModel):
     pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
     # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.
     pr_opened_github_comment: bool = False
+    # Edit the tracked PR-opened channel message when that PR is later merged/closed.
+    # Only applies to announcements posted after this feature is deployed (no backfill).
+    update_pr_channel_on_lifecycle: bool = True
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]

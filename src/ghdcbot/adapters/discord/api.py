@@ -194,8 +194,16 @@ class DiscordApiAdapter:
 
     def send_message(self, channel_id: str, content: str) -> bool:
         """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
+        return self.create_message(channel_id, content) is not None
+
+    def create_message(self, channel_id: str, content: str) -> str | None:
+        """Post a channel message and return its Discord message ID (or None on failure).
+
+        Empty content is a no-op success that returns an empty string sentinel so callers
+        can distinguish \"nothing to send\" from a failed send (None).
+        """
         if not content:
-            return True
+            return ""
         text = content[:2000]
         try:
             response = self._client.request(
@@ -208,11 +216,51 @@ class DiscordApiAdapter:
                 "Discord send_message failed",
                 extra={"channel_id": channel_id, "error": str(exc)},
             )
-            return False
+            return None
         if response.status_code not in (200, 201):
             self._logger.warning(
                 "Discord send_message failed",
                 extra={"channel_id": channel_id, "status_code": response.status_code},
+            )
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        message_id = data.get("id")
+        if not message_id:
+            return None
+        return str(message_id)
+
+    def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+        """Edit an existing channel message. Returns True on success."""
+        if not channel_id or not message_id:
+            return False
+        text = (content or "")[:2000]
+        try:
+            response = self._client.request(
+                "PATCH",
+                f"/channels/{channel_id}/messages/{message_id}",
+                json={"content": text, "flags": 4},
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "error": str(exc),
+                },
+            )
+            return False
+        if response.status_code not in (200, 201):
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status_code": response.status_code,
+                },
             )
             return False
         return True
