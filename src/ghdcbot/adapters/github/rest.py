@@ -27,6 +27,8 @@ _GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
 _GITHUB_MAX_RATE_LIMIT_RECOVERIES = 10
 _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS = 1.0
+_GRAPHQL_MAX_REVIEW_THREADS_PAGES = 10
+_GRAPHQL_MAX_THREAD_COMMENTS_PAGES = 5
 
 
 def _github_retry_sleep_seconds(failed_attempt: int) -> float:
@@ -701,8 +703,10 @@ class GitHubRestAdapter:
             results: list[dict] = []
             threads_cursor = None
             has_next_threads = True
+            threads_pages = 0
 
-            while has_next_threads:
+            while has_next_threads and threads_pages < _GRAPHQL_MAX_REVIEW_THREADS_PAGES:
+                threads_pages += 1
                 response = self._client.post(
                     graphql_url,
                     json={
@@ -761,8 +765,15 @@ class GitHubRestAdapter:
                     comments_page_info = comments_data.get("pageInfo") or {}
                     has_next_comments = bool(comments_page_info.get("hasNextPage"))
                     comments_cursor = comments_page_info.get("endCursor")
+                    comments_pages = 1
 
-                    while has_next_comments and thread_id and comments_cursor:
+                    while (
+                        has_next_comments
+                        and thread_id
+                        and comments_cursor
+                        and comments_pages < _GRAPHQL_MAX_THREAD_COMMENTS_PAGES
+                    ):
+                        comments_pages += 1
                         comm_resp = self._client.post(
                             graphql_url,
                             json={
@@ -789,7 +800,10 @@ class GitHubRestAdapter:
                                 )
                         more_page_info = more_comments_data.get("pageInfo") or {}
                         has_next_comments = bool(more_page_info.get("hasNextPage"))
-                        comments_cursor = more_page_info.get("endCursor")
+                        next_comm_cursor = more_page_info.get("endCursor")
+                        if not next_comm_cursor or next_comm_cursor == comments_cursor:
+                            break
+                        comments_cursor = next_comm_cursor
 
                     results.append(
                         {
@@ -801,9 +815,10 @@ class GitHubRestAdapter:
 
                 page_info = review_threads_data.get("pageInfo") or {}
                 has_next_threads = bool(page_info.get("hasNextPage"))
-                threads_cursor = page_info.get("endCursor")
-                if not threads_cursor:
+                next_threads_cursor = page_info.get("endCursor")
+                if not next_threads_cursor or next_threads_cursor == threads_cursor:
                     break
+                threads_cursor = next_threads_cursor
 
             return results
         except Exception as exc:

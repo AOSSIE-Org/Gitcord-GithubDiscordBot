@@ -737,6 +737,97 @@ class TestReviewThreadsGraphQLAdapter:
         mock_client_slash.post.assert_called_once()
         assert mock_client_slash.post.call_args[0][0] == "https://ghe.example.com/api/graphql"
 
+    def test_review_threads_repeated_cursor_stops_pagination(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="o", api_base="https://api.github.com")
+        mock_client = MagicMock()
+
+        # Returns hasNextPage=True, but endCursor stays identical
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "same_cursor"},
+                            "nodes": [
+                                {
+                                    "id": "t1",
+                                    "isResolved": True,
+                                    "isOutdated": False,
+                                    "comments": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        mock_client.post.return_value = mock_resp
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("o", "r", 1)
+        assert threads is not None
+        assert len(threads) == 2
+        # Called once for initial request (cursor=None -> "same_cursor"), and once for second request ("same_cursor" -> "same_cursor" repeats and halts)
+        assert mock_client.post.call_count == 2
+
+    def test_thread_comments_repeated_cursor_stops_pagination(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="o", api_base="https://api.github.com")
+        mock_client = MagicMock()
+
+        threads_resp = MagicMock()
+        threads_resp.status_code = 200
+        threads_resp.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "t1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": True, "endCursor": "comm_cur_1"},
+                                        "nodes": [{"author": {"login": "dev1"}}],
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        # Comments query returns same cursor repeatedly
+        comm_resp = MagicMock()
+        comm_resp.status_code = 200
+        comm_resp.json.return_value = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "comm_cur_1"},
+                        "nodes": [{"author": {"login": "dev2"}}],
+                    }
+                }
+            }
+        }
+
+        mock_client.post.side_effect = [threads_resp, comm_resp]
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("o", "r", 1)
+        assert threads is not None
+        assert len(threads) == 1
+        assert sorted(threads[0]["authors"]) == ["dev1", "dev2"]
+        assert mock_client.post.call_count == 2
+
 
 
 # ===================================================================
