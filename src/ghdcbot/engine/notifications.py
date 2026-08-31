@@ -408,11 +408,15 @@ def update_pr_channel_announcement_for_event(
         try:
             mark(event.repo, int(pr_number), status)
         except Exception as exc:
+            # Discord already edited; release claim so a later sync can retry
+            # status persistence (row may still be "open").
+            _release_notification_claim(storage, dedupe_key)
             logger.warning(
                 "Failed to update PR channel announcement status after edit",
                 exc_info=True,
                 extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
             )
+            return False
     _audit_notification(storage, event, "", tracked.get("channel_id"), actor)
     return True
 

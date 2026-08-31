@@ -1216,6 +1216,47 @@ def test_update_pr_channel_announcement_skips_untracked_old_messages() -> None:
     assert discord_writer.messages_edited == []
 
 
+def test_update_pr_channel_announcement_releases_claim_when_status_mark_fails() -> None:
+    """If Discord edit succeeds but status persistence fails, release claim for retry."""
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        pr_number=42,
+        channel_id="chan-1",
+        message_id="msg-9",
+        pr_title="Test PR",
+        author_github="alice",
+        status="open",
+    )
+
+    def _boom(repo: str, pr_number: int, status: str) -> None:
+        raise RuntimeError("db locked")
+
+    storage.mark_pr_channel_announcement_status = _boom  # type: ignore[method-assign]
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "title": "Test PR", "merged_by": "mentor1"},
+    )
+
+    assert (
+        update_pr_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert len(discord_writer.messages_edited) == 1
+    dedupe_key = "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:merged"
+    assert not storage.was_notification_sent(dedupe_key)
+    # Status stayed open so a later sync can retry mark after claim release.
+    assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
+
+
 def test_sqlite_pr_channel_announcement_roundtrip(tmp_path) -> None:
     storage = SqliteStorage(tmp_path / "state.db")
     storage.init_schema()
