@@ -510,7 +510,7 @@ def test_send_notification_pr_reviewed_approved() -> None:
 
 
 def test_send_notification_pr_reviewed_comment() -> None:
-    """Test notification for PR review comments when enabled."""
+    """Comment-only reviews never DM, even when pr_review_comment is true."""
     storage = MockStorage()
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "contributor"},
@@ -537,10 +537,8 @@ def test_send_notification_pr_reviewed_comment() -> None:
         event, storage, discord_writer, policy, config, "test-org"
     )
 
-    assert result is True
-    assert len(discord_writer.dms_sent) == 1
-    assert "New Review Comments" in discord_writer.dms_sent[0][1]
-    assert "reviewer" in discord_writer.dms_sent[0][1]
+    assert result is False
+    assert discord_writer.dms_sent == []
 
 
 def test_send_notification_skips_self_review_comment() -> None:
@@ -640,7 +638,7 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
 
 
 def test_pr_review_comment_coalesces_multiple_review_ids_from_same_reviewer() -> None:
-    """CodeRabbit-style spam: many COMMENT reviews on one PR → one DM."""
+    """Comment-only reviews are hard-disabled; no DMs even across many review_ids."""
     storage = MockStorage()
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "contributor"},
@@ -665,15 +663,11 @@ def test_pr_review_comment_coalesces_multiple_review_ids_from_same_reviewer() ->
 
     assert send_notification_for_event(
         _event(1001), storage, discord_writer, policy, config, "AOSSIE-Org"
-    )
+    ) is False
     assert send_notification_for_event(
         _event(1002), storage, discord_writer, policy, config, "AOSSIE-Org"
     ) is False
-    assert send_notification_for_event(
-        _event(1003), storage, discord_writer, policy, config, "AOSSIE-Org"
-    ) is False
-    assert len(discord_writer.dms_sent) == 1
-    assert "New Review Comments" in discord_writer.dms_sent[0][1]
+    assert discord_writer.dms_sent == []
 
 
 def test_changes_requested_coalesces_multiple_reviews_from_same_reviewer() -> None:

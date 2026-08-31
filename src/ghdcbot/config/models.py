@@ -84,8 +84,8 @@ class NotificationConfig(BaseModel):
     issue_assignment: bool = True
     pr_review_requested: bool = True
     pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
-    # Off by default: GitHub review "comments" (incl. CodeRabbit rounds and author
-    # replies) are too noisy for Discord DMs. Use pr_review_result for signal.
+    # Ignored at runtime: comment-only review DMs are always skipped in the
+    # notification engine (too noisy). Kept for backward-compatible YAML.
     pr_review_comment: bool = False
     pr_merged: bool = True
     pr_closed: bool = True  # PR closed without merge

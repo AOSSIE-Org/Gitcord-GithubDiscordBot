@@ -59,10 +59,19 @@ def send_notification_for_event(
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
         elif state in ("COMMENT", "COMMENTED"):
-            if not config.pr_review_comment:
-                return False
-            event_type_key = "pr_review_comment"
-            target_github_user = event.payload.get("pr_author")
+            # Never DM for comment-only reviews (CodeRabbit rounds, inline chatter).
+            # Signal stays on CHANGES_REQUESTED / APPROVED via pr_review_result.
+            # Config flag is ignored so a remote gitcord.yaml cannot re-enable spam.
+            logger.info(
+                "Skipping comment-only review notification (DMs disabled for COMMENT)",
+                extra={
+                    "pr_number": event.payload.get("pr_number"),
+                    "reviewer": event.github_user,
+                    "pr_author": event.payload.get("pr_author"),
+                    "repo": event.repo,
+                },
+            )
+            return False
         else:
             # DISMISSED or other states - no notification
             logger.debug(
