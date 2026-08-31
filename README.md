@@ -296,6 +296,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/summary` - Show contribution metrics (7 and 30 days); optional Discord member for another verified contributor
 - `/open-prs` - List a contributor's currently open PRs in configured repos
 - `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
+- `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) for a single PR or multi-PR org dashboard (`show_all:True`, optional `skip` M). Accessible to all server members by default (with command cooldown); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page and use efficient single-roundtrip GraphQL review thread queries to stay well within GitHub API rate limits.
 
 ### Sync (mentor-only)
 

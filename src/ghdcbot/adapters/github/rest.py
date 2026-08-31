@@ -634,11 +634,11 @@ class GitHubRestAdapter:
 
     def get_pull_request_review_threads(
         self, owner: str, repo: str, pr_number: int
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """Fetch review threads via GraphQL to check resolved/unresolved status.
 
         Returns list of thread dicts: [{'is_resolved': bool, 'is_outdated': bool, 'authors': list[str]}]
-        Returns empty list on error or if GraphQL is unsupported.
+        Returns None on error or if GraphQL is unsupported, signaling callers to fall back to REST.
         """
         threads_query = """
         query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -717,11 +717,29 @@ class GitHubRestAdapter:
                     timeout=15.0,
                 )
                 if response.status_code != 200:
-                    break
+                    self._logger.debug(
+                        "GraphQL reviewThreads request failed with non-200 status",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "pr_number": pr_number,
+                            "status_code": response.status_code,
+                        },
+                    )
+                    return None
 
                 data = response.json()
                 if not isinstance(data, dict) or "data" not in data or not data["data"]:
-                    break
+                    self._logger.debug(
+                        "GraphQL reviewThreads response missing data",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "pr_number": pr_number,
+                            "errors": data.get("errors") if isinstance(data, dict) else None,
+                        },
+                    )
+                    return None
 
                 repo_data = data["data"].get("repository") or {}
                 pr_data = repo_data.get("pullRequest") or {}
@@ -736,7 +754,7 @@ class GitHubRestAdapter:
                     authors = [
                         ((c.get("author") or {}).get("login") or "").strip().lower()
                         for c in c_nodes
-                        if isinstance(c, dict)
+                        if isinstance(c, dict) and c.get("author")
                     ]
 
                     thread_id = t.get("id")
@@ -765,7 +783,7 @@ class GitHubRestAdapter:
                         more_comments_data = node_data.get("comments") or {}
                         more_nodes = more_comments_data.get("nodes") or []
                         for c in more_nodes:
-                            if isinstance(c, dict):
+                            if isinstance(c, dict) and c.get("author"):
                                 authors.append(
                                     ((c.get("author") or {}).get("login") or "").strip().lower()
                                 )
@@ -793,7 +811,7 @@ class GitHubRestAdapter:
                 "GraphQL reviewThreads query failed, falling back to REST comments",
                 extra={"owner": owner, "repo": repo, "pr_number": pr_number, "error": str(exc)},
             )
-        return []
+        return None
 
     def get_pull_request_check_runs(self, owner: str, repo: str, head_sha: str) -> list[dict]:
         """Fetch check runs for a commit (used for CI status).

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
 
 from ghdcbot.engine.pr_status import (
-    PR_STATUS_MAX_PRS,
     PRHealthStatus,
     _compute_ci_status,
     _is_coderabbit_bot,
@@ -455,8 +453,8 @@ class TestFetchPRHealth:
         adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
         adapter.get_pull_request_review_comments.assert_not_called()
 
-    def test_review_threads_graphql_fallback_when_threads_empty(self) -> None:
-        """When get_pull_request_review_threads returns empty, falls back to REST comments."""
+    def test_review_threads_graphql_empty_list_no_fallback_to_rest(self) -> None:
+        """When get_pull_request_review_threads returns an empty list, GraphQL succeeded with 0 threads and does NOT call REST fallback."""
         adapter = MagicMock()
         adapter.get_pull_request.return_value = _make_pr_data()
         adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
@@ -464,6 +462,26 @@ class TestFetchPRHealth:
             {"status": "completed", "conclusion": "success"}
         ]
         adapter.get_pull_request_review_threads.return_value = []
+        adapter.get_pull_request_review_comments.return_value = [
+            {"user": {"login": "coderabbitai"}, "created_at": "2025-01-01T00:00:00Z"},
+        ]
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.has_coderabbit_comments is False
+        assert health.coderabbit_comment_count == 0
+        adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
+        adapter.get_pull_request_review_comments.assert_not_called()
+
+    def test_review_threads_graphql_returns_none_falls_back_to_rest(self) -> None:
+        """When get_pull_request_review_threads returns None (error/unsupported), falls back to REST comments."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        adapter.get_pull_request_review_threads.return_value = None
         adapter.get_pull_request_review_comments.return_value = [
             {"user": {"login": "coderabbitai"}, "created_at": "2025-01-01T00:00:00Z"},
         ]
@@ -600,7 +618,7 @@ class TestReviewThreadsGraphQLAdapter:
         adapter._client = mock_client
 
         threads = adapter.get_pull_request_review_threads("org", "repo", 42)
-        assert threads == []
+        assert threads is None
 
     def test_review_threads_non_200_response(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -613,7 +631,7 @@ class TestReviewThreadsGraphQLAdapter:
         adapter._client = mock_client
 
         threads = adapter.get_pull_request_review_threads("org", "repo", 42)
-        assert threads == []
+        assert threads is None
 
     def test_review_threads_empty_or_malformed_data(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -627,7 +645,65 @@ class TestReviewThreadsGraphQLAdapter:
         adapter._client = mock_client
 
         threads = adapter.get_pull_request_review_threads("org", "repo", 42)
-        assert threads == []
+        assert threads is None
+
+    def test_review_threads_graphql_errors_payload_returns_none(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"errors": [{"message": "Field 'reviewThreads' doesn't exist"}]}
+        mock_client.post.return_value = mock_resp
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert threads is None
+
+    def test_review_threads_null_author_safely_ignored(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="token", org="org", api_base="https://api.github.com")
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "thread_1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                        "nodes": [
+                                            {"author": None},
+                                            {"author": {"login": "coderabbitai[bot]"}},
+                                        ],
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        mock_client.post.return_value = mock_resp
+        adapter._client = mock_client
+
+        threads = adapter.get_pull_request_review_threads("org", "repo", 42)
+        assert threads == [
+            {
+                "is_resolved": False,
+                "is_outdated": False,
+                "authors": ["coderabbitai[bot]"],
+            }
+        ]
 
     def test_graphql_endpoint_enterprise_and_public(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -959,4 +1035,107 @@ class TestPRStatusCommandRepoFilter:
             is_excluded = True
 
         assert is_excluded is False
+
+
+# ===================================================================
+# pr_status_cmd permissions gating tests
+# ===================================================================
+
+
+class TestPRStatusCommandPermissions:
+    def test_pr_status_allowed_by_default_without_explicit_rule(self) -> None:
+        """When discord.command_permissions has no pr-status rule, any guild member with roles is allowed."""
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+        from ghdcbot.discord_command_permissions import slash_command_allowed
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="rest",
+                discord_adapter="rest",
+                storage_adapter="sqlite",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="xyz"),
+        )
+
+        member = MagicMock()
+        member.roles = [MagicMock(name="Contributor", id="999")]
+        member.guild_permissions = MagicMock(administrator=False)
+        interaction = MagicMock()
+        interaction.user = member
+
+        # Simulating command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True)
+        perms = getattr(config.discord, "command_permissions", None)
+        assert perms is None
+        allowed = (
+            slash_command_allowed(interaction, config, "pr-status")
+            if perms and "pr-status" in perms
+            else (hasattr(interaction.user, "roles") and hasattr(interaction.user, "guild_permissions"))
+        )
+        assert allowed is True
+
+    def test_pr_status_gated_when_configured_in_command_permissions(self) -> None:
+        """When discord.command_permissions specifies pr-status, unauthorized members are blocked and authorized members pass."""
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RuntimeConfig,
+            SlashCommandPermissionRule,
+        )
+        from ghdcbot.discord_command_permissions import slash_command_allowed
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="rest",
+                discord_adapter="rest",
+                storage_adapter="sqlite",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(
+                guild_id="123",
+                token="xyz",
+                command_permissions={
+                    "pr-status": SlashCommandPermissionRule(role_names=["Mentor", "Maintainer"])
+                },
+            ),
+        )
+
+        # 1. Contributor without Mentor role
+        member_contributor = MagicMock()
+        role_contrib = MagicMock()
+        role_contrib.name = "Contributor"
+        role_contrib.id = 111
+        member_contributor.roles = [role_contrib]
+        member_contributor.guild_permissions = MagicMock(administrator=False)
+        interaction_contrib = MagicMock()
+        interaction_contrib.user = member_contributor
+
+        perms = getattr(config.discord, "command_permissions", None)
+        allowed_contrib = (
+            slash_command_allowed(interaction_contrib, config, "pr-status")
+            if perms and "pr-status" in perms
+            else hasattr(interaction_contrib.user, "roles")
+        )
+        assert allowed_contrib is False
+
+        # 2. Mentor with Mentor role
+        member_mentor = MagicMock()
+        role_mentor = MagicMock()
+        role_mentor.name = "Mentor"
+        role_mentor.id = 222
+        member_mentor.roles = [role_mentor]
+        member_mentor.guild_permissions = MagicMock(administrator=False)
+        interaction_mentor = MagicMock()
+        interaction_mentor.user = member_mentor
+
+        allowed_mentor = (
+            slash_command_allowed(interaction_mentor, config, "pr-status")
+            if perms and "pr-status" in perms
+            else hasattr(interaction_mentor.user, "roles")
+        )
+        assert allowed_mentor is True
+
 

@@ -59,6 +59,7 @@ from ghdcbot.engine.social_profiles import SocialProfileService
 
 # Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
+SLASH_CMD_PR_STATUS = "pr-status"
 
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
@@ -861,10 +862,20 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True
             )
         
-    def command_permission_check(command_name: str):
-        """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
+    def command_permission_check(command_name: str, *, allow_all_by_default: bool = False):
+        """Restrict slash commands via discord.command_permissions or legacy issue_assignees.
+
+        When allow_all_by_default is True (e.g. for informational commands like /pr-status),
+        the command is open to all guild members unless explicitly configured in
+        discord.command_permissions.
+        """
 
         def check(interaction: discord.Interaction) -> bool:
+            if allow_all_by_default:
+                perms = getattr(config.discord, "command_permissions", None)
+                if perms and command_name in perms:
+                    return slash_command_allowed(interaction, config, command_name)
+                return hasattr(interaction.user, "roles") and hasattr(interaction.user, "guild_permissions")
             return slash_command_allowed(interaction, config, command_name)
 
         return check
@@ -946,7 +957,8 @@ def run_bot(config_path: str) -> None:
         show_all="Show health dashboard for all open PRs in the organization",
         skip="How many open PRs to skip for pagination (when show_all is True)",
     )
-    @app_commands.checks.cooldown(1, 3.0)
+    @app_commands.checks.cooldown(1, 5.0)
+    @app_commands.check(command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True))
     async def pr_status_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,

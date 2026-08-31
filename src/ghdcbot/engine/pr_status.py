@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +131,7 @@ def fetch_pr_health(
     # CodeRabbit inline review comments & unresolved review threads
     coderabbit_count = 0
     if not coderabbit_approved:
-        # First check GraphQL review threads (if supported and returns a non-empty list of dicts)
+        # First check GraphQL review threads (returns list of threads if supported/available, None on error)
         get_threads = getattr(github_adapter, "get_pull_request_review_threads", None)
         raw_threads = None
         if callable(get_threads):
@@ -143,7 +142,8 @@ def fetch_pr_health(
                     "Failed to fetch review threads for PR health",
                     extra={"repo": repo, "pr_number": pr_number, "error": str(exc)},
                 )
-        if isinstance(raw_threads, list) and raw_threads:
+                raw_threads = None
+        if isinstance(raw_threads, list):
             for t in raw_threads:
                 if isinstance(t, dict):
                     authors = t.get("authors") or []
@@ -151,7 +151,7 @@ def fetch_pr_health(
                         if not t.get("is_resolved") and not t.get("is_outdated"):
                             coderabbit_count += 1
         else:
-            # Fallback to REST review comments
+            # Fallback to REST review comments if GraphQL is unavailable or encountered an error
             get_comments = getattr(github_adapter, "get_pull_request_review_comments", None)
             if callable(get_comments):
                 try:
