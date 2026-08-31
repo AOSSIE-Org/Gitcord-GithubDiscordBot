@@ -775,10 +775,10 @@ class GitHubRestAdapter:
                             timeout=15.0,
                         )
                         if comm_resp.status_code != 200:
-                            break
+                            return None
                         comm_data = comm_resp.json()
                         if not isinstance(comm_data, dict) or "data" not in comm_data or not comm_data["data"]:
-                            break
+                            return None
                         node_data = comm_data["data"].get("node") or {}
                         more_comments_data = node_data.get("comments") or {}
                         more_nodes = more_comments_data.get("nodes") or []
