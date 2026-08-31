@@ -676,6 +676,40 @@ def test_pr_review_comment_coalesces_multiple_review_ids_from_same_reviewer() ->
     assert "New Review Comments" in discord_writer.dms_sent[0][1]
 
 
+def test_changes_requested_coalesces_multiple_reviews_from_same_reviewer() -> None:
+    """Many CHANGES_REQUESTED rounds / messages from one reviewer → one DM."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_result=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    def _event(review_id: int) -> ContributionEvent:
+        return ContributionEvent(
+            github_user="mentor1",
+            event_type="pr_reviewed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=datetime.now(UTC),
+            payload={
+                "pr_number": 56,
+                "state": "CHANGES_REQUESTED",
+                "pr_author": "contributor",
+                "review_id": review_id,
+            },
+        )
+
+    assert send_notification_for_event(
+        _event(2001), storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert send_notification_for_event(
+        _event(2002), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert len(discord_writer.dms_sent) == 1
+    assert "Changes Requested" in discord_writer.dms_sent[0][1]
+
+
 def test_build_dedupe_key_comment_reviews_ignore_review_id() -> None:
     base = {
         "pr_number": 56,

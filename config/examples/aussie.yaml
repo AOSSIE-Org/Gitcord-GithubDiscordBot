@@ -53,7 +53,7 @@ discord:
     issue_assignment: true           # 📋 Issue assigned to a user
     pr_review_requested: true        # 👀 Reviewer requested on a PR
     pr_review_result: true           # ✅ PR approved or 🔁 changes requested
-    pr_review_comment: true          # 💬 Comment posted on PR review
+    pr_review_comment: false         # 💬 Off: comment-only reviews are too noisy for DMs
     pr_merged: true                  # 🎉 PR merged to main
     pr_closed: true                  # 🚫 PR closed without merge
     issue_reopened: true             # 📌 Issue reopened
