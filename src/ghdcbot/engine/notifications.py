@@ -315,15 +315,16 @@ def update_pr_channel_announcement_for_event(
         return False
 
     actor = _pr_lifecycle_actor(event)
-    message = _build_pr_lifecycle_channel_message(
+    built = _build_pr_lifecycle_channel_message(
         event,
         github_org,
         status=status,
         actor_github=actor,
         tracked=tracked,
     )
-    if not message:
+    if not built:
         return False
+    message, embeds = built
 
     dedupe_key = f"pr_channel_lifecycle:{event.repo}:{pr_number}:{status}"
     try:
@@ -347,8 +348,42 @@ def update_pr_channel_announcement_for_event(
 
     try:
         edited = bool(
-            edit_msg(str(tracked["channel_id"]), str(tracked["message_id"]), message)
+            edit_msg(
+                str(tracked["channel_id"]),
+                str(tracked["message_id"]),
+                message,
+                embeds=embeds,
+            )
         )
+    except TypeError:
+        # Older DiscordWriter mocks/adapters without embeds kwarg.
+        if embeds:
+            emb = embeds[0]
+            fallback = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+        else:
+            fallback = message or ""
+        try:
+            edited = bool(
+                edit_msg(
+                    str(tracked["channel_id"]),
+                    str(tracked["message_id"]),
+                    fallback,
+                )
+            )
+        except Exception as exc:
+            _release_notification_claim(storage, dedupe_key)
+            logger.warning(
+                "Failed to edit PR channel announcement",
+                exc_info=True,
+                extra={
+                    "error": str(exc),
+                    "repo": event.repo,
+                    "pr_number": pr_number,
+                    "channel_id": tracked.get("channel_id"),
+                    "message_id": tracked.get("message_id"),
+                },
+            )
+            return False
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
@@ -392,6 +427,11 @@ def _pr_lifecycle_actor(event: ContributionEvent) -> str:
     return (actor or "unknown").strip() or "unknown"
 
 
+# GitHub Primer status colors (match PR badge hues in the GitHub UI).
+_GITHUB_MERGED_PURPLE = 0x8250DF  # Primer done/merged
+_GITHUB_CLOSED_RED = 0xCF222E  # Primer danger/closed
+
+
 def _build_pr_lifecycle_channel_message(
     event: ContributionEvent,
     github_org: str,
@@ -399,7 +439,12 @@ def _build_pr_lifecycle_channel_message(
     status: str,
     actor_github: str,
     tracked: dict,
-) -> str | None:
+) -> tuple[str, list[dict]] | None:
+    """Build a Discord embed for a PR merge/close channel edit.
+
+    Text + GitHub Primer purple/red live in one embed (no empty color-only box).
+    Plain content is left empty so Discord shows a single card.
+    """
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
@@ -411,18 +456,29 @@ def _build_pr_lifecycle_channel_message(
     )
     pr_title = _sanitize_discord_pr_title(title_raw)
     repo = event.repo
-    url = _suppress_discord_embed(
-        f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
-    )
+    raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     actor = (actor_github or "unknown").lstrip("@")
     if status == "merged":
-        header = f"🟣 **Merged: [{repo} #{pr_number} — {pr_title}]({url})**"
+        label = "Merged"
         status_line = f"**Status:** Merged by @{actor}"
+        color = _GITHUB_MERGED_PURPLE
     else:
-        header = f"🔴 **Closed: [{repo} #{pr_number} — {pr_title}]({url})**"
+        label = "Closed"
         status_line = f"**Status:** Closed by @{actor}"
-    return f"{header}\n\n{status_line}"
-
+        color = _GITHUB_CLOSED_RED
+    # Discord embed titles are plain text (no markdown links); put the link in url.
+    title = f"{label}: {repo} #{pr_number} — {pr_title}"
+    if len(title) > 256:
+        title = title[:253] + "..."
+    embeds = [
+        {
+            "title": title,
+            "url": raw_url,
+            "description": status_line,
+            "color": color,
+        }
+    ]
+    return "", embeds
 
 def send_pr_opened_github_link_comment(
     event: ContributionEvent,

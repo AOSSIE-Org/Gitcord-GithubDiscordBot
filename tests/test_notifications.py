@@ -104,8 +104,15 @@ class MockDiscordWriter:
         self._next_message_id += 1
         return str(self._next_message_id)
 
-    def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
-        self.messages_edited.append((channel_id, message_id, content))
+    def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        content: str,
+        *,
+        embeds: list[dict] | None = None,
+    ) -> bool:
+        self.messages_edited.append((channel_id, message_id, content, embeds))
         return True
 
 
@@ -1143,11 +1150,12 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
         event, storage, discord_writer, policy, config, "AOSSIE-Org"
     )
     assert len(discord_writer.messages_edited) == 1
-    channel_id, message_id, content = discord_writer.messages_edited[0]
+    channel_id, message_id, content, embeds = discord_writer.messages_edited[0]
     assert channel_id == "chan-1"
     assert message_id == "msg-9"
-    assert "Merged:" in content
-    assert "Merged by @mentor1" in content
+    assert embeds and embeds[0]["color"] == 0x8250DF
+    assert "Merged:" in embeds[0]["title"]
+    assert "Merged by @mentor1" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
 
@@ -1177,9 +1185,10 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
         event, storage, discord_writer, policy, config, "StabilityNexus"
     )
     assert len(discord_writer.messages_edited) == 1
-    content = discord_writer.messages_edited[0][2]
-    assert "Closed:" in content
-    assert "Closed by @bob" in content
+    embeds = discord_writer.messages_edited[0][3]
+    assert embeds and embeds[0]["color"] == 0xCF222E
+    assert "Closed:" in embeds[0]["title"]
+    assert "Closed by @bob" in embeds[0]["description"]
 
 
 def test_update_pr_channel_announcement_skips_untracked_old_messages() -> None:
