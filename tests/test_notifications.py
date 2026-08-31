@@ -543,6 +543,37 @@ def test_send_notification_pr_reviewed_comment() -> None:
     assert "reviewer" in discord_writer.dms_sent[0][1]
 
 
+def test_send_notification_skips_self_review_comment() -> None:
+    """PR author replies show up as COMMENTED reviews — do not DM them as reviewer."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "Sashang-debug"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="Sashang-debug",
+        event_type="pr_reviewed",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "pr_number": 51,
+            "state": "COMMENTED",
+            "pr_author": "sashang-debug",  # case differs from github_user
+            "review_id": 4999427982,
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+
+    assert result is False
+    assert discord_writer.dms_sent == []
+
+
 def test_send_notification_pr_reviewed_comment_disabled() -> None:
     """Test that COMMENT reviews are skipped when pr_review_comment is false."""
     storage = MockStorage()

@@ -103,7 +103,26 @@ def send_notification_for_event(
             extra={"event_type": event.event_type, "payload": event.payload, "event_github_user": event.github_user},
         )
         return False
-    
+
+    # Author replies on their own PR often appear as COMMENTED "reviews" in the
+    # GitHub API. Never DM the author that they reviewed their own PR.
+    if event.event_type == "pr_reviewed":
+        reviewer_key = (event.github_user or "").strip().lower()
+        author_key = (target_github_user or "").strip().lower()
+        if reviewer_key and author_key and reviewer_key == author_key:
+            logger.info(
+                "Skipping self-review notification",
+                extra={
+                    "github_user": event.github_user,
+                    "pr_author": target_github_user,
+                    "repo": event.repo,
+                    "pr_number": event.payload.get("pr_number"),
+                    "review_id": event.payload.get("review_id"),
+                    "review_state": event.payload.get("state"),
+                },
+            )
+            return False
+
     # Resolve GitHub user to Discord user (verified only)
     discord_user_id = _resolve_github_to_discord(storage, target_github_user)
     if not discord_user_id:
