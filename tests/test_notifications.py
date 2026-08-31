@@ -1153,7 +1153,9 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     channel_id, message_id, content, embeds = discord_writer.messages_edited[0]
     assert channel_id == "chan-1"
     assert message_id == "msg-9"
-    assert embeds and embeds[0]["color"] == 0x8250DF
+    assert content == ""
+    assert embeds
+    assert embeds[0]["color"] == 0x8250DF
     assert "Merged:" in embeds[0]["title"]
     assert "Merged by @mentor1" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
@@ -1186,7 +1188,8 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     )
     assert len(discord_writer.messages_edited) == 1
     embeds = discord_writer.messages_edited[0][3]
-    assert embeds and embeds[0]["color"] == 0xCF222E
+    assert embeds
+    assert embeds[0]["color"] == 0xCF222E
     assert "Closed:" in embeds[0]["title"]
     assert "Closed by @bob" in embeds[0]["description"]
 
