@@ -46,6 +46,7 @@ from ghdcbot.engine.pr_status import (
     fetch_pr_health,
     format_all_pr_status,
     format_single_pr_status,
+    is_repo_allowed,
     PR_STATUS_MAX_PRS,
 )
 from ghdcbot.logging.setup import configure_logging
@@ -863,20 +864,12 @@ def run_bot(config_path: str) -> None:
             )
         
     def command_permission_check(command_name: str, *, allow_all_by_default: bool = False):
-        """Restrict slash commands via discord.command_permissions or legacy issue_assignees.
-
-        When allow_all_by_default is True (e.g. for informational commands like /pr-status),
-        the command is open to all guild members unless explicitly configured in
-        discord.command_permissions.
-        """
+        """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
 
         def check(interaction: discord.Interaction) -> bool:
-            if allow_all_by_default:
-                perms = getattr(config.discord, "command_permissions", None)
-                if perms and command_name in perms:
-                    return slash_command_allowed(interaction, config, command_name)
-                return hasattr(interaction.user, "roles") and hasattr(interaction.user, "guild_permissions")
-            return slash_command_allowed(interaction, config, command_name)
+            return slash_command_allowed(
+                interaction, config, command_name, allow_all_by_default=allow_all_by_default
+            )
 
         return check
 
@@ -1010,20 +1003,12 @@ def run_bot(config_path: str) -> None:
 
         # Validate repo_name against config.github.repos filter if configured
         repo_filter = getattr(config.github, "repos", None)
-        if repo_filter:
-            filter_names = {name.strip() for name in repo_filter.names}
-            is_excluded = False
-            if repo_filter.mode == "allow" and repo_name not in filter_names:
-                is_excluded = True
-            elif repo_filter.mode == "deny" and repo_name in filter_names:
-                is_excluded = True
-
-            if is_excluded:
-                await interaction.followup.send(
-                    f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
-                    ephemeral=True,
-                )
-                return
+        if not is_repo_allowed(repo_filter, repo_name):
+            await interaction.followup.send(
+                f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
+                ephemeral=True,
+            )
+            return
 
         try:
             health = await asyncio.to_thread(

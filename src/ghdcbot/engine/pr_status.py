@@ -19,6 +19,19 @@ _DEFAULT_CODERABBIT_BOT_LOGINS = ["coderabbitai", "coderabbitai[bot]"]
 PR_STATUS_MAX_PRS = 25
 
 
+def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
+    """Check whether a repository is permitted by the configured RepoFilterConfig."""
+    if not repo_filter:
+        return True
+    filter_names = {name.strip() for name in getattr(repo_filter, "names", [])}
+    mode = getattr(repo_filter, "mode", "allow")
+    if mode == "allow":
+        return repo_name in filter_names
+    if mode == "deny":
+        return repo_name not in filter_names
+    return True
+
+
 @dataclass(frozen=True)
 class PRHealthStatus:
     """Health assessment for a single pull request."""

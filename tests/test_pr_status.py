@@ -981,60 +981,31 @@ class TestSplitMessages:
 
 
 class TestPRStatusCommandRepoFilter:
-    @pytest.mark.asyncio
-    async def test_repo_filter_allow_mode_blocks_unlisted_repo(self) -> None:
+    def test_repo_filter_allow_mode_blocks_unlisted_repo(self) -> None:
         from ghdcbot.config.models import RepoFilterConfig
+        from ghdcbot.engine.pr_status import is_repo_allowed
 
         repo_filter = RepoFilterConfig(mode="allow", names=["allowed-repo"])
-        repo_name = "secret-repo"
-        pr_number = 42
+        assert is_repo_allowed(repo_filter, "secret-repo") is False
 
-        # Simulate the filter validation logic from pr_status_cmd
-        filter_names = {name.strip() for name in repo_filter.names}
-        is_excluded = False
-        if repo_filter.mode == "allow" and repo_name not in filter_names:
-            is_excluded = True
-        elif repo_filter.mode == "deny" and repo_name in filter_names:
-            is_excluded = True
-
-        assert is_excluded is True
-        error_msg = f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible."
-        assert error_msg == "❌ PR **secret-repo#42** not found or inaccessible."
-
-    @pytest.mark.asyncio
-    async def test_repo_filter_deny_mode_blocks_denied_repo(self) -> None:
+    def test_repo_filter_deny_mode_blocks_denied_repo(self) -> None:
         from ghdcbot.config.models import RepoFilterConfig
+        from ghdcbot.engine.pr_status import is_repo_allowed
 
         repo_filter = RepoFilterConfig(mode="deny", names=["denied-repo"])
-        repo_name = "denied-repo"
-        pr_number = 7
+        assert is_repo_allowed(repo_filter, "denied-repo") is False
 
-        filter_names = {name.strip() for name in repo_filter.names}
-        is_excluded = False
-        if repo_filter.mode == "allow" and repo_name not in filter_names:
-            is_excluded = True
-        elif repo_filter.mode == "deny" and repo_name in filter_names:
-            is_excluded = True
-
-        assert is_excluded is True
-        error_msg = f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible."
-        assert error_msg == "❌ PR **denied-repo#7** not found or inaccessible."
-
-    @pytest.mark.asyncio
-    async def test_repo_filter_allows_valid_repo(self) -> None:
+    def test_repo_filter_allows_valid_repo(self) -> None:
         from ghdcbot.config.models import RepoFilterConfig
+        from ghdcbot.engine.pr_status import is_repo_allowed
 
         repo_filter = RepoFilterConfig(mode="allow", names=["allowed-repo"])
-        repo_name = "allowed-repo"
+        assert is_repo_allowed(repo_filter, "allowed-repo") is True
 
-        filter_names = {name.strip() for name in repo_filter.names}
-        is_excluded = False
-        if repo_filter.mode == "allow" and repo_name not in filter_names:
-            is_excluded = True
-        elif repo_filter.mode == "deny" and repo_name in filter_names:
-            is_excluded = True
+    def test_repo_filter_none_allows_all_repos(self) -> None:
+        from ghdcbot.engine.pr_status import is_repo_allowed
 
-        assert is_excluded is False
+        assert is_repo_allowed(None, "any-repo") is True
 
 
 # ===================================================================
@@ -1065,15 +1036,7 @@ class TestPRStatusCommandPermissions:
         interaction = MagicMock()
         interaction.user = member
 
-        # Simulating command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True)
-        perms = getattr(config.discord, "command_permissions", None)
-        assert perms is None
-        allowed = (
-            slash_command_allowed(interaction, config, "pr-status")
-            if perms and "pr-status" in perms
-            else (hasattr(interaction.user, "roles") and hasattr(interaction.user, "guild_permissions"))
-        )
-        assert allowed is True
+        assert slash_command_allowed(interaction, config, "pr-status", allow_all_by_default=True) is True
 
     def test_pr_status_gated_when_configured_in_command_permissions(self) -> None:
         """When discord.command_permissions specifies pr-status, unauthorized members are blocked and authorized members pass."""
@@ -1113,13 +1076,12 @@ class TestPRStatusCommandPermissions:
         interaction_contrib = MagicMock()
         interaction_contrib.user = member_contributor
 
-        perms = getattr(config.discord, "command_permissions", None)
-        allowed_contrib = (
-            slash_command_allowed(interaction_contrib, config, "pr-status")
-            if perms and "pr-status" in perms
-            else hasattr(interaction_contrib.user, "roles")
+        assert (
+            slash_command_allowed(
+                interaction_contrib, config, "pr-status", allow_all_by_default=True
+            )
+            is False
         )
-        assert allowed_contrib is False
 
         # 2. Mentor with Mentor role
         member_mentor = MagicMock()
@@ -1131,11 +1093,11 @@ class TestPRStatusCommandPermissions:
         interaction_mentor = MagicMock()
         interaction_mentor.user = member_mentor
 
-        allowed_mentor = (
-            slash_command_allowed(interaction_mentor, config, "pr-status")
-            if perms and "pr-status" in perms
-            else hasattr(interaction_mentor.user, "roles")
+        assert (
+            slash_command_allowed(
+                interaction_mentor, config, "pr-status", allow_all_by_default=True
+            )
+            is True
         )
-        assert allowed_mentor is True
 
 
