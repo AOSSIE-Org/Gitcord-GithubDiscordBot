@@ -84,7 +84,9 @@ class NotificationConfig(BaseModel):
     issue_assignment: bool = True
     pr_review_requested: bool = True
     pr_review_result: bool = True  # APPROVED / CHANGES_REQUESTED
-    pr_review_comment: bool = True  # COMMENT reviews on a PR
+    # Ignored at runtime: comment-only review DMs are always skipped in the
+    # notification engine (too noisy). Kept for backward-compatible YAML.
+    pr_review_comment: bool = False
     pr_merged: bool = True
     pr_closed: bool = True  # PR closed without merge
     issue_reopened: bool = True  # Issue reopened (notifies assignee)

@@ -59,10 +59,19 @@ def send_notification_for_event(
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
         elif state in ("COMMENT", "COMMENTED"):
-            if not config.pr_review_comment:
-                return False
-            event_type_key = "pr_review_comment"
-            target_github_user = event.payload.get("pr_author")
+            # Never DM for comment-only reviews (CodeRabbit rounds, inline chatter).
+            # Signal stays on CHANGES_REQUESTED / APPROVED via pr_review_result.
+            # Config flag is ignored so a remote gitcord.yaml cannot re-enable spam.
+            logger.info(
+                "Skipping comment-only review notification (DMs disabled for COMMENT)",
+                extra={
+                    "pr_number": event.payload.get("pr_number"),
+                    "reviewer": event.github_user,
+                    "pr_author": event.payload.get("pr_author"),
+                    "repo": event.repo,
+                },
+            )
+            return False
         else:
             # DISMISSED or other states - no notification
             logger.debug(
@@ -103,7 +112,26 @@ def send_notification_for_event(
             extra={"event_type": event.event_type, "payload": event.payload, "event_github_user": event.github_user},
         )
         return False
-    
+
+    # Author replies on their own PR often appear as COMMENTED "reviews" in the
+    # GitHub API. Never DM the author that they reviewed their own PR.
+    if event.event_type == "pr_reviewed":
+        reviewer_key = (event.github_user or "").strip().lower()
+        author_key = (target_github_user or "").strip().lower()
+        if reviewer_key and author_key and reviewer_key == author_key:
+            logger.info(
+                "Skipping self-review notification",
+                extra={
+                    "github_user": event.github_user,
+                    "pr_author": target_github_user,
+                    "repo": event.repo,
+                    "pr_number": event.payload.get("pr_number"),
+                    "review_id": event.payload.get("review_id"),
+                    "review_state": event.payload.get("state"),
+                },
+            )
+            return False
+
     # Resolve GitHub user to Discord user (verified only)
     discord_user_id = _resolve_github_to_discord(storage, target_github_user)
     if not discord_user_id:
@@ -415,19 +443,22 @@ def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None
 
 def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     """Build deduplication key: event_type:repo:target:target_github_user (lowercase for case-insensitivity).
-    
-    For pr_reviewed events, includes review_id to allow multiple notifications for different reviews.
+
+    For all pr_reviewed states, coalesce by reviewer + state (not review_id) so many
+    messages/review rounds from the same reviewer only produce one DM per state.
     """
     target = event.payload.get("issue_number") or event.payload.get("pr_number") or "unknown"
     # Use target_github_user (who receives notification) for dedupe; normalize to lowercase (GitHub is case-insensitive)
     user_key = (target_github_user or "").strip().lower()
-    
-    # For pr_reviewed events, include review_id and state to allow separate notifications for different reviews
+
     if event.event_type == "pr_reviewed":
-        review_id = event.payload.get("review_id")
-        state = event.payload.get("state", "").upper()
-        if review_id:
-            return f"{event.event_type}:{event.repo}:{target}:{user_key}:{review_id}:{state}"
+        state = (event.payload.get("state") or "").upper()
+        reviewer = (event.github_user or "").strip().lower() or "unknown"
+        # Normalize GitHub's COMMENTED → COMMENT for a stable key.
+        if state in {"COMMENT", "COMMENTED"}:
+            state = "COMMENT"
+        if state:
+            return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reviewer}:{state}"
 
     if event.event_type == "pr_closed":
         closed_at = event.payload.get("closed_at") or event.created_at.isoformat()
@@ -436,7 +467,7 @@ def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     if event.event_type in {"issue_reopened", "pr_reopened"}:
         reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
         return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reopened_at}"
-    
+
     return f"{event.event_type}:{event.repo}:{target}:{user_key}"
 
 
