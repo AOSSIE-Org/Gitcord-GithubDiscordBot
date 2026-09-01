@@ -907,6 +907,9 @@ class GitHubRestAdapter:
                         "title": pr.get("title"),
                         "merged_at": pr.get("merged_at"),
                     }
+                    merged_by = ((pr.get("merged_by") or {}).get("login") or "").strip()
+                    if merged_by:
+                        payload["merged_by"] = merged_by
                     if base_branch:
                         payload["base_branch"] = base_branch
                     if difficulty_labels:
@@ -1092,6 +1095,7 @@ class GitHubRestAdapter:
                         timeline_events, index, merged_at
                     ):
                         continue
+                    closed_by = ((event.get("actor") or {}).get("login") or "").strip() or author
                     yield ContributionEvent(
                         github_user=author,
                         event_type="pr_closed",
@@ -1102,6 +1106,7 @@ class GitHubRestAdapter:
                             "pr_title": pr.get("title"),
                             "title": pr.get("title"),
                             "pr_author": author,
+                            "closed_by": closed_by,
                             "repository": repo,
                             "html_url": pr.get("html_url"),
                             "closed_at": event.get("created_at"),
