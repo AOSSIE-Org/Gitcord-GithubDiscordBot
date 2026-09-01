@@ -1051,6 +1051,8 @@ def run_bot(config_path: str) -> None:
             return
             
         # 3. Validate inputs
+        repo = repo.strip()
+        title = title.strip()
         ok, err_msg = validate_issue_params(title, repo, config.github.org)
         if not ok:
             await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
@@ -1092,7 +1094,10 @@ def run_bot(config_path: str) -> None:
                 config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
             )
             ctx["timestamp"] = datetime.now(timezone.utc).isoformat()
-            append_audit(ctx)
+            try:
+                append_audit(ctx)
+            except Exception as e:
+                logger.error("Failed to append audit event for issue creation", exc_info=e)
             
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1101,6 +1106,17 @@ def run_bot(config_path: str) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        discord_user_id = str(interaction.user.id)
+        
+        # Check permissions
+        if not getattr(config.github.permissions, "write", False):
+            return []
+            
+        # Check identity
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            return []
+            
         try:
             repo_names = await asyncio.to_thread(github_adapter.list_org_repo_names)
         except Exception:

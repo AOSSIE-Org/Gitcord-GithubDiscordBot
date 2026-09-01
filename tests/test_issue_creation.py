@@ -87,6 +87,33 @@ def test_list_org_repo_names(monkeypatch: pytest.MonkeyPatch) -> None:
     names = adapter.list_org_repo_names()
     assert names == ["repo1", "repo2"]
 
+def test_list_org_repo_names_caching(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = GitHubRestAdapter("token", "org", "http://api")
+    
+    call_count = 0
+    def mock_list_repos():
+        nonlocal call_count
+        call_count += 1
+        yield {"name": "repo1"}
+        
+    monkeypatch.setattr(adapter, "_list_repos", mock_list_repos)
+    
+    # First call should hit the mocked _list_repos
+    names1 = adapter.list_org_repo_names()
+    assert names1 == ["repo1"]
+    assert call_count == 1
+    
+    # Second call should use cache
+    names2 = adapter.list_org_repo_names()
+    assert names2 == ["repo1"]
+    assert call_count == 1  # Still 1
+    
+    # Explicit invalidation should cause another hit
+    adapter.invalidate_repo_cache()
+    names3 = adapter.list_org_repo_names()
+    assert names3 == ["repo1"]
+    assert call_count == 2
+
 def test_create_issue_success(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = GitHubRestAdapter("token", "org", "http://api")
     

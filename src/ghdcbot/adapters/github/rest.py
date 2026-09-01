@@ -163,10 +163,28 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_issues(repo)
 
+    def invalidate_repo_cache(self) -> None:
+        """Explicitly invalidate the repository cache (e.g. after config changes)."""
+        self._repo_names_cache = None
+
     def list_org_repo_names(self) -> list[str]:
         """Return a list of repo names in the org (for slash command autocomplete)."""
+        import time
+        now = time.monotonic()
+        
+        # Check cache
+        if hasattr(self, "_repo_names_cache") and self._repo_names_cache is not None:
+            cache_time, cached_names = self._repo_names_cache
+            if now - cache_time < getattr(self, "_repo_names_cache_ttl", 60.0):
+                return cached_names
+                
         repos = list(self._list_repos())
-        return [r["name"] for r in repos if isinstance(r, dict) and "name" in r]
+        names = [r["name"] for r in repos if isinstance(r, dict) and "name" in r]
+        
+        # Save to cache
+        self._repo_names_cache_ttl = 60.0
+        self._repo_names_cache = (now, names)
+        return names
 
     def list_open_pull_requests(self) -> Iterable[dict]:
         for repo in self._list_repos():

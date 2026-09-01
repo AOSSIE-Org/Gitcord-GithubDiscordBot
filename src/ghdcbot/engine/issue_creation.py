@@ -135,6 +135,8 @@ def build_issue_created_embed(
     
     # Add labels field if there are labels
     if labels_str != "None":
+        if len(labels_str) > 1024:
+            labels_str = labels_str[:1021] + "..."
         embed_dict["fields"].append({
             "name": "Labels",
             "value": labels_str,
