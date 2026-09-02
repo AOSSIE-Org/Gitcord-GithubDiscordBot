@@ -872,11 +872,10 @@ def run_bot(config_path: str) -> None:
 
     @tree.command(
         name=SLASH_CMD_HELP_LINK,
-        description="Help a contributor link GitHub (mentor-only; target-only Start linking)",
+        description="Help a Discord member link GitHub (opens Start linking for them)",
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(contributor="Discord member who needs help linking GitHub")
-    @app_commands.check(command_permission_check(SLASH_CMD_HELP_LINK))
     @app_commands.checks.cooldown(1, 15.0, key=lambda i: (i.guild_id, i.user.id))
     async def help_link_cmd(
         interaction: discord.Interaction, contributor: discord.Member

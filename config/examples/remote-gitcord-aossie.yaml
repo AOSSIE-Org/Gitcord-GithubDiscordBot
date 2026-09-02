@@ -60,10 +60,6 @@ discord:
       role_names:
       - Mentor
       allow_discord_administrators: true
-    help-link:
-      role_names:
-      - Mentor
-      allow_discord_administrators: true
   activity_channel_id: null
   pr_preview_channels: []
   pr_open_channels:

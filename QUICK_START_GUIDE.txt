@@ -35,14 +35,14 @@ Tips:
 /connect-social       Attach X or LinkedIn username/URL to your profile
 /disconnect-social    Remove X or LinkedIn from your profile
 /unlink               Remove your GitHub link
+/help-link @member    Help someone link: they get Start linking →
+                      username box → same verify steps as /link
 
 
 3. MENTOR COMMANDS
 ------------------
 /sync                 Manually sync GitHub events and send notifications
-/help-link @member    Help a stuck contributor: they get Start linking →
-                      username box → same verify steps as /link
-                      (both require a mentor role from discord.command_permissions)
+                      (requires a mentor role from discord.command_permissions)
 
 
 4. WHAT HAPPENS AFTER YOU VERIFY

@@ -13,11 +13,8 @@ import discord
 from ghdcbot.adapters.github.identity import VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.bot import IdentityVerificationView, build_identity_verification_embed
-from ghdcbot.config.models import DiscordConfig, SlashCommandPermissionRule
-from ghdcbot.discord_command_permissions import slash_command_allowed
 from ghdcbot.engine.identity_linking import IdentityLinkService
 from ghdcbot.help_link import (
-    HELP_LINK_COMMAND_NAME,
     HelpLinkSession,
     HelpLinkSessionStore,
     HelpLinkStartView,
@@ -288,36 +285,3 @@ def test_deliver_help_link_falls_back_to_channel() -> None:
     assert "visible" in status.lower()
     assert len(channel.messages) == 1
     assert "Only you can use the button" in channel.messages[0]["content"]
-
-
-def test_help_link_permission_key_uses_command_permissions() -> None:
-    config = SimpleNamespace(
-        discord=DiscordConfig(
-            guild_id="1",
-            token="t",
-            unrestricted_slash_commands=False,
-            command_permissions={
-                HELP_LINK_COMMAND_NAME: SlashCommandPermissionRule(
-                    role_names=["Mentor"],
-                    allow_discord_administrators=True,
-                )
-            },
-        ),
-        assignments=None,
-    )
-    mentor = SimpleNamespace(
-        roles=[SimpleNamespace(id=1, name="Mentor")],
-        guild_permissions=SimpleNamespace(administrator=False),
-    )
-    student = SimpleNamespace(
-        roles=[SimpleNamespace(id=2, name="Student")],
-        guild_permissions=SimpleNamespace(administrator=False),
-    )
-    assert (
-        slash_command_allowed(SimpleNamespace(user=mentor), config, HELP_LINK_COMMAND_NAME)
-        is True
-    )
-    assert (
-        slash_command_allowed(SimpleNamespace(user=student), config, HELP_LINK_COMMAND_NAME)
-        is False
-    )
