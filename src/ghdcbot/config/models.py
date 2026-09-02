@@ -67,7 +67,7 @@ class GitHubConfig(BaseModel):
 
 
 class SlashCommandPermissionRule(BaseModel):
-    """Who may run a restricted slash command (e.g. assign-issue, issue-requests, sync, help-link).
+    """Who may run a restricted slash command (e.g. assign-issue, issue-requests, sync).
 
     If a command is omitted from ``discord.command_permissions``, the bot falls back to
     ``assignments.issue_assignees`` (role name match), for backward compatibility.

@@ -1,4 +1,4 @@
-"""Mentor-assisted identity linking: /help-link → Start button → modal → /link verify UI."""
+"""Assisted identity linking: /help-link → Start button → modal → /link verify UI."""
 
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
         )
         if session is None:
             await interaction.response.send_message(
-                "This help session expired. Ask a mentor to run `/help-link` again.",
+                "This help session expired. Ask someone to run `/help-link` again.",
                 ephemeral=True,
             )
             return
@@ -233,7 +233,7 @@ class HelpLinkStartView(discord.ui.View):
         )
         if session is None:
             await interaction.response.send_message(
-                "This help session expired. Ask a mentor to run `/help-link` again.",
+                "This help session expired. Ask someone to run `/help-link` again.",
                 ephemeral=True,
             )
             return
