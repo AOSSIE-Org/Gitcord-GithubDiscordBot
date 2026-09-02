@@ -212,7 +212,7 @@ def send_pr_opened_channel_notification(
         return False
 
     author_github = event.github_user
-    if not author_github:
+    if not author_github or _is_github_bot_login(author_github):
         return False
 
     discord_user_id = _resolve_github_to_discord(storage, author_github)
