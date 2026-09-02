@@ -872,7 +872,7 @@ def run_bot(config_path: str) -> None:
 
     @tree.command(
         name=SLASH_CMD_HELP_LINK,
-        description="Help a contributor link GitHub (mentor-only; opens private Start linking)",
+        description="Help a contributor link GitHub (mentor-only; target-only Start linking)",
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(contributor="Discord member who needs help linking GitHub")
@@ -896,7 +896,7 @@ def run_bot(config_path: str) -> None:
         if getattr(config, "identity", None) is not None:
             max_age_days = getattr(config.identity, "verified_max_age_days", None)
 
-        help_link_sessions.create(
+        session = help_link_sessions.create(
             mentor_discord_id=mentor_id,
             target_discord_id=target_id,
         )
@@ -905,6 +905,7 @@ def run_bot(config_path: str) -> None:
             storage=storage,
             target_discord_id=target_id,
             mentor_discord_id=mentor_id,
+            session_id=session.session_id,
             profile_settings_url=profile_settings_url,
             verification_view_factory=IdentityVerificationView,
             build_verification_embed=build_identity_verification_embed,
@@ -919,7 +920,7 @@ def run_bot(config_path: str) -> None:
                 view=view,
             )
         except Exception:
-            help_link_sessions.clear(target_id)
+            help_link_sessions.clear_if_match(target_id, session.session_id)
             logger.exception("help-link delivery failed")
             await interaction.followup.send(
                 "❌ Could not start linking help. Please try again.",

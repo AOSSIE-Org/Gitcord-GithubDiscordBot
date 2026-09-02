@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import discord
-import pytest
 
 from ghdcbot.adapters.github.identity import VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
@@ -99,10 +98,31 @@ class _FakeChannel:
         self.messages.append(kwargs)
 
 
+def _make_view(
+    *,
+    store: HelpLinkSessionStore,
+    session: HelpLinkSession,
+    service: Any = None,
+    storage: Any = None,
+) -> HelpLinkStartView:
+    return HelpLinkStartView(
+        service=service if service is not None else SimpleNamespace(),
+        storage=storage if storage is not None else SimpleNamespace(),
+        target_discord_id=session.target_discord_id,
+        mentor_discord_id=session.mentor_discord_id,
+        session_id=session.session_id,
+        profile_settings_url="https://github.com/settings/profile",
+        verification_view_factory=IdentityVerificationView,
+        build_verification_embed=build_identity_verification_embed,
+        session_store=store,
+    )
+
+
 def test_help_link_session_store_expires() -> None:
     store = HelpLinkSessionStore(ttl=timedelta(minutes=20))
     now = datetime.now(timezone.utc)
     store._by_target["t1"] = HelpLinkSession(
+        session_id="old",
         mentor_discord_id="m1",
         target_discord_id="t1",
         created_at=now - timedelta(minutes=30),
@@ -117,7 +137,27 @@ def test_help_link_session_replaces_previous_for_same_target() -> None:
     first = store.create(mentor_discord_id="m1", target_discord_id="t1")
     second = store.create(mentor_discord_id="m2", target_discord_id="t1")
     assert store.get_active("t1") is second
-    assert first is not second
+    assert first.session_id != second.session_id
+
+
+def test_older_view_timeout_does_not_clear_replacement_session() -> None:
+    store = HelpLinkSessionStore()
+    first = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    first_view = _make_view(store=store, session=first)
+    second = store.create(mentor_discord_id="m2", target_discord_id="t1")
+    second_view = _make_view(store=store, session=second)
+
+    asyncio.run(first_view.on_timeout())
+
+    active = store.get_active("t1")
+    assert active is second
+    assert active.session_id == second.session_id
+    assert store.get_active_matching("t1", first.session_id) is None
+    assert store.get_active_matching("t1", second.session_id) is second
+
+    # Replacement view timeout still clears its own session.
+    asyncio.run(second_view.on_timeout())
+    assert store.get_active("t1") is None
 
 
 def test_help_link_prompt_embed_mentions_mentor() -> None:
@@ -131,17 +171,8 @@ def test_start_view_rejects_other_users(tmp_path: Path) -> None:
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
     store = HelpLinkSessionStore()
-    store.create(mentor_discord_id="m1", target_discord_id="t1")
-    view = HelpLinkStartView(
-        service=svc,
-        storage=storage,
-        target_discord_id="t1",
-        mentor_discord_id="m1",
-        profile_settings_url="https://github.com/settings/profile",
-        verification_view_factory=IdentityVerificationView,
-        build_verification_embed=build_identity_verification_embed,
-        session_store=store,
-    )
+    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    view = _make_view(store=store, session=session, service=svc, storage=storage)
     interaction = _FakeButtonInteraction("someone-else")
     asyncio.run(view.start_linking(interaction))
     assert interaction.response.modals == []
@@ -153,16 +184,14 @@ def test_start_view_rejects_expired_session(tmp_path: Path) -> None:
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
     store = HelpLinkSessionStore()
-    view = HelpLinkStartView(
-        service=svc,
-        storage=storage,
-        target_discord_id="t1",
+    orphan = HelpLinkSession(
+        session_id="missing",
         mentor_discord_id="m1",
-        profile_settings_url="https://github.com/settings/profile",
-        verification_view_factory=IdentityVerificationView,
-        build_verification_embed=build_identity_verification_embed,
-        session_store=store,
+        target_discord_id="t1",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=20),
     )
+    view = _make_view(store=store, session=orphan, service=svc, storage=storage)
     interaction = _FakeButtonInteraction("t1")
     asyncio.run(view.start_linking(interaction))
     assert interaction.response.modals == []
@@ -174,21 +203,14 @@ def test_start_view_opens_modal_for_target(tmp_path: Path) -> None:
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
     store = HelpLinkSessionStore()
-    store.create(mentor_discord_id="m1", target_discord_id="t1")
-    view = HelpLinkStartView(
-        service=svc,
-        storage=storage,
-        target_discord_id="t1",
-        mentor_discord_id="m1",
-        profile_settings_url="https://github.com/settings/profile",
-        verification_view_factory=IdentityVerificationView,
-        build_verification_embed=build_identity_verification_embed,
-        session_store=store,
-    )
+    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    view = _make_view(store=store, session=session, service=svc, storage=storage)
     interaction = _FakeButtonInteraction("t1")
     asyncio.run(view.start_linking(interaction))
     assert len(interaction.response.modals) == 1
-    assert isinstance(interaction.response.modals[0], HelpLinkUsernameModal)
+    modal = interaction.response.modals[0]
+    assert isinstance(modal, HelpLinkUsernameModal)
+    assert modal.session_id == session.session_id
 
 
 def test_modal_creates_claim_and_sends_verify_ui(tmp_path: Path) -> None:
@@ -196,11 +218,12 @@ def test_modal_creates_claim_and_sends_verify_ui(tmp_path: Path) -> None:
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
     store = HelpLinkSessionStore()
-    store.create(mentor_discord_id="m1", target_discord_id="t1")
+    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
     modal = HelpLinkUsernameModal(
         service=svc,
         storage=storage,
         target_discord_id="t1",
+        session_id=session.session_id,
         profile_settings_url="https://github.com/settings/profile",
         verification_view_factory=IdentityVerificationView,
         build_verification_embed=build_identity_verification_embed,
@@ -228,17 +251,8 @@ def test_deliver_help_link_prefers_dm() -> None:
     mentor = _FakeMember(7, mention="<@7>")
     interaction = SimpleNamespace(channel=_FakeChannel())
     store = HelpLinkSessionStore()
-    store.create(mentor_discord_id="7", target_discord_id="42")
-    view = HelpLinkStartView(
-        service=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        target_discord_id="42",
-        mentor_discord_id="7",
-        profile_settings_url="https://github.com/settings/profile",
-        verification_view_factory=IdentityVerificationView,
-        build_verification_embed=build_identity_verification_embed,
-        session_store=store,
-    )
+    session = store.create(mentor_discord_id="7", target_discord_id="42")
+    view = _make_view(store=store, session=session)
 
     status = asyncio.run(
         deliver_help_link_prompt(
@@ -259,17 +273,8 @@ def test_deliver_help_link_falls_back_to_channel() -> None:
     channel = _FakeChannel()
     interaction = SimpleNamespace(channel=channel)
     store = HelpLinkSessionStore()
-    store.create(mentor_discord_id="7", target_discord_id="42")
-    view = HelpLinkStartView(
-        service=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        target_discord_id="42",
-        mentor_discord_id="7",
-        profile_settings_url="https://github.com/settings/profile",
-        verification_view_factory=IdentityVerificationView,
-        build_verification_embed=build_identity_verification_embed,
-        session_store=store,
-    )
+    session = store.create(mentor_discord_id="7", target_discord_id="42")
+    view = _make_view(store=store, session=session)
 
     status = asyncio.run(
         deliver_help_link_prompt(
@@ -280,6 +285,7 @@ def test_deliver_help_link_falls_back_to_channel() -> None:
         )
     )
     assert "channel" in status.lower()
+    assert "visible" in status.lower()
     assert len(channel.messages) == 1
     assert "Only you can use the button" in channel.messages[0]["content"]
 

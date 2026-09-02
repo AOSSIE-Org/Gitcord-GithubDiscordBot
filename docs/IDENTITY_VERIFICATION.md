@@ -17,7 +17,7 @@ The project uses a lightweight verification-code flow instead of OAuth:
 
 The older `/verify-link github_username` command remains available and uses the same verification logic.
 
-Mentors can also start the same flow for a stuck contributor with `/help-link @member` (mentor-gated). That opens a private **Start linking** button (DM preferred, channel fallback), then a username modal, then the same verification embed/buttons as `/link`.
+Mentors can also start the same flow for a stuck contributor with `/help-link @member` (mentor-gated). That opens a **target-only** **Start linking** button (DM preferred; if DMs are closed, a channel message that others can see but only the tagged member can use), then a username modal, then the same verification embed/buttons as `/link`.
 
 ## Main Files
 

@@ -1,9 +1,10 @@
-"""Mentor-assisted identity linking: /help-link → private Start button → modal → /link verify UI."""
+"""Mentor-assisted identity linking: /help-link → Start button → modal → /link verify UI."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -20,6 +21,7 @@ HELP_LINK_COMMAND_NAME = "help-link"
 class HelpLinkSession:
     """Short-lived mentor→contributor help session."""
 
+    session_id: str
     mentor_discord_id: str
     target_discord_id: str
     created_at: datetime
@@ -40,6 +42,7 @@ class HelpLinkSessionStore:
     def create(self, *, mentor_discord_id: str, target_discord_id: str) -> HelpLinkSession:
         now = datetime.now(timezone.utc)
         session = HelpLinkSession(
+            session_id=uuid.uuid4().hex,
             mentor_discord_id=str(mentor_discord_id),
             target_discord_id=str(target_discord_id),
             created_at=now,
@@ -57,12 +60,29 @@ class HelpLinkSessionStore:
             return None
         return session
 
+    def get_active_matching(
+        self, target_discord_id: str, session_id: str
+    ) -> HelpLinkSession | None:
+        """Return the active session only if it still matches ``session_id``."""
+        session = self.get_active(target_discord_id)
+        if session is None or session.session_id != session_id:
+            return None
+        return session
+
     def clear(self, target_discord_id: str) -> None:
         self._by_target.pop(str(target_discord_id), None)
 
+    def clear_if_match(self, target_discord_id: str, session_id: str) -> bool:
+        """Clear the active session only when it still belongs to ``session_id``."""
+        session = self._by_target.get(str(target_discord_id))
+        if session is None or session.session_id != session_id:
+            return False
+        self._by_target.pop(str(target_discord_id), None)
+        return True
+
 
 def build_help_link_prompt_embed(*, mentor_mention: str) -> discord.Embed:
-    """Public/DM prompt shown only for the tagged contributor."""
+    """DM/channel prompt for the tagged contributor (channel fallback is visible)."""
     return discord.Embed(
         title="Link your GitHub with Gitcord",
         description=(
@@ -91,6 +111,7 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
         service: Any,
         storage: Any,
         target_discord_id: str,
+        session_id: str,
         profile_settings_url: str,
         verification_view_factory: Callable[..., discord.ui.View],
         build_verification_embed: Callable[..., discord.Embed],
@@ -101,6 +122,7 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
         self.service = service
         self.storage = storage
         self.target_discord_id = str(target_discord_id)
+        self.session_id = session_id
         self.profile_settings_url = profile_settings_url
         self.verification_view_factory = verification_view_factory
         self.build_verification_embed = build_verification_embed
@@ -115,7 +137,9 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
             )
             return
 
-        session = self.session_store.get_active(self.target_discord_id)
+        session = self.session_store.get_active_matching(
+            self.target_discord_id, self.session_id
+        )
         if session is None:
             await interaction.response.send_message(
                 "This help session expired. Ask a mentor to run `/help-link` again.",
@@ -153,7 +177,7 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
             github_user=github_username,
             profile_settings_url=self.profile_settings_url,
         )
-        self.session_store.clear(self.target_discord_id)
+        self.session_store.clear_if_match(self.target_discord_id, self.session_id)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -167,6 +191,7 @@ class HelpLinkStartView(discord.ui.View):
         storage: Any,
         target_discord_id: str,
         mentor_discord_id: str,
+        session_id: str,
         profile_settings_url: str,
         verification_view_factory: Callable[..., discord.ui.View],
         build_verification_embed: Callable[..., discord.Embed],
@@ -179,6 +204,7 @@ class HelpLinkStartView(discord.ui.View):
         self.storage = storage
         self.target_discord_id = str(target_discord_id)
         self.mentor_discord_id = str(mentor_discord_id)
+        self.session_id = session_id
         self.profile_settings_url = profile_settings_url
         self.verification_view_factory = verification_view_factory
         self.build_verification_embed = build_verification_embed
@@ -188,7 +214,7 @@ class HelpLinkStartView(discord.ui.View):
         start_button = discord.ui.Button(
             label="Start linking",
             style=discord.ButtonStyle.primary,
-            custom_id=f"help_link_start:{self.target_discord_id}",
+            custom_id=f"help_link_start:{self.target_discord_id}:{self.session_id}",
         )
         start_button.callback = self.start_linking
         self.add_item(start_button)
@@ -202,7 +228,9 @@ class HelpLinkStartView(discord.ui.View):
             )
             return
 
-        session = self.session_store.get_active(self.target_discord_id)
+        session = self.session_store.get_active_matching(
+            self.target_discord_id, self.session_id
+        )
         if session is None:
             await interaction.response.send_message(
                 "This help session expired. Ask a mentor to run `/help-link` again.",
@@ -214,6 +242,7 @@ class HelpLinkStartView(discord.ui.View):
             service=self.service,
             storage=self.storage,
             target_discord_id=self.target_discord_id,
+            session_id=self.session_id,
             profile_settings_url=self.profile_settings_url,
             verification_view_factory=self.verification_view_factory,
             build_verification_embed=self.build_verification_embed,
@@ -223,7 +252,9 @@ class HelpLinkStartView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
     async def on_timeout(self) -> None:
-        self.session_store.clear(self.target_discord_id)
+        # Only clear if this view still owns the active session (a newer /help-link
+        # may have replaced it before this timeout fired).
+        self.session_store.clear_if_match(self.target_discord_id, self.session_id)
         for item in self.children:
             item.disabled = True
 
@@ -238,13 +269,14 @@ async def deliver_help_link_prompt(
     """DM the contributor; fall back to a channel ping if DMs are closed.
 
     Returns a short status string for the mentor ephemeral reply.
+    Channel fallback is visible to others; only the tagged user can use the button.
     """
     embed = build_help_link_prompt_embed(mentor_mention=mentor.mention)
     try:
         await contributor.send(embed=embed, view=view)
         return (
             f"✅ Help started for {contributor.mention}. "
-            "I sent them a private DM with **Start linking**."
+            "I sent them a DM with **Start linking**."
         )
     except (discord.Forbidden, discord.HTTPException) as exc:
         logger.info(
@@ -271,5 +303,5 @@ async def deliver_help_link_prompt(
     return (
         f"✅ Help started for {contributor.mention}. "
         "DMs were closed, so I posted a **Start linking** button in this channel "
-        "(only they can use it)."
+        "(visible here; only they can use it)."
     )
