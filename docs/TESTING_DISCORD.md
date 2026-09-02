@@ -24,7 +24,8 @@ This guide explains how to safely validate Gitcord role automation in a Discord 
 
 - Bot has `Manage Roles`, `View Channels`, `Send Messages`, `Embed Links`, and `Read Message History`.
 - Bot role is above any role it should assign/remove.
-- Application has `Server Members Intent` enabled in Discord Developer Portal.
+- Application has `Server Members Intent` enabled in Discord Developer Portal (required for `welcome_dm_on_join` and some member lookups).
+- For join-welcome DMs: set `discord.welcome_dm_on_join: true`, restart the bot, join with a test account that allows DMs from server members, and confirm **Start linking** → username modal → verify.
 
 ## Bot Command Smoke Tests
 

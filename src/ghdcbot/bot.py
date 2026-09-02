@@ -51,9 +51,12 @@ from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
+    WELCOME_INITIATOR_ID,
     HelpLinkSessionStore,
     HelpLinkStartView,
     deliver_help_link_prompt,
+    deliver_welcome_link_dm,
+    should_skip_welcome_for_identity,
 )
 
 # Slash command names used for permission checks (must match @tree.command name=...)
@@ -357,6 +360,14 @@ def run_bot(config_path: str) -> None:
     # Enable message content intent if passive PR preview is enabled
     if getattr(config.discord, "pr_preview_channels", None):
         intents.message_content = True
+    welcome_dm_on_join = bool(getattr(config.discord, "welcome_dm_on_join", False))
+    if welcome_dm_on_join:
+        # Privileged intent — must also be enabled in the Discord Developer Portal.
+        intents.members = True
+        logger.info(
+            "welcome_dm_on_join enabled: Server Members Intent required "
+            "(Discord Developer Portal → Bot → Privileged Gateway Intents)"
+        )
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
@@ -928,6 +939,68 @@ def run_bot(config_path: str) -> None:
             return
 
         await interaction.followup.send(status, ephemeral=True)
+
+    @client.event
+    async def on_member_join(member: discord.Member) -> None:
+        """Welcome DM with Start linking for new guild members (opt-in via config)."""
+        if not welcome_dm_on_join:
+            return
+        if member.bot:
+            return
+        if member.guild is None or member.guild.id != guild_id:
+            return
+
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
+        get_status = getattr(storage, "get_identity_status", None)
+        if callable(get_status):
+            try:
+                status_info = await asyncio.to_thread(
+                    get_status, str(member.id), max_age_days=max_age_days
+                )
+            except Exception:
+                logger.exception(
+                    "welcome-on-join: identity status lookup failed for %s", member.id
+                )
+                status_info = None
+            skip = should_skip_welcome_for_identity(status_info)
+            if skip:
+                logger.info(
+                    "welcome-on-join skipped for %s (%s)", member.id, skip
+                )
+                return
+
+        org_label = getattr(config.discord, "welcome_org_label", None) or config.github.org
+        session = help_link_sessions.create(
+            mentor_discord_id=WELCOME_INITIATOR_ID,
+            target_discord_id=str(member.id),
+        )
+        view = HelpLinkStartView(
+            service=service,
+            storage=storage,
+            target_discord_id=str(member.id),
+            mentor_discord_id=WELCOME_INITIATOR_ID,
+            session_id=session.session_id,
+            profile_settings_url=profile_settings_url,
+            verification_view_factory=IdentityVerificationView,
+            build_verification_embed=build_identity_verification_embed,
+            session_store=help_link_sessions,
+            max_age_days=max_age_days,
+        )
+        sent = await deliver_welcome_link_dm(
+            member=member,
+            view=view,
+            org_label=str(org_label),
+        )
+        if not sent:
+            help_link_sessions.clear_if_match(str(member.id), session.session_id)
+            return
+        logger.info(
+            "welcome-on-join DM sent to %s (%s)",
+            member.id,
+            getattr(member, "name", "?"),
+        )
 
     @client.event
     async def on_message(message: discord.Message) -> None:

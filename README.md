@@ -286,6 +286,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
 - `/help-link` - Help a tagged Discord member start the linking flow (anyone; DM preferred; channel fallback is visible but target-only)
+- Join welcome (optional) - When `discord.welcome_dm_on_join: true`, new members get a DM with **Start linking** → username box → same verify UI (requires Server Members Intent)
 - `/profile` - Show contributor profile (GitHub, verification, socials, roles); optional Discord member
 - `/who-is` - Look up a GitHub username, find the verified Discord account, and see whether verification is current or stale
 - `/unlink` - Unlink your GitHub identity

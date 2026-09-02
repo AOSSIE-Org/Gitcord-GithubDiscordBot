@@ -54,6 +54,9 @@ discord:
   permissions:
     read: true
     write: true
+  # DM new members a Start linking button (requires Server Members Intent in Developer Portal).
+  welcome_dm_on_join: true
+  welcome_org_label: Stability Nexus
   unrestricted_slash_commands: false
   command_permissions:
     sync:

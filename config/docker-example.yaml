@@ -34,6 +34,9 @@ discord:
   permissions:
     read: true
     write: false
+  # Optional: DM new members Start linking (default false). Requires Server Members Intent.
+  # welcome_dm_on_join: false
+  # welcome_org_label: "Example Org"
   # Who may run /assign-issue, /issue-requests, /sync (add role_ids from Discord for stable checks).
   # Omit this block to fall back to assignments.issue_assignees for those commands.
   command_permissions:

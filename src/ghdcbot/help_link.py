@@ -15,6 +15,53 @@ logger = logging.getLogger("ghdcbot.help_link")
 
 HELP_LINK_SESSION_TTL = timedelta(minutes=20)
 HELP_LINK_COMMAND_NAME = "help-link"
+# Synthetic initiator id for join-welcome sessions (not a real Discord snowflake).
+WELCOME_INITIATOR_ID = "welcome-on-join"
+
+
+def should_skip_welcome_for_identity(status: dict[str, Any] | None) -> str | None:
+    """Return a log-friendly skip reason if join welcome should not be sent."""
+    if not status:
+        return None
+    st = status.get("status")
+    github_user = status.get("github_user") or "unknown"
+    if st in {"verified", "verified_stale"}:
+        return f"already_{st}:{github_user}"
+    return None
+
+
+def build_welcome_link_prompt_embed(*, org_label: str) -> discord.Embed:
+    """Private DM prompt for new members (welcome wording, not help-link wording)."""
+    label = (org_label or "this community").strip() or "this community"
+    return discord.Embed(
+        title=f"Welcome to {label}",
+        description=(
+            "Link your GitHub account to get contributor tools and notifications.\n\n"
+            "Click **Start linking**, enter your GitHub username, then verify with the code "
+            "(same steps as `/link`)."
+        ),
+        color=0x2563EB,
+    )
+
+
+async def deliver_welcome_link_dm(
+    *,
+    member: discord.abc.User,
+    view: HelpLinkStartView,
+    org_label: str,
+) -> bool:
+    """Send the welcome Start-linking DM. Returns True if delivered."""
+    embed = build_welcome_link_prompt_embed(org_label=org_label)
+    try:
+        await member.send(embed=embed, view=view)
+        return True
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        logger.info(
+            "welcome-on-join DM failed for %s (DMs closed or blocked): %s",
+            getattr(member, "id", "?"),
+            exc,
+        )
+        return False
 
 
 @dataclass(frozen=True)

@@ -129,6 +129,11 @@ class DiscordConfig(BaseModel):
     command_permissions: dict[str, SlashCommandPermissionRule] | None = None
     # TESTING ONLY: if true, any guild member may run assign-issue / issue-requests / sync. Turn off for production.
     unrestricted_slash_commands: bool = False
+    # When true, DM new guild members a Start linking button (requires Server Members Intent).
+    # Default false so installs stay quiet until mentors opt in.
+    welcome_dm_on_join: bool = False
+    # Optional label in the welcome embed (defaults to github.org when unset).
+    welcome_org_label: str | None = None
 
 
 class RoleMappingConfig(BaseModel):
