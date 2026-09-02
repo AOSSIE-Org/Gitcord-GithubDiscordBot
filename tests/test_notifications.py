@@ -1168,7 +1168,7 @@ def test_pr_opened_channel_notification_skips_bots() -> None:
     )
 
     assert result is False
-    assert discord_writer.messages == []
+    assert discord_writer.messages_sent == []
 
 
 def test_pr_opened_channel_notification_posts_unverified_author() -> None:
