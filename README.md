@@ -285,6 +285,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
+- `/help-link` - Mentor-only: help a tagged Discord member start the private linking flow
 - `/profile` - Show contributor profile (GitHub, verification, socials, roles); optional Discord member
 - `/who-is` - Look up a GitHub username, find the verified Discord account, and see whether verification is current or stale
 - `/unlink` - Unlink your GitHub identity
@@ -301,7 +302,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 
 - `/sync` - Manually sync GitHub events and send notifications
 
-**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. The bot can also auto-detect PR URLs in configured channels and post passive previews.
+**Note:** `/sync` and `/help-link` require a mentor role configured in `discord.command_permissions`. The bot can also auto-detect PR URLs in configured channels and post passive previews.
 
 ---
 
