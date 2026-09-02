@@ -17,6 +17,34 @@ HELP_LINK_SESSION_TTL = timedelta(minutes=20)
 HELP_LINK_COMMAND_NAME = "help-link"
 
 
+def already_linked_help_reply(
+    *,
+    contributor_mention: str,
+    status: dict[str, Any] | None,
+) -> str | None:
+    """If the contributor is already verified, return an ephemeral reply; else None."""
+    if not status:
+        return None
+    st = status.get("status")
+    github_user = status.get("github_user")
+    if not github_user:
+        return None
+    if st == "verified":
+        return (
+            f"✅ {contributor_mention} is already linked to "
+            f"**{github_user}** — no help needed.\n"
+            "If they need to switch accounts, they can use `/unlink` then `/link`."
+        )
+    if st == "verified_stale":
+        return (
+            f"⚠️ {contributor_mention} is already linked to **{github_user}**, "
+            "but verification may be stale.\n"
+            "Ask them to run `/verify-link` (or `/unlink` then `/link`) — "
+            "no new help session started."
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class HelpLinkSession:
     """Short-lived mentor→contributor help session."""

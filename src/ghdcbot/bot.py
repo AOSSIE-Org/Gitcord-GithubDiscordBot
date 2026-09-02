@@ -53,6 +53,7 @@ from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
     HelpLinkSessionStore,
     HelpLinkStartView,
+    already_linked_help_reply,
     deliver_help_link_prompt,
 )
 
@@ -890,11 +891,24 @@ def run_bot(config_path: str) -> None:
             return
 
         target_id = str(contributor.id)
-        mentor_id = str(interaction.user.id)
         max_age_days = None
         if getattr(config, "identity", None) is not None:
             max_age_days = getattr(config.identity, "verified_max_age_days", None)
 
+        get_status = getattr(storage, "get_identity_status", None)
+        if callable(get_status):
+            status_info = await asyncio.to_thread(
+                get_status, target_id, max_age_days=max_age_days
+            )
+            already = already_linked_help_reply(
+                contributor_mention=contributor.mention,
+                status=status_info,
+            )
+            if already:
+                await interaction.followup.send(already, ephemeral=True)
+                return
+
+        mentor_id = str(interaction.user.id)
         session = help_link_sessions.create(
             mentor_discord_id=mentor_id,
             target_discord_id=target_id,

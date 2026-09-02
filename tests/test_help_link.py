@@ -19,6 +19,7 @@ from ghdcbot.help_link import (
     HelpLinkSessionStore,
     HelpLinkStartView,
     HelpLinkUsernameModal,
+    already_linked_help_reply,
     build_help_link_prompt_embed,
     deliver_help_link_prompt,
 )
@@ -113,6 +114,26 @@ def _make_view(
         build_verification_embed=build_identity_verification_embed,
         session_store=store,
     )
+
+
+def test_already_linked_help_reply_for_verified() -> None:
+    msg = already_linked_help_reply(
+        contributor_mention="<@42>",
+        status={"status": "verified", "github_user": "octocat"},
+    )
+    assert msg is not None
+    assert "already linked" in msg
+    assert "octocat" in msg
+    assert already_linked_help_reply(
+        contributor_mention="<@42>",
+        status={"status": "not_linked", "github_user": None},
+    ) is None
+    stale = already_linked_help_reply(
+        contributor_mention="<@42>",
+        status={"status": "verified_stale", "github_user": "octocat"},
+    )
+    assert stale is not None
+    assert "stale" in stale.lower()
 
 
 def test_help_link_session_store_expires() -> None:
