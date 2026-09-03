@@ -6,9 +6,6 @@ import asyncio
 import logging
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
-
-from datetime import datetime
 from typing import Any, Optional
 
 
