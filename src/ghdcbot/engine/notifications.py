@@ -347,7 +347,7 @@ def update_pr_channel_announcement_for_event(
         event,
         github_org,
         status=status,
-        actor_github=actor,
+        actor_github=actor or "",
         tracked=tracked,
     )
     if not built:
@@ -357,7 +357,7 @@ def update_pr_channel_announcement_for_event(
     dedupe_key = f"pr_channel_lifecycle:{event.repo}:{pr_number}:{status}"
     try:
         claimed = _claim_notification_sent(
-            storage, dedupe_key, event, "", tracked.get("channel_id"), actor
+            storage, dedupe_key, event, "", tracked.get("channel_id"), actor or ""
         )
     except Exception as exc:
         logger.warning(
@@ -445,18 +445,29 @@ def update_pr_channel_announcement_for_event(
                 extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
             )
             return False
-    _audit_notification(storage, event, "", tracked.get("channel_id"), actor)
+    _audit_notification(storage, event, "", tracked.get("channel_id"), actor or "")
     return True
 
 
-def _pr_lifecycle_actor(event: ContributionEvent) -> str:
-    """Prefer explicit merged_by/closed_by; fall back to event github_user."""
+def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
+    """Return the merge/close actor when known.
+
+    For merges, never fall back to the PR author (`event.github_user`) — that is
+    often wrong (maintainer merges contributor PRs). List-PRs omits ``merged_by``;
+    ingestion should fetch the single PR. If still missing, omit the name.
+    """
     payload = event.payload or {}
     if event.event_type == "pr_merged":
-        actor = payload.get("merged_by") or event.github_user
-    else:
-        actor = payload.get("closed_by") or payload.get("pr_author") or event.github_user
-    return (actor or "unknown").strip() or "unknown"
+        actor = (payload.get("merged_by") or "").strip()
+        return actor or None
+    actor = (
+        payload.get("closed_by")
+        or payload.get("pr_author")
+        or event.github_user
+        or ""
+    )
+    actor = str(actor).strip()
+    return actor or None
 
 
 # GitHub Primer status colors (match PR badge hues in the GitHub UI).
@@ -489,14 +500,14 @@ def _build_pr_lifecycle_channel_message(
     pr_title = _sanitize_discord_pr_title(title_raw)
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
-    actor = (actor_github or "unknown").lstrip("@")
+    actor = (actor_github or "").lstrip("@").strip()
     if status == "merged":
         label = "Merged"
-        status_line = f"**Status:** Merged by @{actor}"
+        status_line = f"**Status:** Merged by @{actor}" if actor else "**Status:** Merged"
         color = _GITHUB_MERGED_PURPLE
     else:
         label = "Closed"
-        status_line = f"**Status:** Closed by @{actor}"
+        status_line = f"**Status:** Closed by @{actor}" if actor else "**Status:** Closed"
         color = _GITHUB_CLOSED_RED
     # Discord embed titles are plain text (no markdown links); put the link in url.
     title = f"{label}: {repo} #{pr_number} — {pr_title}"
