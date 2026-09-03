@@ -907,7 +907,14 @@ class GitHubRestAdapter:
                         "title": pr.get("title"),
                         "merged_at": pr.get("merged_at"),
                     }
+                    # List-PRs omits merged_by; only GET /pulls/{n} includes it.
                     merged_by = ((pr.get("merged_by") or {}).get("login") or "").strip()
+                    if not merged_by:
+                        detail = self.get_pull_request(owner, repo, int(pr["number"]))
+                        if isinstance(detail, dict):
+                            merged_by = (
+                                (detail.get("merged_by") or {}).get("login") or ""
+                            ).strip()
                     if merged_by:
                         payload["merged_by"] = merged_by
                     if base_branch:

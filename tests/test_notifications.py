@@ -1283,6 +1283,39 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
 
+def test_update_pr_channel_announcement_merge_does_not_blame_author() -> None:
+    """Missing merged_by must not attribute the merge to the PR author."""
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="OrgExplorer",
+        pr_number=214,
+        channel_id="chan-org",
+        message_id="msg-org",
+        pr_title="feat: add organization filter",
+        author_github="jikrana1",
+        status="open",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="jikrana1",
+        event_type="pr_merged",
+        repo="OrgExplorer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 214, "title": "feat: add organization filter"},
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    embeds = discord_writer.messages_edited[0][3]
+    assert embeds
+    assert embeds[0]["description"] == "**Status:** Merged"
+    assert "jikrana1" not in embeds[0]["description"]
+    assert "Merged by" not in embeds[0]["description"]
+
+
 def test_update_pr_channel_announcement_edits_on_close() -> None:
     storage = MockStorage()
     discord_writer = MockDiscordWriter()
