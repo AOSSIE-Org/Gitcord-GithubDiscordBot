@@ -1151,6 +1151,26 @@ def test_pr_opened_channel_notification_skips_when_pr_opened_disabled() -> None:
     assert discord_writer.messages_sent == []
 
 
+def test_pr_opened_channel_notification_skips_bots() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(github_user="dependabot[bot]"),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+
+
 def test_pr_opened_channel_notification_posts_unverified_author() -> None:
     storage = MockStorage()
     storage.verified_mappings = []
