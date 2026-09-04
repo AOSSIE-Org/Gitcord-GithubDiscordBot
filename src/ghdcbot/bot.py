@@ -69,11 +69,18 @@ from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
     HelpLinkSessionStore,
     HelpLinkStartView,
+from ghdcbot.help_link import (
+    HELP_LINK_COMMAND_NAME,
+    HelpLinkSessionStore,
+    HelpLinkStartView,
     deliver_help_link_prompt,
 )
+from ghdcbot.logging.setup import configure_logging
+from ghdcbot.plugins.registry import build_adapter
 
 # Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
+SLASH_CMD_PR_STATUS = "pr-status"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
 
 
