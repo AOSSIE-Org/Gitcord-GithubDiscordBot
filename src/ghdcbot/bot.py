@@ -1131,7 +1131,7 @@ def run_bot(config_path: str) -> None:
                     f"ℹ️ **{repo_name}#{pr_number}** is a GitHub **Issue**, not a Pull Request.\n\n"
                     f"**Title:** {issue_title}\n"
                     f"**State:** {state_label}\n\n"
-                    f"💡 `/pr-status` is designed for Pull Requests. Try `/pr-status pr_number:<PR#>`.",
+                    "💡 `/pr-status` is designed for Pull Requests. Try `/pr-status pr_number:<PR#>`.",
                     ephemeral=True,
                 )
                 return
