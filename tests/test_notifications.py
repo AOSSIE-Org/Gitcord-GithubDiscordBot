@@ -1768,3 +1768,75 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     assert "#41" in discord_writer.messages_sent[0][1]
     assert "#42" in discord_writer.messages_sent[1][1]
 
+
+def test_notification_message_title_sanitization() -> None:
+    """Ensure issue and PR titles with mass mentions and markdown links are sanitized in all templates."""
+    malicious_title = "@everyone Urgent Security Fix [Click Here](https://evil.com) & @here"
+    
+    # 1. issue_assigned
+    event_issue = ContributionEvent(
+        event_type="issue_assigned",
+        repo="Gitcord",
+        github_user="testuser",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 42, "title": malicious_title, "assigned_by": "mentor"},
+    )
+    msg_issue = _build_notification_message(event_issue, "issue_assigned", "AOSSIE-Org", "testuser")
+    assert msg_issue is not None
+    assert "@everyone" not in msg_issue
+    assert "@here" not in msg_issue
+    assert "\\[Click Here\\]" in msg_issue
+
+    # 2. pr_review_requested
+    event_review_req = ContributionEvent(
+        event_type="pr_review_requested",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_review_req = _build_notification_message(event_review_req, "pr_review_requested", "AOSSIE-Org", "reviewer")
+    assert msg_review_req is not None
+    assert "@everyone" not in msg_review_req
+    assert "\\[Click Here\\]" in msg_review_req
+
+    # 3. pr_review_comment
+    event_comment = ContributionEvent(
+        event_type="pr_review_comment",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_comment = _build_notification_message(event_comment, "pr_review_comment", "AOSSIE-Org", "author")
+    assert msg_comment is not None
+    assert "@everyone" not in msg_comment
+    assert "\\[Click Here\\]" in msg_comment
+
+    # 4. pr_closed
+    event_closed = ContributionEvent(
+        event_type="pr_closed",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title, "pr_author": "author"},
+    )
+    msg_closed = _build_notification_message(event_closed, "pr_closed", "AOSSIE-Org", "author")
+    assert msg_closed is not None
+    assert "@everyone" not in msg_closed
+    assert "\\[Click Here\\]" in msg_closed
+
+    # 5. issue_reopened & pr_reopened
+    event_reopened = ContributionEvent(
+        event_type="issue_reopened",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 10, "title": malicious_title},
+    )
+    msg_reopened = _build_notification_message(event_reopened, "issue_reopened", "AOSSIE-Org", "author")
+    assert msg_reopened is not None
+    assert "@everyone" not in msg_reopened
+    assert "\\[Click Here\\]" in msg_reopened
+
+
