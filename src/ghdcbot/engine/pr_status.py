@@ -6,6 +6,7 @@ CodeRabbit review comments, merge conflicts, and review state.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,194 @@ def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
     return True
 
 
+def get_configured_repo_names(config: Any) -> list[str]:
+    """Extract repository names configured in Gitcord configuration.
+
+    Collects repository names from:
+    1. config.github.repos.names (when mode is 'allow')
+    2. config.discord.pr_open_channels (keys)
+    3. config.repo_contributor_roles (keys)
+
+    Returns a deduplicated list of repository names preserving configuration order.
+    """
+    repo_names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: Any) -> None:
+        if isinstance(name, str):
+            cleaned = name.strip()
+            if cleaned and cleaned.lower() not in seen:
+                seen.add(cleaned.lower())
+                repo_names.append(cleaned)
+
+    if not config:
+        return repo_names
+
+    # 1. github.repos.names (allow mode)
+    github_cfg = getattr(config, "github", None)
+    if isinstance(config, dict) and github_cfg is None:
+        github_cfg = config.get("github")
+
+    if github_cfg:
+        repos_cfg = getattr(github_cfg, "repos", None)
+        if isinstance(github_cfg, dict) and repos_cfg is None:
+            repos_cfg = github_cfg.get("repos")
+
+        if repos_cfg:
+            if isinstance(repos_cfg, (list, tuple)):
+                for r in repos_cfg:
+                    _add(r)
+            else:
+                mode = getattr(repos_cfg, "mode", None)
+                if isinstance(repos_cfg, dict) and mode is None:
+                    mode = repos_cfg.get("mode")
+                mode = mode or "allow"
+
+                names = getattr(repos_cfg, "names", None)
+                if isinstance(repos_cfg, dict) and names is None:
+                    names = repos_cfg.get("names")
+
+                if mode == "allow" and isinstance(names, (list, tuple)):
+                    for r in names:
+                        _add(r)
+
+    # 2. discord.pr_open_channels
+    discord_cfg = getattr(config, "discord", None)
+    if isinstance(config, dict) and discord_cfg is None:
+        discord_cfg = config.get("discord")
+
+    if discord_cfg:
+        pr_open_channels = getattr(discord_cfg, "pr_open_channels", None)
+        if isinstance(discord_cfg, dict) and pr_open_channels is None:
+            pr_open_channels = discord_cfg.get("pr_open_channels")
+
+        if isinstance(pr_open_channels, dict):
+            for r in pr_open_channels:
+                _add(r)
+
+    # 3. repo_contributor_roles
+    contributor_roles = getattr(config, "repo_contributor_roles", None)
+    if isinstance(config, dict) and contributor_roles is None:
+        contributor_roles = config.get("repo_contributor_roles")
+
+    if isinstance(contributor_roles, dict):
+        for r in contributor_roles:
+            _add(r)
+
+    return repo_names
+
+
+def filter_repo_suggestions(configured_repos: list[str], current: str) -> list[str]:
+    """Filter configured repositories by prefix/substring match, up to 25 items."""
+    curr = (current or "").strip().lower()
+    if not curr:
+        return configured_repos[:25]
+    prefix_matches = [r for r in configured_repos if r.lower().startswith(curr)]
+    substring_matches = [
+        r for r in configured_repos if curr in r.lower() and not r.lower().startswith(curr)
+    ]
+    return (prefix_matches + substring_matches)[:25]
+
+
+async def resolve_repo_for_pr(
+    config: Any,
+    github_adapter: Any,
+    pr_number: int,
+    repo: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve repository name for a PR status query.
+
+    If ``repo`` is specified:
+      - Validates against configured repo filters.
+      - Returns (repo_name, None) or (None, error_message).
+
+    If ``repo`` is omitted:
+      - Reads configured repositories from Gitcord config.
+      - If exactly one repo is configured, uses it directly (zero overhead).
+      - If multiple repos are configured, scans them concurrently for ``pr_number``.
+        - Exactly one match: uses that repo.
+        - Multiple matches: asks user to disambiguate.
+        - No matches: informs user which configured repos were checked.
+      - If no repos are configured, prompts user to provide ``repo``.
+
+    Returns:
+      (repo_name, error_message)
+    """
+    repo_filter = None
+    if config:
+        github_cfg = getattr(config, "github", None)
+        if isinstance(config, dict) and github_cfg is None:
+            github_cfg = config.get("github")
+        if github_cfg:
+            repo_filter = getattr(github_cfg, "repos", None)
+            if isinstance(github_cfg, dict) and repo_filter is None:
+                repo_filter = github_cfg.get("repos")
+
+    # Case 1: User explicitly provided repo
+    if repo and repo.strip():
+        cleaned = repo.strip()
+        if not is_repo_allowed(repo_filter, cleaned):
+            return None, f"❌ Repository **{cleaned}** is not allowed by Gitcord configuration."
+        return cleaned, None
+
+    # Case 2: Auto-detect from Gitcord config
+    configured_repos = get_configured_repo_names(config)
+    if not configured_repos:
+        return (
+            None,
+            "❌ Please specify `repo` (no allowed repositories found in Gitcord configuration).",
+        )
+
+    if len(configured_repos) == 1:
+        return configured_repos[0], None
+
+    # Multiple repos configured: check which one contains this PR number
+    org = ""
+    if config:
+        github_cfg = getattr(config, "github", None)
+        if isinstance(config, dict) and github_cfg is None:
+            github_cfg = config.get("github")
+        if github_cfg:
+            org = getattr(github_cfg, "org", "")
+            if isinstance(github_cfg, dict) and not org:
+                org = github_cfg.get("org", "")
+
+    async def _check_repo(candidate: str) -> bool:
+        try:
+            get_pr = getattr(github_adapter, "get_pull_request", None)
+            if not callable(get_pr):
+                return False
+            pr = await asyncio.to_thread(get_pr, org, candidate, int(pr_number))
+            return bool(pr)
+        except Exception:
+            return False
+
+    results = await asyncio.gather(*[_check_repo(r) for r in configured_repos])
+    matching = [r for r, ok in zip(configured_repos, results) if ok]
+
+    if len(matching) == 1:
+        return matching[0], None
+
+    if len(matching) > 1:
+        repo_list = ", ".join(f"`{r}`" for r in matching)
+        return (
+            None,
+            (
+                f"❌ Found PR **#{pr_number}** in multiple configured repositories: {repo_list}. "
+                "Please specify which repository using `repo:<name>`."
+            ),
+        )
+
+    repo_list = ", ".join(f"`{r}`" for r in configured_repos)
+    return (
+        None,
+        (
+            f"❌ PR **#{pr_number}** not found in configured repositories ({repo_list}). "
+            "Please check the PR number or specify the repository with `repo:<name>`."
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class PRHealthStatus:
     """Health assessment for a single pull request."""
@@ -49,10 +238,15 @@ class PRHealthStatus:
     has_coderabbit_comments: bool
     coderabbit_comment_count: int
     is_draft: bool
+    state: str = "open"  # "open" | "merged" | "closed"
 
     @property
     def health_indicator(self) -> str:
-        """Compute overall health: safe_to_merge | needs_attention | blocked | draft."""
+        """Compute overall health: safe_to_merge | needs_attention | blocked | draft | merged | closed."""
+        if self.state == "merged":
+            return "merged"
+        if self.state == "closed":
+            return "closed"
         if self.is_draft:
             return "draft"
         # Blocked conditions: CI failing or merge conflicts
@@ -88,6 +282,36 @@ def fetch_pr_health(
     pr = github_adapter.get_pull_request(owner, repo, pr_number)
     if not pr:
         return None
+
+    pr_state = (pr.get("state") or "open").strip().lower()
+    is_merged = bool(pr.get("merged") or pr.get("merged_at"))
+    if is_merged or pr_state == "merged":
+        state = "merged"
+    elif pr_state == "closed":
+        state = "closed"
+    else:
+        state = "open"
+
+    user = pr.get("user") or {}
+
+    # If merged or closed, return immediately without querying check runs, threads, reviews
+    if state in ("merged", "closed"):
+        return PRHealthStatus(
+            repo=repo,
+            number=pr_number,
+            title=(pr.get("title") or "Untitled").strip(),
+            author=user.get("login") or "unknown",
+            html_url=pr.get("html_url") or f"https://github.com/{owner}/{repo}/pull/{pr_number}",
+            ci_status="unknown",
+            mergeable=None,
+            review_state="unknown",
+            approved_count=0,
+            changes_requested_count=0,
+            has_coderabbit_comments=False,
+            coderabbit_comment_count=0,
+            is_draft=False,
+            state=state,
+        )
 
     # Reviews (separate human reviews and bot reviews)
     bot_logins = coderabbit_bot_logins or _DEFAULT_CODERABBIT_BOT_LOGINS
@@ -197,6 +421,7 @@ def fetch_pr_health(
         has_coderabbit_comments=coderabbit_count > 0,
         coderabbit_comment_count=coderabbit_count,
         is_draft=bool(pr.get("draft", False)),
+        state="open",
     )
 
 
@@ -281,6 +506,8 @@ _HEALTH_LABEL = {
     "needs_attention": "🟡 Needs Attention",
     "blocked": "🔴 Blocked",
     "draft": "⬜ Draft",
+    "merged": "🟣 Merged",
+    "closed": "🔴 Closed",
 }
 
 # Sort priority: blocked first (maintainer needs to know what's stuck), then
@@ -301,6 +528,15 @@ def format_single_pr_status(status: PRHealthStatus, org: str) -> str:
     lines.append(f"**{status.repo}#{status.number}** — {_truncate(status.title, 80)}")
     lines.append(f"👤 **Author:** {status.author}")
     lines.append("")
+
+    # If merged or closed, just show that it's Merged or Closed and nothing on it
+    if status.state == "merged":
+        lines.append("🟣 **Status:** Merged")
+        return "\n".join(lines)
+
+    if status.state == "closed":
+        lines.append("🔴 **Status:** Closed")
+        return "\n".join(lines)
 
     # CI
     ci_emoji = _CI_EMOJI.get(status.ci_status, "❓")
@@ -342,7 +578,6 @@ def format_single_pr_status(status: PRHealthStatus, org: str) -> str:
     lines.append("──────────")
     health_label = _HEALTH_LABEL.get(status.health_indicator, "Unknown")
     lines.append(f"📊 **Health:** {health_label}")
-    lines.append(f"🔗 {status.html_url}")
 
     return "\n".join(lines)
 

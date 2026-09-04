@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +18,6 @@ from ghdcbot.engine.pr_status import (
     format_all_pr_status,
     format_single_pr_status,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -62,13 +62,14 @@ def _make_health(
     number: int = 7,
     title: str = "Test PR",
     author: str = "contributor",
+    html_url: str | None = None,
 ) -> PRHealthStatus:
     return PRHealthStatus(
         repo=repo,
         number=number,
         title=title,
         author=author,
-        html_url=f"https://github.com/org/{repo}/pull/{number}",
+        html_url=html_url or f"https://github.com/org/{repo}/pull/{number}",
         ci_status=ci_status,
         mergeable=mergeable,
         review_state=review_state,
@@ -960,6 +961,13 @@ class TestFormatSinglePRStatus:
         assert "1 suggestion pending" in result
         assert "suggestions" not in result
 
+    def test_no_github_link_embedded_box(self) -> None:
+        """Single PR status report does not contain naked html_url link or link embed box."""
+        h = _make_health(html_url="https://github.com/org/my-repo/pull/7")
+        result = format_single_pr_status(h, "org")
+        assert "https://github.com" not in result
+        assert "🔗" not in result
+
 
 # ===================================================================
 # Format: all PRs
@@ -1190,5 +1198,813 @@ class TestPRStatusCommandPermissions:
             )
             is True
         )
+
+
+# ===================================================================
+# repo box recommendation and autocomplete tests
+# ===================================================================
+
+
+class TestRepoRecommendationAndAutocomplete:
+    def test_get_configured_repo_names_allow_mode(self) -> None:
+        """Configured repos with mode='allow' are returned in order."""
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import get_configured_repo_names
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent", "Devr.AI"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="xyz"),
+        )
+        assert get_configured_repo_names(config) == ["Knowledge-Agent", "Devr.AI"]
+
+    def test_get_configured_repo_names_deny_mode_excludes_denied(self) -> None:
+        """When repos.mode='deny', denied repos are not suggested."""
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import get_configured_repo_names
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="deny", names=["denied-repo"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="xyz"),
+        )
+        assert get_configured_repo_names(config) == []
+
+    def test_get_configured_repo_names_from_channels_and_roles(self) -> None:
+        """Repos configured in discord.pr_open_channels and repo_contributor_roles are included."""
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import get_configured_repo_names
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Repo-A"]),
+            ),
+            discord=DiscordConfig(
+                guild_id="123",
+                token="xyz",
+                pr_open_channels={"Repo-B": "111", "repo-a": "222"},
+            ),
+            repo_contributor_roles={"Repo-C": "Contributor-Role"},
+        )
+        repos = get_configured_repo_names(config)
+        assert repos == ["Repo-A", "Repo-B", "Repo-C"]
+
+    def test_get_configured_repo_names_case_insensitive_dedup(self) -> None:
+        """Duplicate repo names across sources are deduplicated case-insensitively."""
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import get_configured_repo_names
+
+        config = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="/tmp/test",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent", "knowledge-agent"]),
+            ),
+            discord=DiscordConfig(
+                guild_id="123",
+                token="xyz",
+                pr_open_channels={"KNOWLEDGE-AGENT": "999"},
+            ),
+        )
+        assert get_configured_repo_names(config) == ["Knowledge-Agent"]
+
+    def test_get_configured_repo_names_none_or_empty(self) -> None:
+        """Returns empty list when config is None or empty dict."""
+        from ghdcbot.engine.pr_status import get_configured_repo_names
+
+        assert get_configured_repo_names(None) == []
+        assert get_configured_repo_names({}) == []
+
+    def test_filter_repo_suggestions_prefix_then_substring(self) -> None:
+        """Filter prioritizes prefix matches over substring matches."""
+        from ghdcbot.engine.pr_status import filter_repo_suggestions
+
+        repos = ["Knowledge-Agent", "Agent-Smith", "Devr.AI", "PictoPy", "Gitcord"]
+        # Empty string returns all
+        assert filter_repo_suggestions(repos, "") == repos
+
+        # "Agent" matches Agent-Smith (prefix) first, then Knowledge-Agent (substring)
+        matches = filter_repo_suggestions(repos, "agent")
+        assert matches == ["Agent-Smith", "Knowledge-Agent"]
+
+    def test_filter_repo_suggestions_capped_at_25(self) -> None:
+        """Filter returns at most 25 choices (Discord interaction limit)."""
+        from ghdcbot.engine.pr_status import filter_repo_suggestions
+
+        long_list = [f"repo-{i:02d}" for i in range(35)]
+        capped = filter_repo_suggestions(long_list, "")
+        assert len(capped) == 25
+        assert capped[0] == "repo-00"
+        assert capped[24] == "repo-24"
+
+    @pytest.mark.asyncio
+    async def test_repo_autocomplete_choice_creation(self) -> None:
+        """Filtered suggestions map cleanly to discord app_commands Choice objects."""
+        from discord import app_commands
+
+        from ghdcbot.engine.pr_status import filter_repo_suggestions
+
+        repos = ["Knowledge-Agent", "Gitcord-Bot"]
+        suggestions = filter_repo_suggestions(repos, "know")
+        choices = [app_commands.Choice(name=r, value=r) for r in suggestions]
+        assert len(choices) == 1
+        assert choices[0].name == "Knowledge-Agent"
+        assert choices[0].value == "Knowledge-Agent"
+
+    @pytest.mark.asyncio
+    async def test_pr_status_repo_autocomplete_integration(self) -> None:
+        """In run_bot, pr-status repo param has autocomplete connected to config."""
+        from unittest.mock import MagicMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent", "Devr.AI"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        assert len(captured) == 1
+        tree = captured[0]
+        pr_status_cmds = [
+            cmd
+            for cmd in tree.get_commands(guild=discord.Object(id=123))
+            if cmd.name == "pr-status"
+        ]
+        assert len(pr_status_cmds) == 1
+        pr_status = pr_status_cmds[0]
+
+        # Verify repo parameter has autocomplete registered
+        repo_params = [p for p in pr_status.parameters if p.name == "repo"]
+        assert len(repo_params) == 1
+        assert repo_params[0].autocomplete is True
+
+        # Call the autocomplete callback and verify it returns configured repos from config
+        callback = pr_status._params["repo"].autocomplete
+        mock_interaction = MagicMock()
+        choices = await callback(mock_interaction, "know")
+        assert len(choices) == 1
+        assert choices[0].name == "Knowledge-Agent"
+        assert choices[0].value == "Knowledge-Agent"
+
+    @pytest.mark.asyncio
+    async def test_pr_status_single_pr_suppress_embeds(self) -> None:
+        """pr_status_cmd sends single PR status message with suppress_embeds=True."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import PRHealthStatus
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        pr_status = next(
+            cmd
+            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
+            if cmd.name == "pr-status"
+        )
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        sample_health = PRHealthStatus(
+            repo="Knowledge-Agent",
+            number=1,
+            title="Test PR",
+            author="contributor",
+            html_url="https://github.com/org/Knowledge-Agent/pull/1",
+            ci_status="passing",
+            mergeable=True,
+            review_state="approved",
+            approved_count=1,
+            changes_requested_count=0,
+            has_coderabbit_comments=False,
+            coderabbit_comment_count=0,
+            is_draft=False,
+        )
+
+        with patch("ghdcbot.bot.fetch_pr_health", return_value=sample_health):
+            await pr_status.callback(mock_interaction, repo="Knowledge-Agent", pr_number=1)
+
+        mock_interaction.followup.send.assert_awaited_once()
+        kwargs = mock_interaction.followup.send.call_args.kwargs
+        assert kwargs.get("ephemeral") is True
+        assert kwargs.get("suppress_embeds") is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_single_configured_repo(self) -> None:
+        """When 1 repo is configured, resolve_repo_for_pr returns it without extra queries."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 42, repo=None)
+        assert err is None
+        assert repo == "Knowledge-Agent"
+        mock_adapter.get_pull_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_multiple_repos_single_match(self) -> None:
+        """When multiple repos are configured, scans candidates and resolves the matching repo."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Repo-A", "Repo-B"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        # Repo-A returns None, Repo-B returns PR dict
+        def fake_get_pr(org: str, repo: str, num: int):
+            if repo == "Repo-B":
+                return {"number": num}
+            return None
+
+        mock_adapter.get_pull_request.side_effect = fake_get_pr
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 7, repo=None)
+        assert err is None
+        assert repo == "Repo-B"
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_multiple_repos_ambiguous(self) -> None:
+        """When PR exists in multiple repos, returns informative disambiguation error."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Repo-A", "Repo-B"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.return_value = {"number": 10}
+
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 10, repo=None)
+        assert repo is None
+        assert err is not None
+        assert "Found PR **#10** in multiple configured repositories" in err
+        assert "`Repo-A`" in err
+        assert "`Repo-B`" in err
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_multiple_repos_not_found(self) -> None:
+        """When PR is not found in any configured repo, returns not found message."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Repo-A", "Repo-B"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.return_value = None
+
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 999, repo=None)
+        assert repo is None
+        assert err is not None
+        assert "PR **#999** not found in configured repositories" in err
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_empty_configured_repos(self) -> None:
+        """When no repos are configured, asks user to specify repo."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 1, repo=None)
+        assert repo is None
+        assert "Please specify `repo`" in (err or "")
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_explicit_disallowed_repo(self) -> None:
+        """Explicit repo not matching allowlist is rejected."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_adapter = MagicMock()
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 1, repo="Secret-Repo")
+        assert repo is None
+        assert "not allowed by Gitcord configuration" in (err or "")
+
+    @pytest.mark.asyncio
+    async def test_pr_status_cmd_auto_detects_repo_when_omitted(self) -> None:
+        """pr_status_cmd works end-to-end without repo argument (auto-resolves from config)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import PRHealthStatus
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        pr_status = next(
+            cmd
+            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
+            if cmd.name == "pr-status"
+        )
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        sample_health = PRHealthStatus(
+            repo="Knowledge-Agent",
+            number=2,
+            title="Auto detected PR",
+            author="contributor",
+            html_url="https://github.com/org/Knowledge-Agent/pull/2",
+            ci_status="passing",
+            mergeable=True,
+            review_state="approved",
+            approved_count=1,
+            changes_requested_count=0,
+            has_coderabbit_comments=False,
+            coderabbit_comment_count=0,
+            is_draft=False,
+        )
+
+        # Call WITHOUT repo parameter
+        with patch("ghdcbot.bot.fetch_pr_health", return_value=sample_health) as mock_fetch:
+            await pr_status.callback(mock_interaction, repo=None, pr_number=2)
+
+        # Verify fetch_pr_health was called with auto-detected "Knowledge-Agent"
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args[0][2] == "Knowledge-Agent"
+
+        mock_interaction.followup.send.assert_awaited_once()
+        kwargs = mock_interaction.followup.send.call_args.kwargs
+        assert kwargs.get("ephemeral") is True
+        assert kwargs.get("suppress_embeds") is True
+        msg = mock_interaction.followup.send.call_args[0][0]
+        assert "Knowledge-Agent#2" in msg
+        assert "Safe to Merge" in msg
+
+    def test_format_single_pr_status_merged_shows_only_merged(self) -> None:
+        """When PR is merged, format_single_pr_status only shows Merged and no CI/CodeRabbit."""
+        from ghdcbot.engine.pr_status import PRHealthStatus, format_single_pr_status
+
+        status = PRHealthStatus(
+            repo="Knowledge-Agent",
+            number=42,
+            title="Feature X",
+            author="prith",
+            html_url="https://github.com/org/Knowledge-Agent/pull/42",
+            ci_status="passing",
+            mergeable=True,
+            review_state="approved",
+            approved_count=1,
+            changes_requested_count=0,
+            has_coderabbit_comments=False,
+            coderabbit_comment_count=0,
+            is_draft=False,
+            state="merged",
+        )
+        msg = format_single_pr_status(status, "org")
+        assert "**Knowledge-Agent#42** — Feature X" in msg
+        assert "👤 **Author:** prith" in msg
+        assert "🟣 **Status:** Merged" in msg
+        # Ensure CI, CodeRabbit, Mergeable, Review, and Health are omitted
+        assert "CI:" not in msg
+        assert "CodeRabbit:" not in msg
+        assert "Mergeable:" not in msg
+        assert "Review:" not in msg
+        assert "Health:" not in msg
+
+    def test_format_single_pr_status_closed_shows_only_closed(self) -> None:
+        """When PR is closed, format_single_pr_status only shows Closed and no CI/CodeRabbit."""
+        from ghdcbot.engine.pr_status import PRHealthStatus, format_single_pr_status
+
+        status = PRHealthStatus(
+            repo="Knowledge-Agent",
+            number=43,
+            title="Abandoned Fix",
+            author="contributor",
+            html_url="https://github.com/org/Knowledge-Agent/pull/43",
+            ci_status="failing",
+            mergeable=False,
+            review_state="changes_requested",
+            approved_count=0,
+            changes_requested_count=1,
+            has_coderabbit_comments=True,
+            coderabbit_comment_count=3,
+            is_draft=False,
+            state="closed",
+        )
+        msg = format_single_pr_status(status, "org")
+        assert "**Knowledge-Agent#43** — Abandoned Fix" in msg
+        assert "👤 **Author:** contributor" in msg
+        assert "🔴 **Status:** Closed" in msg
+        # Ensure CI, CodeRabbit, Mergeable, Review, and Health are omitted
+        assert "CI:" not in msg
+        assert "CodeRabbit:" not in msg
+        assert "Mergeable:" not in msg
+        assert "Review:" not in msg
+        assert "Health:" not in msg
+
+    def test_fetch_pr_health_merged_skips_reviews_and_ci(self) -> None:
+        """fetch_pr_health detects merged PR and skips check-runs / reviews / threads."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.engine.pr_status import fetch_pr_health
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.return_value = {
+            "number": 15,
+            "title": "Merged PR",
+            "state": "closed",
+            "merged": True,
+            "user": {"login": "dev1"},
+            "html_url": "https://github.com/org/repo/pull/15",
+        }
+
+        health = fetch_pr_health(mock_adapter, "org", "repo", 15)
+        assert health is not None
+        assert health.state == "merged"
+        assert health.health_indicator == "merged"
+        mock_adapter.get_pull_request_check_runs.assert_not_called()
+        mock_adapter.get_pull_request_reviews.assert_not_called()
+
+    def test_fetch_pr_health_closed_skips_reviews_and_ci(self) -> None:
+        """fetch_pr_health detects closed PR and skips check-runs / reviews / threads."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.engine.pr_status import fetch_pr_health
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.return_value = {
+            "number": 16,
+            "title": "Closed PR",
+            "state": "closed",
+            "merged": False,
+            "user": {"login": "dev2"},
+            "html_url": "https://github.com/org/repo/pull/16",
+        }
+
+        health = fetch_pr_health(mock_adapter, "org", "repo", 16)
+        assert health is not None
+        assert health.state == "closed"
+        assert health.health_indicator == "closed"
+        mock_adapter.get_pull_request_check_runs.assert_not_called()
+        mock_adapter.get_pull_request_reviews.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pr_status_cmd_informs_when_target_is_issue(self) -> None:
+        """When number points to an Issue rather than a PR, pr_status_cmd explains it clearly."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        mock_github = MagicMock()
+        # get_pull_request returns None, get_issue returns an issue without 'pull_request'
+        mock_github.get_pull_request.return_value = None
+        mock_github.get_issue.return_value = {
+            "title": "Bug in context engine",
+            "state": "closed",
+        }
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter", return_value=mock_github),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        pr_status = next(
+            cmd
+            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
+            if cmd.name == "pr-status"
+        )
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        await pr_status.callback(mock_interaction, repo=None, pr_number=1)
+
+        mock_interaction.followup.send.assert_awaited_once()
+        msg = mock_interaction.followup.send.call_args[0][0]
+        assert "is a GitHub **Issue**, not a Pull Request" in msg
+        assert "Bug in context engine" in msg
+        assert "Closed 🔴" in msg
+
+
 
 
