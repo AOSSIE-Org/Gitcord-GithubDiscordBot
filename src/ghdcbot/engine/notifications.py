@@ -59,10 +59,19 @@ def send_notification_for_event(
             # Notify PR author, not reviewer
             target_github_user = event.payload.get("pr_author")
         elif state in ("COMMENT", "COMMENTED"):
-            if not config.pr_review_comment:
-                return False
-            event_type_key = "pr_review_comment"
-            target_github_user = event.payload.get("pr_author")
+            # Never DM for comment-only reviews (CodeRabbit rounds, inline chatter).
+            # Signal stays on CHANGES_REQUESTED / APPROVED via pr_review_result.
+            # Config flag is ignored so a remote gitcord.yaml cannot re-enable spam.
+            logger.info(
+                "Skipping comment-only review notification (DMs disabled for COMMENT)",
+                extra={
+                    "pr_number": event.payload.get("pr_number"),
+                    "reviewer": event.github_user,
+                    "pr_author": event.payload.get("pr_author"),
+                    "repo": event.repo,
+                },
+            )
+            return False
         else:
             # DISMISSED or other states - no notification
             logger.debug(
@@ -103,7 +112,26 @@ def send_notification_for_event(
             extra={"event_type": event.event_type, "payload": event.payload, "event_github_user": event.github_user},
         )
         return False
-    
+
+    # Author replies on their own PR often appear as COMMENTED "reviews" in the
+    # GitHub API. Never DM the author that they reviewed their own PR.
+    if event.event_type == "pr_reviewed":
+        reviewer_key = (event.github_user or "").strip().lower()
+        author_key = (target_github_user or "").strip().lower()
+        if reviewer_key and author_key and reviewer_key == author_key:
+            logger.info(
+                "Skipping self-review notification",
+                extra={
+                    "github_user": event.github_user,
+                    "pr_author": target_github_user,
+                    "repo": event.repo,
+                    "pr_number": event.payload.get("pr_number"),
+                    "review_id": event.payload.get("review_id"),
+                    "review_state": event.payload.get("state"),
+                },
+            )
+            return False
+
     # Resolve GitHub user to Discord user (verified only)
     discord_user_id = _resolve_github_to_discord(storage, target_github_user)
     if not discord_user_id:
@@ -184,7 +212,7 @@ def send_pr_opened_channel_notification(
         return False
 
     author_github = event.github_user
-    if not author_github:
+    if not author_github or _is_github_bot_login(author_github):
         return False
 
     discord_user_id = _resolve_github_to_discord(storage, author_github)
@@ -201,7 +229,8 @@ def send_pr_opened_channel_notification(
         return False
 
     send_msg = getattr(discord_writer, "send_message", None)
-    if not callable(send_msg):
+    create_msg = getattr(discord_writer, "create_message", None)
+    if not callable(send_msg) and not callable(create_msg):
         return False
 
     notify_discord_id = discord_user_id or ""
@@ -219,8 +248,16 @@ def send_pr_opened_channel_notification(
     if not claimed:
         return False
 
+    message_id: str | None = None
     try:
-        sent = bool(send_msg(channel_id, message))
+        if callable(create_msg):
+            message_id = create_msg(channel_id, message)
+            sent = message_id is not None
+            # Empty-string sentinel from create_message means no-op success without an ID.
+            if message_id == "":
+                message_id = None
+        else:
+            sent = bool(send_msg(channel_id, message))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
@@ -231,11 +268,260 @@ def send_pr_opened_channel_notification(
         return False
 
     if sent:
+        if message_id:
+            save = getattr(storage, "save_pr_channel_announcement", None)
+            if callable(save):
+                try:
+                    save(
+                        repo=event.repo,
+                        pr_number=int(event.payload.get("pr_number")),
+                        channel_id=channel_id,
+                        message_id=message_id,
+                        pr_title=event.payload.get("title"),
+                        author_github=author_github,
+                        status="open",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to track pr_opened channel message for lifecycle edits",
+                        exc_info=True,
+                        extra={
+                            "error": str(exc),
+                            "channel_id": channel_id,
+                            "repo": event.repo,
+                            "pr_number": event.payload.get("pr_number"),
+                        },
+                    )
         _audit_notification(storage, event, notify_discord_id, channel_id, author_github)
         return True
     _release_notification_claim(storage, dedupe_key)
     return False
 
+
+def update_pr_channel_announcement_for_event(
+    event: ContributionEvent,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+) -> bool:
+    """Edit a tracked PR-opened channel message when the PR is merged or closed.
+
+    Only updates announcements posted after tracking was enabled (row in storage).
+    Old channel messages are left unchanged.
+    """
+    if not config.enabled or not getattr(config, "update_pr_channel_on_lifecycle", True):
+        return False
+    if event.event_type not in {"pr_merged", "pr_closed"}:
+        return False
+    if not policy.allow_discord_mutations:
+        return False
+
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return False
+
+    get_ann = getattr(storage, "get_pr_channel_announcement", None)
+    if not callable(get_ann):
+        return False
+    try:
+        tracked = get_ann(event.repo, int(pr_number))
+    except Exception as exc:
+        logger.warning(
+            "Failed to load tracked PR channel announcement",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+        )
+        return False
+    if not tracked:
+        # Pre-feature / untracked opens: do not invent edits for old Discord messages.
+        return False
+
+    status = "merged" if event.event_type == "pr_merged" else "closed"
+    if tracked.get("status") == status:
+        return False
+
+    actor = _pr_lifecycle_actor(event)
+    built = _build_pr_lifecycle_channel_message(
+        event,
+        github_org,
+        status=status,
+        actor_github=actor or "",
+        tracked=tracked,
+    )
+    if not built:
+        return False
+    message, embeds = built
+
+    dedupe_key = f"pr_channel_lifecycle:{event.repo}:{pr_number}:{status}"
+    try:
+        claimed = _claim_notification_sent(
+            storage, dedupe_key, event, "", tracked.get("channel_id"), actor or ""
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim PR channel lifecycle update",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+        )
+        return False
+    if not claimed:
+        return False
+
+    edit_msg = getattr(discord_writer, "edit_message", None)
+    if not callable(edit_msg):
+        _release_notification_claim(storage, dedupe_key)
+        return False
+
+    try:
+        edited = bool(
+            edit_msg(
+                str(tracked["channel_id"]),
+                str(tracked["message_id"]),
+                message,
+                embeds=embeds,
+            )
+        )
+    except TypeError:
+        # Older DiscordWriter mocks/adapters without embeds kwarg.
+        if embeds:
+            emb = embeds[0]
+            fallback = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+        else:
+            fallback = message or ""
+        try:
+            edited = bool(
+                edit_msg(
+                    str(tracked["channel_id"]),
+                    str(tracked["message_id"]),
+                    fallback,
+                )
+            )
+        except Exception as exc:
+            _release_notification_claim(storage, dedupe_key)
+            logger.warning(
+                "Failed to edit PR channel announcement",
+                exc_info=True,
+                extra={
+                    "error": str(exc),
+                    "repo": event.repo,
+                    "pr_number": pr_number,
+                    "channel_id": tracked.get("channel_id"),
+                    "message_id": tracked.get("message_id"),
+                },
+            )
+            return False
+    except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
+        logger.warning(
+            "Failed to edit PR channel announcement",
+            exc_info=True,
+            extra={
+                "error": str(exc),
+                "repo": event.repo,
+                "pr_number": pr_number,
+                "channel_id": tracked.get("channel_id"),
+                "message_id": tracked.get("message_id"),
+            },
+        )
+        return False
+
+    if not edited:
+        _release_notification_claim(storage, dedupe_key)
+        return False
+
+    mark = getattr(storage, "mark_pr_channel_announcement_status", None)
+    if callable(mark):
+        try:
+            mark(event.repo, int(pr_number), status)
+        except Exception as exc:
+            # Discord already edited; release claim so a later sync can retry
+            # status persistence (row may still be "open").
+            _release_notification_claim(storage, dedupe_key)
+            logger.warning(
+                "Failed to update PR channel announcement status after edit",
+                exc_info=True,
+                extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+            )
+            return False
+    _audit_notification(storage, event, "", tracked.get("channel_id"), actor or "")
+    return True
+
+
+def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
+    """Return the merge/close actor when known.
+
+    For merges, never fall back to the PR author (`event.github_user`) — that is
+    often wrong (maintainer merges contributor PRs). List-PRs omits ``merged_by``;
+    ingestion should fetch the single PR. If still missing, omit the name.
+    """
+    payload = event.payload or {}
+    if event.event_type == "pr_merged":
+        actor = (payload.get("merged_by") or "").strip()
+        return actor or None
+    actor = (
+        payload.get("closed_by")
+        or payload.get("pr_author")
+        or event.github_user
+        or ""
+    )
+    actor = str(actor).strip()
+    return actor or None
+
+
+# GitHub Primer status colors (match PR badge hues in the GitHub UI).
+_GITHUB_MERGED_PURPLE = 0x8250DF  # Primer done/merged
+_GITHUB_CLOSED_RED = 0xCF222E  # Primer danger/closed
+
+
+def _build_pr_lifecycle_channel_message(
+    event: ContributionEvent,
+    github_org: str,
+    *,
+    status: str,
+    actor_github: str,
+    tracked: dict,
+) -> tuple[str, list[dict]] | None:
+    """Build a Discord embed for a PR merge/close channel edit.
+
+    Text + GitHub Primer purple/red live in one embed (no empty color-only box).
+    Plain content is left empty so Discord shows a single card.
+    """
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return None
+    title_raw = (
+        event.payload.get("title")
+        or event.payload.get("pr_title")
+        or tracked.get("pr_title")
+        or "Untitled"
+    )
+    pr_title = _sanitize_discord_pr_title(title_raw)
+    repo = event.repo
+    raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
+    actor = (actor_github or "").lstrip("@").strip()
+    if status == "merged":
+        label = "Merged"
+        status_line = f"**Status:** Merged by @{actor}" if actor else "**Status:** Merged"
+        color = _GITHUB_MERGED_PURPLE
+    else:
+        label = "Closed"
+        status_line = f"**Status:** Closed by @{actor}" if actor else "**Status:** Closed"
+        color = _GITHUB_CLOSED_RED
+    # Discord embed titles are plain text (no markdown links); put the link in url.
+    title = f"{label}: {repo} #{pr_number} — {pr_title}"
+    if len(title) > 256:
+        title = title[:253] + "..."
+    embeds = [
+        {
+            "title": title,
+            "url": raw_url,
+            "description": status_line,
+            "color": color,
+        }
+    ]
+    return "", embeds
 
 def send_pr_opened_github_link_comment(
     event: ContributionEvent,
@@ -415,19 +701,22 @@ def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None
 
 def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     """Build deduplication key: event_type:repo:target:target_github_user (lowercase for case-insensitivity).
-    
-    For pr_reviewed events, includes review_id to allow multiple notifications for different reviews.
+
+    For all pr_reviewed states, coalesce by reviewer + state (not review_id) so many
+    messages/review rounds from the same reviewer only produce one DM per state.
     """
     target = event.payload.get("issue_number") or event.payload.get("pr_number") or "unknown"
     # Use target_github_user (who receives notification) for dedupe; normalize to lowercase (GitHub is case-insensitive)
     user_key = (target_github_user or "").strip().lower()
-    
-    # For pr_reviewed events, include review_id and state to allow separate notifications for different reviews
+
     if event.event_type == "pr_reviewed":
-        review_id = event.payload.get("review_id")
-        state = event.payload.get("state", "").upper()
-        if review_id:
-            return f"{event.event_type}:{event.repo}:{target}:{user_key}:{review_id}:{state}"
+        state = (event.payload.get("state") or "").upper()
+        reviewer = (event.github_user or "").strip().lower() or "unknown"
+        # Normalize GitHub's COMMENTED → COMMENT for a stable key.
+        if state in {"COMMENT", "COMMENTED"}:
+            state = "COMMENT"
+        if state:
+            return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reviewer}:{state}"
 
     if event.event_type == "pr_closed":
         closed_at = event.payload.get("closed_at") or event.created_at.isoformat()
@@ -436,7 +725,7 @@ def _build_dedupe_key(event: ContributionEvent, target_github_user: str) -> str:
     if event.event_type in {"issue_reopened", "pr_reopened"}:
         reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
         return f"{event.event_type}:{event.repo}:{target}:{user_key}:{reopened_at}"
-    
+
     return f"{event.event_type}:{event.repo}:{target}:{user_key}"
 
 

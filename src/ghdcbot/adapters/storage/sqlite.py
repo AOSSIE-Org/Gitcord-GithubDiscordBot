@@ -138,6 +138,20 @@ class SqliteStorage:
                     ON social_profiles (discord_user_id);
                 CREATE INDEX IF NOT EXISTS idx_social_profiles_platform 
                     ON social_profiles (platform);
+                CREATE TABLE IF NOT EXISTS pr_channel_announcements (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    pr_title TEXT,
+                    author_github TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (repo, pr_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pr_channel_announcements_status
+                    ON pr_channel_announcements (status);
                 """
             )
 
@@ -726,6 +740,87 @@ class SqliteStorage:
             conn.execute(
                 "DELETE FROM notifications_sent WHERE dedupe_key = ?",
                 (dedupe_key,),
+            )
+
+    def save_pr_channel_announcement(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+        channel_id: str,
+        message_id: str,
+        pr_title: str | None = None,
+        author_github: str | None = None,
+        status: str = "open",
+    ) -> None:
+        """Track a newly posted PR-opened channel message (future lifecycle edits only)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pr_channel_announcements
+                (repo, pr_number, channel_id, message_id, status, pr_title, author_github, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo, pr_number) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    message_id = excluded.message_id,
+                    status = excluded.status,
+                    pr_title = COALESCE(excluded.pr_title, pr_channel_announcements.pr_title),
+                    author_github = COALESCE(excluded.author_github, pr_channel_announcements.author_github),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    repo,
+                    int(pr_number),
+                    channel_id,
+                    message_id,
+                    status,
+                    pr_title,
+                    author_github,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_pr_channel_announcement(self, repo: str, pr_number: int) -> dict | None:
+        """Return tracked PR channel announcement or None (e.g. pre-feature opens)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT repo, pr_number, channel_id, message_id, status, pr_title, author_github,
+                       created_at, updated_at
+                FROM pr_channel_announcements
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (repo, int(pr_number)),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "repo": row[0],
+            "pr_number": row[1],
+            "channel_id": row[2],
+            "message_id": row[3],
+            "status": row[4],
+            "pr_title": row[5],
+            "author_github": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
+        }
+
+    def mark_pr_channel_announcement_status(
+        self, repo: str, pr_number: int, status: str
+    ) -> None:
+        """Update lifecycle status for a tracked PR channel announcement."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE pr_channel_announcements
+                SET status = ?, updated_at = ?
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (status, now, repo, int(pr_number)),
             )
 
     def mark_notification_sent(
