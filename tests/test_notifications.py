@@ -16,7 +16,7 @@ from ghdcbot.engine.notifications import (
     _build_notification_message,
     _build_pr_opened_channel_message,
     _build_pr_opened_github_link_comment,
-    _sanitize_discord_pr_title,
+    _sanitize_discord_title,
     send_issue_opened_channel_notification,
     send_issue_opened_github_link_comment,
     send_notification_for_event,
@@ -129,7 +129,7 @@ class MockDiscordWriter:
     def __init__(self) -> None:
         self.dms_sent: list[tuple[str, str]] = []
         self.messages_sent: list[tuple[str, str]] = []
-        self.messages_edited: list[tuple[str, str, str]] = []
+        self.messages_edited: list[tuple[str, str, str, list[dict] | None]] = []
         self._next_message_id = 1000
     
     def send_dm(self, discord_user_id: str, content: str) -> bool:
@@ -2569,9 +2569,9 @@ def test_pr_opened_github_link_comment_skips_duplicate() -> None:
     assert github_writer.comments == []
 
 
-def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
+def test_sanitize_discord_title_neutralizes_injection() -> None:
     dirty = "fix](https://evil.example) @everyone <@999> <@!888> <@&777> <#666> @here"
-    clean = _sanitize_discord_pr_title(dirty)
+    clean = _sanitize_discord_title(dirty)
     assert "\\]" in clean
     assert "@everyone" not in clean
     assert "@\u200beveryone" in clean
@@ -3003,4 +3003,75 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     assert closed_embeds[0]["title"].startswith("MiniChain #11 —")
     assert "Closed:" not in closed_embeds[0]["title"]
     assert "**Status:** Closed by @bob" in closed_embeds[0]["description"]
+
+
+def test_notification_message_title_sanitization() -> None:
+    """Ensure issue and PR titles with mass mentions and markdown links are sanitized in all templates."""
+    malicious_title = "@everyone Urgent Security Fix [Click Here](https://evil.example) & @here"
+    
+    # 1. issue_assigned
+    event_issue = ContributionEvent(
+        event_type="issue_assigned",
+        repo="Gitcord",
+        github_user="testuser",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 42, "title": malicious_title, "assigned_by": "mentor"},
+    )
+    msg_issue = _build_notification_message(event_issue, "issue_assigned", "AOSSIE-Org", "testuser")
+    assert msg_issue is not None
+    assert "@everyone" not in msg_issue
+    assert "@here" not in msg_issue
+    assert "\\[Click Here\\]" in msg_issue
+
+    # 2. pr_review_requested
+    event_review_req = ContributionEvent(
+        event_type="pr_review_requested",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_review_req = _build_notification_message(event_review_req, "pr_review_requested", "AOSSIE-Org", "reviewer")
+    assert msg_review_req is not None
+    assert "@everyone" not in msg_review_req
+    assert "\\[Click Here\\]" in msg_review_req
+
+    # 3. pr_review_comment
+    event_comment = ContributionEvent(
+        event_type="pr_review_comment",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_comment = _build_notification_message(event_comment, "pr_review_comment", "AOSSIE-Org", "author")
+    assert msg_comment is not None
+    assert "@everyone" not in msg_comment
+    assert "\\[Click Here\\]" in msg_comment
+
+    # 4. pr_closed
+    event_closed = ContributionEvent(
+        event_type="pr_closed",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title, "pr_author": "author"},
+    )
+    msg_closed = _build_notification_message(event_closed, "pr_closed", "AOSSIE-Org", "author")
+    assert msg_closed is not None
+    assert "@everyone" not in msg_closed
+    assert "\\[Click Here\\]" in msg_closed
+
+    # 5. issue_reopened & pr_reopened
+    event_reopened = ContributionEvent(
+        event_type="issue_reopened",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 10, "title": malicious_title},
+    )
+    msg_reopened = _build_notification_message(event_reopened, "issue_reopened", "AOSSIE-Org", "author")
+    assert msg_reopened is not None
+    assert "@everyone" not in msg_reopened
+    assert "\\[Click Here\\]" in msg_reopened
 
