@@ -24,10 +24,13 @@ def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
     """Check whether a repository is permitted by the configured RepoFilterConfig."""
     if not repo_filter:
         return True
-    filter_names = {name.strip() for name in getattr(repo_filter, "names", [])}
+    filter_names = {name.strip().lower() for name in getattr(repo_filter, "names", [])}
     mode = getattr(repo_filter, "mode", "allow")
+    candidate = (repo_name or "").strip().lower()
     if mode == "allow":
-        return repo_name in filter_names
+        return candidate in filter_names
+    if mode == "deny":
+        return candidate not in filter_names
     if mode == "deny":
         return repo_name not in filter_names
     return True
