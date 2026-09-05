@@ -19,6 +19,12 @@ _DEFAULT_CODERABBIT_BOT_LOGINS = ["coderabbitai", "coderabbitai[bot]"]
 # Maximum PRs per invocation to stay within Discord interaction timeout.
 PR_STATUS_MAX_PRS = 25
 
+# Maximum candidate repositories to probe when auto-detecting repo for a PR.
+RESOLVE_REPO_MAX_CANDIDATES = 25
+
+# Maximum concurrent repository probe requests.
+RESOLVE_REPO_MAX_CONCURRENCY = 5
+
 
 def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
     """Check whether a repository is permitted by the configured RepoFilterConfig."""
@@ -34,6 +40,17 @@ def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
     if mode == "deny":
         return repo_name not in filter_names
     return True
+
+
+def _cfg_get(target: Any, key: str, default: Any = None) -> Any:
+    """Retrieve an attribute or dict key from target, returning default if absent or None."""
+    if target is None:
+        return default
+    if isinstance(target, dict):
+        val = target.get(key)
+    else:
+        val = getattr(target, key, None)
+    return default if val is None else val
 
 
 def get_configured_repo_names(config: Any) -> list[str]:
@@ -60,52 +77,31 @@ def get_configured_repo_names(config: Any) -> list[str]:
         return repo_names
 
     # 1. github.repos.names (allow mode)
-    github_cfg = getattr(config, "github", None)
-    if isinstance(config, dict) and github_cfg is None:
-        github_cfg = config.get("github")
-
+    github_cfg = _cfg_get(config, "github")
     if github_cfg:
-        repos_cfg = getattr(github_cfg, "repos", None)
-        if isinstance(github_cfg, dict) and repos_cfg is None:
-            repos_cfg = github_cfg.get("repos")
-
+        repos_cfg = _cfg_get(github_cfg, "repos")
         if repos_cfg:
             if isinstance(repos_cfg, (list, tuple)):
                 for r in repos_cfg:
                     _add(r)
             else:
-                mode = getattr(repos_cfg, "mode", None)
-                if isinstance(repos_cfg, dict) and mode is None:
-                    mode = repos_cfg.get("mode")
-                mode = mode or "allow"
-
-                names = getattr(repos_cfg, "names", None)
-                if isinstance(repos_cfg, dict) and names is None:
-                    names = repos_cfg.get("names")
+                mode = _cfg_get(repos_cfg, "mode", "allow") or "allow"
+                names = _cfg_get(repos_cfg, "names")
 
                 if mode == "allow" and isinstance(names, (list, tuple)):
                     for r in names:
                         _add(r)
 
     # 2. discord.pr_open_channels
-    discord_cfg = getattr(config, "discord", None)
-    if isinstance(config, dict) and discord_cfg is None:
-        discord_cfg = config.get("discord")
-
+    discord_cfg = _cfg_get(config, "discord")
     if discord_cfg:
-        pr_open_channels = getattr(discord_cfg, "pr_open_channels", None)
-        if isinstance(discord_cfg, dict) and pr_open_channels is None:
-            pr_open_channels = discord_cfg.get("pr_open_channels")
-
+        pr_open_channels = _cfg_get(discord_cfg, "pr_open_channels")
         if isinstance(pr_open_channels, dict):
             for r in pr_open_channels:
                 _add(r)
 
     # 3. repo_contributor_roles
-    contributor_roles = getattr(config, "repo_contributor_roles", None)
-    if isinstance(config, dict) and contributor_roles is None:
-        contributor_roles = config.get("repo_contributor_roles")
-
+    contributor_roles = _cfg_get(config, "repo_contributor_roles")
     if isinstance(contributor_roles, dict):
         for r in contributor_roles:
             _add(r)
@@ -151,13 +147,9 @@ async def resolve_repo_for_pr(
     """
     repo_filter = None
     if config:
-        github_cfg = getattr(config, "github", None)
-        if isinstance(config, dict) and github_cfg is None:
-            github_cfg = config.get("github")
+        github_cfg = _cfg_get(config, "github")
         if github_cfg:
-            repo_filter = getattr(github_cfg, "repos", None)
-            if isinstance(github_cfg, dict) and repo_filter is None:
-                repo_filter = github_cfg.get("repos")
+            repo_filter = _cfg_get(github_cfg, "repos")
 
     # Case 1: User explicitly provided repo
     if repo and repo.strip():
@@ -180,26 +172,26 @@ async def resolve_repo_for_pr(
     # Multiple repos configured: check which one contains this PR number
     org = ""
     if config:
-        github_cfg = getattr(config, "github", None)
-        if isinstance(config, dict) and github_cfg is None:
-            github_cfg = config.get("github")
+        github_cfg = _cfg_get(config, "github")
         if github_cfg:
-            org = getattr(github_cfg, "org", "")
-            if isinstance(github_cfg, dict) and not org:
-                org = github_cfg.get("org", "")
+            org = _cfg_get(github_cfg, "org", "") or ""
+
+    candidates = configured_repos[:RESOLVE_REPO_MAX_CANDIDATES]
+    semaphore = asyncio.Semaphore(RESOLVE_REPO_MAX_CONCURRENCY)
 
     async def _check_repo(candidate: str) -> bool:
-        try:
-            get_pr = getattr(github_adapter, "get_pull_request", None)
-            if not callable(get_pr):
+        async with semaphore:
+            try:
+                get_pr = getattr(github_adapter, "get_pull_request", None)
+                if not callable(get_pr):
+                    return False
+                pr = await asyncio.to_thread(get_pr, org, candidate, int(pr_number))
+                return bool(pr)
+            except Exception:
                 return False
-            pr = await asyncio.to_thread(get_pr, org, candidate, int(pr_number))
-            return bool(pr)
-        except Exception:
-            return False
 
-    results = await asyncio.gather(*[_check_repo(r) for r in configured_repos])
-    matching = [r for r, ok in zip(configured_repos, results) if ok]
+    results = await asyncio.gather(*[_check_repo(r) for r in candidates])
+    matching = [r for r, ok in zip(candidates, results) if ok]
 
     if len(matching) == 1:
         return matching[0], None
@@ -214,7 +206,7 @@ async def resolve_repo_for_pr(
             ),
         )
 
-    repo_list = ", ".join(f"`{r}`" for r in configured_repos)
+    repo_list = ", ".join(f"`{r}`" for r in candidates)
     return (
         None,
         (

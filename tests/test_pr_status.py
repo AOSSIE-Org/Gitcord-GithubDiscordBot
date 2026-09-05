@@ -1206,6 +1206,33 @@ class TestPRStatusCommandPermissions:
 
 
 class TestRepoRecommendationAndAutocomplete:
+    def test_cfg_get_helper_behavior(self) -> None:
+        """_cfg_get handles dicts, objects, None, missing keys, and defaults."""
+        from ghdcbot.engine.pr_status import _cfg_get
+
+        # None target returns default
+        assert _cfg_get(None, "key") is None
+        assert _cfg_get(None, "key", "default_val") == "default_val"
+
+        # Dict lookups
+        d = {"existing": "val", "nullable": None, "empty_str": ""}
+        assert _cfg_get(d, "existing") == "val"
+        assert _cfg_get(d, "missing", "fallback") == "fallback"
+        assert _cfg_get(d, "nullable", "fallback") == "fallback"
+        assert _cfg_get(d, "empty_str", "fallback") == ""
+
+        # Object attribute lookups
+        class Dummy:
+            existing = "attr_val"
+            nullable = None
+            empty_str = ""
+
+        obj = Dummy()
+        assert _cfg_get(obj, "existing") == "attr_val"
+        assert _cfg_get(obj, "missing", "fallback") == "fallback"
+        assert _cfg_get(obj, "nullable", "fallback") == "fallback"
+        assert _cfg_get(obj, "empty_str", "fallback") == ""
+
     def test_get_configured_repo_names_allow_mode(self) -> None:
         """Configured repos with mode='allow' are returned in order."""
         from ghdcbot.config.models import (
@@ -1723,6 +1750,65 @@ class TestRepoRecommendationAndAutocomplete:
         repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 1, repo="Secret-Repo")
         assert repo is None
         assert "not allowed by Gitcord configuration" in (err or "")
+
+    @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_candidate_cap_and_bounded_concurrency(self) -> None:
+        """Probe caps candidates at RESOLVE_REPO_MAX_CANDIDATES and bounds concurrency."""
+        import time
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import (
+            RESOLVE_REPO_MAX_CANDIDATES,
+            RESOLVE_REPO_MAX_CONCURRENCY,
+            resolve_repo_for_pr,
+        )
+
+        # 35 repos configured (exceeds cap of 25)
+        repo_names = [f"Repo-{i:02d}" for i in range(35)]
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=repo_names),
+            ),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        current_concurrency = 0
+        max_seen_concurrency = 0
+
+        def fake_get_pr(org: str, repo: str, num: int):
+            nonlocal current_concurrency, max_seen_concurrency
+            current_concurrency += 1
+            if current_concurrency > max_seen_concurrency:
+                max_seen_concurrency = current_concurrency
+            time.sleep(0.01)
+            current_concurrency -= 1
+            if repo == "Repo-05":
+                return {"number": num}
+            return None
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.side_effect = fake_get_pr
+
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 123, repo=None)
+        assert err is None
+        assert repo == "Repo-05"
+        # Only probed candidates up to RESOLVE_REPO_MAX_CANDIDATES (25), not all 35
+        assert mock_adapter.get_pull_request.call_count == RESOLVE_REPO_MAX_CANDIDATES
+        assert max_seen_concurrency <= RESOLVE_REPO_MAX_CONCURRENCY
 
     @pytest.mark.asyncio
     async def test_pr_status_cmd_auto_detects_repo_when_omitted(self) -> None:
