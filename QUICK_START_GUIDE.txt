@@ -30,6 +30,7 @@ Tips:
 /profile              Your (or another member’s) Gitcord profile
 /who-is               Look up a GitHub username → Discord + link freshness
 /summary              Contribution metrics (7d / 30d); optional member
+/create-issue         Create a GitHub issue directly from Discord (requires verified link & github.permissions.write: true)
 /open-prs             List currently open PRs for a contributor
 /pr                   Recent PRs by closed / merged / open (count, skip)
 /connect-social       Attach X or LinkedIn username/URL to your profile

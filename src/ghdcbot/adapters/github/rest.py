@@ -163,6 +163,29 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_issues(repo)
 
+    def invalidate_repo_cache(self) -> None:
+        """Explicitly invalidate the repository cache (e.g. after config changes)."""
+        self._repo_names_cache = None
+
+    def list_org_repo_names(self) -> list[str]:
+        """Return a list of repo names in the org (for slash command autocomplete)."""
+        import time
+        now = time.monotonic()
+        
+        # Check cache
+        if hasattr(self, "_repo_names_cache") and self._repo_names_cache is not None:
+            cache_time, cached_names = self._repo_names_cache
+            if now - cache_time < getattr(self, "_repo_names_cache_ttl", 60.0):
+                return cached_names
+                
+        repos = list(self._list_repos())
+        names = [r["name"] for r in repos if isinstance(r, dict) and "name" in r]
+        
+        # Save to cache
+        self._repo_names_cache_ttl = 60.0
+        self._repo_names_cache = (now, names)
+        return names
+
     def list_open_pull_requests(self) -> Iterable[dict]:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)
@@ -288,6 +311,74 @@ class GitHubRestAdapter:
                     break
                 page += 1
         return results
+
+    def create_issue(
+        self, owner: str, repo: str, title: str, body: str = "", labels: list[str] | None = None
+    ) -> dict | None:
+        """Create a new GitHub issue via REST API.
+
+        Returns the created issue dict (with number, html_url, etc.) on success, None on failure.
+        """
+        path = f"/repos/{owner}/{repo}/issues"
+        payload = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+            
+        try:
+            response = self._client.post(path, json=payload)
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub request failed",
+                extra={"path": path, "error": str(exc)},
+            )
+            return None
+
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": path,
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+
+        if response.status_code == 201:
+            try:
+                issue = response.json()
+                self._logger.info(
+                    "Issue created successfully",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue.get("number"),
+                    },
+                )
+                return issue
+            except Exception:
+                self._logger.warning(
+                    "Issue created successfully (could not parse response)",
+                    extra={"owner": owner, "repo": repo, "title": title},
+                )
+                return None
+        else:
+            error_body = ""
+            try:
+                error_body = (response.text or "")[:500]
+            except Exception:
+                pass
+            self._logger.warning(
+                "Issue creation failed (GitHub API non-201)",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "title": title,
+                    "status_code": response.status_code,
+                    "error_response": error_body,
+                },
+            )
+            return None
 
     def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
         """Assign a GitHub issue to a user.

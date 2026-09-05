@@ -1070,6 +1070,128 @@ def run_bot(config_path: str) -> None:
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
 
+    @tree.command(
+        name="create-issue",
+        description="Create a GitHub issue directly from Discord (verified users only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to create the issue in",
+        title="Issue title (1-256 characters)",
+        description="Optional issue description/body",
+        labels="Optional comma-separated labels (e.g. bug,urgent)",
+    )
+    async def create_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        title: str,
+        description: str = "",
+        labels: str = "",
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        
+        # 1. Verify user
+        from ghdcbot.engine.issue_creation import (
+            validate_issue_params,
+            build_issue_created_embed,
+            format_issue_creation_audit_context,
+        )
+        
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            await interaction.followup.send(
+                "❌ You must link your GitHub account first. Use `/link` and `/verify-link`.",
+                ephemeral=True,
+            )
+            return
+            
+        # 2. Check write permissions
+        if not getattr(config.github.permissions, "write", False):
+            await interaction.followup.send(
+                "❌ GitHub write permissions are not enabled. Ask an admin to set `github.permissions.write: true` in config.",
+                ephemeral=True,
+            )
+            return
+            
+        # 3. Validate inputs
+        repo = repo.strip()
+        title = title.strip()
+        ok, err_msg = validate_issue_params(title, repo, config.github.org)
+        if not ok:
+            await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
+            return
+            
+        # 4. Create issue
+        label_list = [l.strip() for l in labels.split(",") if l.strip()] if labels else None
+        
+        issue_data = await asyncio.to_thread(
+            github_adapter.create_issue,
+            config.github.org,
+            repo,
+            title,
+            description,
+            label_list,
+        )
+        
+        if not issue_data:
+            await interaction.followup.send(
+                f"❌ Failed to create issue. Repository `{repo}` might not exist or bot lacks access.",
+                ephemeral=True,
+            )
+            return
+            
+        # 5. Build embed
+        embed_dict = build_issue_created_embed(
+            issue_data,
+            config.github.org,
+            repo,
+            github_username,
+            discord_user_id,
+        )
+        embed = discord.Embed.from_dict(embed_dict)
+        
+        # 6. Audit log
+        append_audit = getattr(storage, "append_audit_event", None)
+        if callable(append_audit):
+            ctx = format_issue_creation_audit_context(
+                config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
+            )
+            ctx["timestamp"] = datetime.now(timezone.utc).isoformat()
+            try:
+                append_audit(ctx)
+            except Exception as e:
+                logger.error("Failed to append audit event for issue creation", exc_info=e)
+            
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @create_issue_cmd.autocomplete("repo")
+    async def create_issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        discord_user_id = str(interaction.user.id)
+        
+        # Check permissions
+        if not getattr(config.github.permissions, "write", False):
+            return []
+            
+        # Check identity
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            return []
+            
+        try:
+            repo_names = await asyncio.to_thread(github_adapter.list_org_repo_names)
+        except Exception:
+            repo_names = []
+            
+        matches = [r for r in repo_names if current.lower() in r.lower()]
+        return [
+            app_commands.Choice(name=match, value=match)
+            for match in matches[:25]
+        ]
+
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
