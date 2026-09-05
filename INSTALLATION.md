@@ -479,6 +479,7 @@ Run `ghdcbot --config config/config.yaml validate` (or the Docker equivalent) af
 | `Discord authentication failed` | Reset bot token in Developer Portal |
 | `Guild not found` | Re-invite bot; fix `discord.guild_id` |
 | `Role "…" not found` | Create role in Discord or fix YAML spelling |
+| `Privileged intent 'MESSAGE_CONTENT' is required` | Enable **Message Content Intent** in Discord Developer Portal → Bot → Privileged Gateway Intents |
 
 ### Identity linking (`/link`, `/verify-link`)
 
@@ -531,7 +532,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 
 ### Discord slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/pr`, `/unlink`, `/connect-social`, `/disconnect-social`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/pr`, `/unlink`, `/thread`, `/connect-social`, `/disconnect-social`
 
 **Mentors:** `/sync`
 

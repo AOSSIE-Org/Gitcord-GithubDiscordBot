@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -166,25 +166,20 @@ def resolve_authors(messages: list[dict], storage: Any) -> list[dict]:
 _DISCORD_MENTION_RE = re.compile(r"<@!?(\d+)>|<@&(\d+)>|<#(\d+)>")
 
 _GREETING_PREFIX_RE = re.compile(
-    r"^(?:hey(?:\s+guys|\s+everyone|\s+all)?|hi(?:\s+guys|\s+everyone|\s+all)?|hello|good\s+(?:morning|afternoon|evening)|yo|anyone(?:\s+knows?)?)[,:\s\-]+",
+    r"^(?:hey(?:\s+guys|\s+everyone|\s+all)?|hi(?:\s+guys|\s+everyone|\s+all)?|hello(?:\s+guys|\s+everyone|\s+all)?|good\s+(?:morning|afternoon|evening)|yo|anyone(?:\s+knows?)?)[\s!.,:;\-]+",
     re.IGNORECASE,
 )
 
-# Filler phrases and meta-chatter that should not be quoted verbatim in issue bodies
-_META_CHATTER_PATTERNS = [
-    re.compile(r"^(?:i\s+will|i'll)\s+(?:make|create|open)\s+issues?\s+(?:for\s+all\s+of\s+them)?.*", re.IGNORECASE),
-    re.compile(r"^okay,?\s+if\s+you\s+open\s+issues?.*", re.IGNORECASE),
-    re.compile(r"^yeah,?\s+if\s+you\s+want\s+to\s+propose.*", re.IGNORECASE),
-    re.compile(r"^(?:i'll|i\s+will)\s+start\s+on\s+it\s+soon.*", re.IGNORECASE),
-    re.compile(r"^feel\s+free\s+to\s+review\s+it.*", re.IGNORECASE),
-    re.compile(r"^all\s+will\s+be\s+in\s+chunks.*", re.IGNORECASE),
-    re.compile(r"^basically\s+", re.IGNORECASE),
-]
+_GREETING_RE = re.compile(
+    r"^(?:hey(?:\s+guys|\s+everyone|\s+all)?|hi(?:\s+guys|\s+everyone|\s+all)?|hello(?:\s+guys|\s+everyone|\s+all)?|good\s+(?:morning|afternoon|evening)|yo|welcome)[\s!.,:;\-]*$",
+    re.IGNORECASE,
+)
 
 _FILLERS = {
     "ok", "okay", "yes", "yeah", "yep", "no", "nope", "thanks", "thank you", "thx", "ty",
     "done", "cool", "great", "nice", "sounds good", "lgtm", "sure", "got it", "i see",
     "will do", "working on it", "see once more", "try now", "restarting", "fixed",
+    "np", "no problem", "k", "+1", "agree", "perfect",
 }
 
 
@@ -207,58 +202,21 @@ def _clean_participant_name(name: str) -> str:
     return f"@{clean}" if clean else "@User"
 
 
-def _extract_feature_topics(text: str) -> list[str]:
-    """Extract key technical topics, features, or modules mentioned in a message."""
-    topics: list[str] = []
-    
-    # Common feature pattern indicators
-    feature_patterns = [
-        re.compile(r"(?:point\s+system)", re.IGNORECASE),
-        re.compile(r"(?:multi[- ]repository\s+intelligence|multi[- ]repo\s+intelligence)", re.IGNORECASE),
-        re.compile(r"(?:creating\s+issues?\s+and\s+(?:creating\s+)?prs?|issue\s+and\s+pr\s+workflow)", re.IGNORECASE),
-        re.compile(r"(?:knowledge\s+agent|knowledge\s+adaptation)", re.IGNORECASE),
-        re.compile(r"(?:features?\s+within\s+[^,\.\n]+)", re.IGNORECASE),
-        re.compile(r"(?:support\s+for\s+[^,\.\n]+)", re.IGNORECASE),
-    ]
-    
-    for pattern in feature_patterns:
-        for match in pattern.finditer(text):
-            topic = match.group(0).strip().title()
-            if topic and topic not in topics:
-                topics.append(topic)
-                
-    return topics
-
-
 def generate_issue_title(messages: list[dict]) -> str:
-    """Generate a descriptive, synthesized issue title from the discussion.
+    """Generate an issue title from the first substantive message in the thread.
 
-    Identifies key features or core problems rather than copying raw chat messages.
+    Deterministic: uses the first non-filler sentence from cleaned message text.
+    No keyword synthesis or invented architecture blurbs.
     """
-    all_text: list[str] = []
-    all_topics: list[str] = []
-    
     for msg in messages:
         content = (msg.get("content") or "").strip()
         if not content:
             continue
         stripped = _CODE_BLOCK_RE.sub("", content).strip()
         cleaned = _clean_discord_text(stripped)
-        if cleaned:
-            all_text.append(cleaned)
-            for topic in _extract_feature_topics(cleaned):
-                if topic not in all_topics:
-                    all_topics.append(topic)
-
-    # 1. If key feature topics were extracted, build a title from them
-    if all_topics:
-        if len(all_topics) == 1:
-            return f"Feature: {all_topics[0]}"
-        return f"Feature: {', '.join(all_topics[:2])}"
-
-    # 2. Check for substantive statements
-    for text in all_text:
-        first_line = text.split("\n")[0].strip()
+        if not cleaned:
+            continue
+        first_line = cleaned.split("\n")[0].strip()
         if not first_line or first_line.lower() in _FILLERS:
             continue
         if len(first_line) > 80:
@@ -282,7 +240,8 @@ def _format_transcript(messages: list[dict]) -> str:
 
         lines.append(header)
         if content:
-            lines.append(content)
+            clean_content = _clean_discord_text(content)
+            lines.append(clean_content if clean_content else content)
 
         # Append attachment links
         for att in msg.get("attachments", []):
@@ -324,11 +283,191 @@ def _collect_log_snippets(messages: list[dict]) -> list[str]:
 
 
 
-def summarize_thread_messages(messages: list[dict]) -> str:
-    """Generate a structured, synthesized issue summary from the discussion thread.
+def _is_noise(text: str) -> bool:
+    """Return True if text is empty, a filler/acknowledgement, command, greeting, or reaction."""
+    clean = _clean_discord_text(text).strip()
+    if not clean or len(clean) < 3:
+        return True
+    if clean.startswith(("/", "!", ".", "$", "?", "\\")):
+        return True
+    if _GREETING_RE.match(clean) or _GREETING_RE.match(text.strip()):
+        return True
+    lower = clean.lower().rstrip(".!?,:; ")
+    if lower in _FILLERS or lower in ("everyone", "all", "guys", "hey everyone", "good morning"):
+        return True
+    return bool(re.fullmatch(r"[\s\W_]+", clean))
 
-    Distinguishes proposed features, action items, context, and actual defects
-    while removing chat noise and verbatim conversation dumps.
+
+def _extract_overview(messages: list[dict]) -> str:
+    """Extract opening problem statement or discussion topic from early messages."""
+    for msg in messages:
+        content = msg.get("content", "")
+        if not content:
+            continue
+        no_code = _CODE_BLOCK_RE.sub("", content).strip()
+        cleaned = _clean_discord_text(no_code)
+        if _is_noise(cleaned):
+            continue
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        substantive = [l for l in lines if not _is_noise(l)]
+        if not substantive:
+            continue
+        candidate = " ".join(substantive[:2]).strip()
+        if len(candidate) > 240:
+            candidate = candidate[:237] + "..."
+        return candidate
+    return ""
+
+
+def _extract_participant_key_points(messages: list[dict]) -> list[tuple[str, list[str]]]:
+    """Extract substantive takeaway statements grouped by participant."""
+    author_points: dict[str, list[str]] = {}
+    seen_points: set[str] = set()
+
+    for msg in messages:
+        author = _clean_participant_name(msg.get("github_user") or msg.get("author_name") or "Unknown")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        no_code = _CODE_BLOCK_RE.sub("", content).strip()
+        cleaned = _clean_discord_text(no_code)
+        if _is_noise(cleaned):
+            continue
+
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+        for s in sentences:
+            s_clean = s.strip().strip("•-* ")
+            if len(s_clean) < 18 or _is_noise(s_clean):
+                continue
+            norm = re.sub(r"\s+", " ", s_clean.lower())
+            if norm in seen_points:
+                continue
+            seen_points.add(norm)
+
+            if len(s_clean) > 220:
+                s_clean = s_clean[:217] + "..."
+
+            author_points.setdefault(author, []).append(s_clean)
+
+    result: list[tuple[str, list[str]]] = []
+    for author, points in author_points.items():
+        if points:
+            result.append((author, points[:2]))
+    return result
+
+
+def _extract_identified_errors(messages: list[dict]) -> list[str]:
+    """Scan messages and code snippets for explicit error messages or stacktraces."""
+    errors: list[str] = []
+    seen: set[str] = set()
+
+    error_line_res = [
+        re.compile(r"(?:^|\n)\s*((?:[A-Z]\w*(?:Error|Exception|Crash|Fault)|Error|Exception)\s*[:\-]\s*[^\n]+)", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*([^\n]*(?:failed\s+with|exit\s+code\s+\d+|status\s+code\s+[45]\d\d|HTTP\s+[45]\d\d)[^\n]*)", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*((?:ERROR|CRITICAL|FATAL)\s*[:\-]\s*[^\n]+)", re.IGNORECASE),
+    ]
+
+    def _check_text(text: str) -> None:
+        for reg in error_line_res:
+            for match in reg.finditer(text):
+                err_str = match.group(1).strip()
+                norm = err_str.lower()
+                if norm not in seen and len(err_str) > 5:
+                    seen.add(norm)
+                    if len(err_str) > 120:
+                        err_str = err_str[:117] + "..."
+                    errors.append(err_str)
+
+    for msg in messages:
+        content = msg.get("content", "")
+        if content:
+            _check_text(content)
+        for code in msg.get("code_blocks", []):
+            _check_text(code)
+
+    return errors[:4]
+
+
+_ACTION_ITEM_PATTERNS = [
+    re.compile(r"\b(?:i\s+will|i'll|i\s+am\s+going\s+to|we\s+will|we'll)\s+([^.!?\n]+)", re.IGNORECASE),
+    re.compile(r"\b(?:we\s+(?:need\s+to|should|must))\s+([^.!?\n]+)", re.IGNORECASE),
+    re.compile(r"\b(?:let's|lets)\s+([^.!?\n]+)", re.IGNORECASE),
+    re.compile(r"\b(?:todo|action\s+item)s?\s*[:\-]\s*([^.!?\n]+)", re.IGNORECASE),
+    re.compile(r"\b(?:please\s+(?:assign|check|review|open|fix|update|merge|create))\s+([^.!?\n]+)", re.IGNORECASE),
+    re.compile(r"\b(?:working\s+on|pushed\s+changes|opened\s+a?\s*pr)\s*([^.!?\n]*)", re.IGNORECASE),
+]
+
+
+def _extract_action_items(messages: list[dict]) -> list[tuple[str, str]]:
+    """Scan messages for committed action items and next steps."""
+    action_items: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for msg in messages:
+        author = _clean_participant_name(msg.get("github_user") or msg.get("author_name") or "Unknown")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        no_code = _CODE_BLOCK_RE.sub("", content).strip()
+        cleaned = _clean_discord_text(no_code)
+
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+        for s in sentences:
+            s_clean = s.strip().strip("•-* ")
+            if len(s_clean) < 12:
+                continue
+            for pattern in _ACTION_ITEM_PATTERNS:
+                if pattern.search(s_clean):
+                    norm = re.sub(r"\s+", " ", s_clean.lower())
+                    if norm not in seen:
+                        seen.add(norm)
+                        if len(s_clean) > 200:
+                            s_clean = s_clean[:197] + "..."
+                        action_items.append((author, s_clean))
+                    break
+    return action_items[:6]
+
+
+_URL_RE = re.compile(r"https?://[^\s\)]+")
+_PR_ISSUE_RE = re.compile(r"\b(?:PR\s*#?|issue\s*#?|#)(\d+)\b", re.IGNORECASE)
+
+
+def _extract_references(messages: list[dict]) -> list[str]:
+    """Collect shared URLs and GitHub issue/PR mentions."""
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    for msg in messages:
+        content = msg.get("content", "")
+        if not content:
+            continue
+        for url in _URL_RE.findall(content):
+            clean_url = url.rstrip(".,;!?>)")
+            norm = clean_url.lower()
+            if norm not in seen:
+                seen.add(norm)
+                refs.append(clean_url)
+        for match in _PR_ISSUE_RE.finditer(content):
+            num = match.group(1)
+            ref_str = f"#{num}"
+            if ref_str not in seen:
+                seen.add(ref_str)
+                refs.append(ref_str)
+
+    return refs[:5]
+
+
+def summarize_thread_messages(messages: list[dict]) -> str:
+    """Build a structured, deterministic issue summary from thread messages.
+
+    Emits only real data extracted from messages:
+    - Overview of the discussion topic
+    - Key discussion points grouped by participant
+    - Identified errors and defects (if any)
+    - Action items and next steps (if any)
+    - Referenced links and issues (if any)
+    - Participants list
+    - Cleaned conversation transcript
     """
     if not messages:
         return "No messages captured to summarize."
@@ -336,146 +475,50 @@ def summarize_thread_messages(messages: list[dict]) -> str:
     raw_participants = {
         msg.get("github_user") or msg.get("author_name") or "Unknown" for msg in messages
     }
-    participants = sorted(list({_clean_participant_name(p) for p in raw_participants}))
+    participants = sorted({_clean_participant_name(p) for p in raw_participants})
 
-    # Extract all cleaned lines
-    cleaned_sentences: list[str] = []
-    feature_topics: list[str] = []
-    
-    # Split messages into sentences/clauses
-    for msg in messages:
-        content = (msg.get("content") or "").strip()
-        if not content:
-            continue
-        clean_text = _CODE_BLOCK_RE.sub("", content).strip()
-        if not clean_text:
-            continue
+    overview = _extract_overview(messages)
+    key_points = _extract_participant_key_points(messages)
+    errors = _extract_identified_errors(messages)
+    action_items = _extract_action_items(messages)
+    references = _extract_references(messages)
 
-        # Split on sentence boundaries and newlines
-        raw_sentences = re.split(r"(?<=[.!?])\s+|\n+", clean_text)
-        for s in raw_sentences:
-            s = _clean_discord_text(s)
-            if not s or s.lower() in _FILLERS or s.startswith(("📎", "http", "[")):
-                continue
-            if len(s) < 4:
-                continue
-
-            cleaned_sentences.append(s)
-            for t in _extract_feature_topics(s):
-                if t not in feature_topics:
-                    feature_topics.append(t)
-
-    # Categorize into Features, Action Items, Bugs, and Context
-    feature_details: list[str] = []
-    action_items: list[str] = []
-    bug_reports: list[str] = []
-    context_notes: list[str] = []
-
-    # True bug indicators (exclude meta phrases like "open issue" or "make issues")
-    bug_keywords = ["crash", "broken", "failed with", "throws error", "exception:", "bug in", "not working properly"]
-    
-    for s in cleaned_sentences:
-        s_lower = s.lower()
-        
-        # Check if this sentence is purely meta chatter (without feature mentions)
-        is_meta = any(p.search(s) for p in _META_CHATTER_PATTERNS)
-        if is_meta and not any(kw in s_lower for kw in ["point system", "multi-repo", "multi-repository", "workflow"]):
-            if "pr" in s_lower or "pull request" in s_lower:
-                action_items.append("Review open Pull Request and validate test coverage.")
-            continue
-
-        # Check for true bugs
-        if any(b in s_lower for b in bug_keywords):
-            if s not in bug_reports:
-                bug_reports.append(s)
-            continue
-
-        # Check for feature explanations & point system / mechanisms
-        has_feature = False
-        if re.search(r"\bpoints?\s*-?\s*system\b", s_lower):
-            desc = (
-                "**Internal Developer Adaptation Point System**: Work internally to adapt Knowledge to "
-                "developer understanding without exposing points to end users."
-            )
-            if desc not in feature_details:
-                feature_details.append(desc)
-            has_feature = True
-
-        if "multi-repository" in s_lower or "multi-repo" in s_lower or "multi repository" in s_lower:
-            desc = "**Multi-Repository Intelligence**: Enable cross-repository contextual intelligence and analysis."
-            if desc not in feature_details:
-                feature_details.append(desc)
-            has_feature = True
-
-        if "creating prs" in s_lower or "creating issues" in s_lower:
-            desc = "**Issue & PR Creation Workflow**: Implement structured issue and PR creation in manageable chunks for careful review."
-            if desc not in feature_details:
-                feature_details.append(desc)
-            has_feature = True
-
-        if not has_feature:
-            if "adapt" in s_lower or "understanding" in s_lower:
-                if s not in context_notes:
-                    context_notes.append(s)
-            elif "tackle" in s_lower or "start on" in s_lower or "working on" in s_lower or "opened a pr" in s_lower:
-                if s not in action_items:
-                    action_items.append(s)
-            else:
-                if len(s) > 20 and s not in context_notes:
-                    context_notes.append(s)
-
-
-
-    # Build the structured markdown issue body
     sections: list[str] = []
-    
-    if feature_details or feature_topics:
-        sections.append("### 💡 Proposed Features & Discussion Summary\n")
-        
-        # Overview
-        topics_str = ", ".join(feature_topics[:3]) if feature_topics else "the discussed capabilities"
-        sections.append(f"**Overview:** Discussion regarding proposed enhancements for {topics_str}.\n")
 
-        if feature_details:
-            sections.append("**✨ Proposed Features & Architecture:**")
-            for fd in feature_details:
-                sections.append(f"- {fd}")
-            sections.append("")
+    summary_parts: list[str] = ["### 📋 Discussion Summary\n"]
+    if overview:
+        summary_parts.append(f"**Overview:** {overview}\n")
 
-    elif bug_reports:
-        sections.append("### 🐛 Bug Report & Investigation Summary\n")
-        sections.append(f"**Overview:** {bug_reports[0]}\n")
-        sections.append("**🔴 Identified Defects & Symptoms:**")
-        for b in bug_reports[:5]:
-            sections.append(f"- {b}")
-        sections.append("")
+    if key_points:
+        summary_parts.append("**Key Discussion Points:**")
+        for author, points in key_points:
+            joined = " ".join(points)
+            summary_parts.append(f"- **{author}:** {joined}")
+        summary_parts.append("")
 
-    else:
-        sections.append("### 📝 Discussion Summary\n")
-        overview = cleaned_sentences[0] if cleaned_sentences else "Discussion regarding requirements and implementation details."
-        sections.append(f"**Overview:** {overview}\n")
+    if errors:
+        summary_parts.append("**Identified Errors & Defects:**")
+        for err in errors:
+            summary_parts.append(f"- `{err}`")
+        summary_parts.append("")
 
     if action_items:
-        # Deduplicate
-        seen_actions = set()
-        clean_actions = []
-        for a in action_items:
-            if a not in seen_actions:
-                seen_actions.add(a)
-                clean_actions.append(a)
-        if clean_actions:
-            sections.append("**🛠️ Action Items & Planned Work:**")
-            for act in clean_actions[:5]:
-                sections.append(f"- {act}")
-            sections.append("")
+        summary_parts.append("**Action Items & Next Steps:**")
+        for author, item in action_items:
+            summary_parts.append(f"- **{author}:** {item}")
+        summary_parts.append("")
 
-    if context_notes and not feature_details:
-        sections.append("**🔍 Key Discussion Points:**")
-        for note in context_notes[:5]:
-            sections.append(f"- {note}")
-        sections.append("")
+    if references:
+        summary_parts.append("**Referenced Links & Issues:**")
+        for ref in references:
+            summary_parts.append(f"- {ref}")
+        summary_parts.append("")
 
-    sections.append(f"**👥 Participants ({len(participants)}):** {', '.join(participants)}")
+    sections.append("\n".join(summary_parts).strip())
+    sections.append(f"\n**👥 Participants ({len(participants)}):** {', '.join(participants)}\n")
+    sections.append("### 💬 Thread Transcript\n")
+    sections.append(_format_transcript(messages))
+
     return "\n".join(sections)
 
 
@@ -543,7 +586,7 @@ def _fill_template(
         )
 
     for pattern, content in section_fills:
-        result, count = re.subn(
+        result, _count = re.subn(
             pattern,
             lambda match, text=content: f"{match.group(1)}\n{text}\n",
             result,
