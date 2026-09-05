@@ -4,47 +4,59 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-
-
 import discord
 from discord import app_commands
 
+from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
-from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
-from ghdcbot.engine.metrics import (
-    build_contribution_summary_message,
-    get_contribution_metrics,
-    rank_by_activity,
-    get_rank_for_user,
+from ghdcbot.discord_command_permissions import (
+    format_slash_command_permission_denied,
+    slash_command_allowed,
 )
+from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
 )
-from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
-from ghdcbot.engine.pr_list import (
-    clamp_pr_list_args,
-    format_pr_list_messages,
-    select_recent_prs,
+from ghdcbot.engine.metrics import (
+    build_contribution_summary_message,
+    get_contribution_metrics,
+    get_rank_for_user,
+    rank_by_activity,
 )
+from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
     parse_pr_url,
 )
-from ghdcbot.logging.setup import configure_logging
-from ghdcbot.plugins.registry import build_adapter
+from ghdcbot.engine.pr_list import (
+    clamp_pr_list_args,
+    format_pr_list_messages,
+    select_recent_prs,
+)
+from ghdcbot.engine.pr_status import (
+    PR_STATUS_MAX_PRS,
+    fetch_all_open_pr_health,
+    fetch_pr_health,
+    filter_repo_suggestions,
+    format_all_pr_status,
+    format_single_pr_status,
+    get_configured_repo_names,
+    resolve_repo_for_pr,
+)
+from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
     slash_command_allowed,
 )
-from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
@@ -52,10 +64,14 @@ from ghdcbot.help_link import (
     HelpLinkStartView,
     deliver_help_link_prompt,
 )
+from ghdcbot.logging.setup import configure_logging
+from ghdcbot.plugins.registry import build_adapter
 
 # Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
+SLASH_CMD_PR_STATUS = "pr-status"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
+
 
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
@@ -481,7 +497,7 @@ def run_bot(config_path: str) -> None:
         # 3. Create the Embed
         embed = discord.Embed(
             color=color,
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(UTC)
         )
 
         # Show github user link and avatar if linked, and set author details
@@ -530,7 +546,7 @@ def run_bot(config_path: str) -> None:
         if github_user:
             metrics_available = True
             try:
-                now_utc = datetime.now(timezone.utc)
+                now_utc = datetime.now(UTC)
                 start_30 = now_utc - timedelta(days=30)
 
                 def _fetch_metrics():
@@ -761,7 +777,7 @@ def run_bot(config_path: str) -> None:
     async def pr_list_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member,
-        count: Optional[app_commands.Range[int, 1, 100]] = None,
+        count: app_commands.Range[int, 1, 100] | None = None,
         skip: app_commands.Range[int, 0, 500] = 0,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -859,11 +875,13 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True
             )
         
-    def command_permission_check(command_name: str):
+    def command_permission_check(command_name: str, *, allow_all_by_default: bool = False):
         """Restrict slash commands via discord.command_permissions or legacy issue_assignees."""
 
         def check(interaction: discord.Interaction) -> bool:
-            return slash_command_allowed(interaction, config, command_name)
+            return slash_command_allowed(
+                interaction, config, command_name, allow_all_by_default=allow_all_by_default
+            )
 
         return check
 
@@ -991,6 +1009,144 @@ def run_bot(config_path: str) -> None:
         
         embed = discord.Embed.from_dict(embed_dict)
         await message.channel.send(embed=embed)
+
+    @tree.command(
+        name="pr-status",
+        description="Show PR health: CI, CodeRabbit, conflicts, reviews for PRs or full repo dashboard",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name (optional; auto-detected from config if omitted)",
+        pr_number="Pull request number (optional if show_all is True)",
+        show_all="Show health dashboard for all open PRs in the organization",
+        skip="How many open PRs to skip for pagination (when show_all is True)",
+    )
+    @app_commands.checks.cooldown(1, 5.0)
+    @app_commands.check(command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True))
+    async def pr_status_cmd(
+        interaction: discord.Interaction,
+        repo: str | None = None,
+        pr_number: app_commands.Range[int, 1] | None = None,
+        show_all: bool = False,
+        skip: app_commands.Range[int, 0] = 0,
+    ) -> None:
+        """Show health status of a pull request or all open PRs."""
+        await interaction.response.defer(ephemeral=True)
+
+        # Resolve CodeRabbit bot logins from notification config
+        notification_config = getattr(config.discord, "notifications", None)
+        coderabbit_logins = None
+        if notification_config:
+            coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None)
+
+        if show_all:
+            try:
+                statuses, total = await asyncio.to_thread(
+                    fetch_all_open_pr_health,
+                    github_adapter,
+                    config.github.org,
+                    coderabbit_logins,
+                    PR_STATUS_MAX_PRS,
+                    int(skip),
+                )
+            except Exception:
+                logger.exception("Failed to fetch all open PR health")
+                await interaction.followup.send(
+                    "❌ Error fetching PR dashboard. Please try again later.",
+                    ephemeral=True,
+                )
+                return
+
+            messages = format_all_pr_status(
+                statuses, config.github.org, skip=int(skip), total=total
+            )
+            for msg in messages:
+                await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
+            return
+
+        if pr_number is None:
+            await interaction.followup.send(
+                "❌ Please specify `pr_number` to check PR health (or use `show_all:True` for the organization dashboard).",
+                ephemeral=True,
+            )
+            return
+
+        repo_name, err = await resolve_repo_for_pr(
+            config, github_adapter, int(pr_number), repo=repo
+        )
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+
+        assert repo_name is not None
+
+        try:
+            health = await asyncio.to_thread(
+                fetch_pr_health,
+                github_adapter,
+                config.github.org,
+                repo_name,
+                int(pr_number),
+                coderabbit_logins,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to fetch PR health",
+                extra={"repo": repo_name, "pr_number": pr_number},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching PR status. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if health is None:
+            # Check if this number is an Issue rather than a PR to provide an informative response
+            issue_info = None
+            try:
+                get_issue = getattr(github_adapter, "get_issue", None)
+                if callable(get_issue):
+                    issue_info = await asyncio.to_thread(
+                        get_issue, config.github.org, repo_name, int(pr_number)
+                    )
+            except Exception as exc:
+                logger.debug("Failed to fetch issue details for fallback check: %s", exc)
+
+            if issue_info and "pull_request" not in issue_info:
+                issue_title = (issue_info.get("title") or "").strip()
+                issue_state = issue_info.get("state") or "unknown"
+                state_label = "Closed 🔴" if issue_state == "closed" else "Open 🟢"
+                await interaction.followup.send(
+                    f"ℹ️ **{repo_name}#{pr_number}** is a GitHub **Issue**, not a Pull Request.\n\n"
+                    f"**Title:** {issue_title}\n"
+                    f"**State:** {state_label}\n\n"
+                    "💡 `/pr-status` is designed for Pull Requests. Try `/pr-status pr_number:<PR#>`.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
+                ephemeral=True,
+            )
+            return
+
+        message = format_single_pr_status(health, config.github.org)
+        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+
+    @pr_status_cmd.autocomplete("repo")
+    async def pr_status_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        configured_repos = get_configured_repo_names(config)
+        suggestions = filter_repo_suggestions(configured_repos, current)
+        logger.debug(
+            "Autocomplete for pr-status repo: current=%r, suggestions=%s",
+            current,
+            suggestions,
+        )
+        return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
         name="sync",
