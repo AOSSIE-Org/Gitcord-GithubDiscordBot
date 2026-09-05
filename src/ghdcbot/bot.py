@@ -52,24 +52,12 @@ from ghdcbot.engine.pr_status import (
     get_configured_repo_names,
     resolve_repo_for_pr,
 )
-from ghdcbot.engine.social_profiles import SocialProfileService
-from ghdcbot.logging.setup import configure_logging
-from ghdcbot.plugins.registry import build_adapter
-
-# Slash command names used for permission checks (must match @tree.command name=...)
-SLASH_CMD_SYNC = "sync"
-SLASH_CMD_PR_STATUS = "pr-status"
-
+from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
     slash_command_allowed,
 )
-from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.engine.social_profiles import SocialProfileService
-from ghdcbot.help_link import (
-    HELP_LINK_COMMAND_NAME,
-    HelpLinkSessionStore,
-    HelpLinkStartView,
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
     HelpLinkSessionStore,
