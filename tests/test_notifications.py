@@ -20,6 +20,7 @@ from ghdcbot.engine.notifications import (
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
+    update_pr_channel_announcement_for_event,
 )
 
 
@@ -30,6 +31,7 @@ class MockStorage:
         self.verified_mappings: list[dict] = []
         self.notifications_sent: set[str] = set()
         self.audit_events: list[dict] = []
+        self.pr_channel_announcements: dict[tuple[str, int], dict] = {}
     
     def list_verified_identity_mappings(self) -> list[dict]:
         return self.verified_mappings
@@ -54,6 +56,29 @@ class MockStorage:
     def append_audit_event(self, event: dict) -> None:
         self.audit_events.append(event)
 
+    def save_pr_channel_announcement(self, **kwargs: object) -> None:
+        repo = str(kwargs["repo"])
+        pr_number = int(kwargs["pr_number"])  # type: ignore[arg-type]
+        self.pr_channel_announcements[(repo, pr_number)] = {
+            "repo": repo,
+            "pr_number": pr_number,
+            "channel_id": str(kwargs["channel_id"]),
+            "message_id": str(kwargs["message_id"]),
+            "status": str(kwargs.get("status") or "open"),
+            "pr_title": kwargs.get("pr_title"),
+            "author_github": kwargs.get("author_github"),
+        }
+
+    def get_pr_channel_announcement(self, repo: str, pr_number: int) -> dict | None:
+        return self.pr_channel_announcements.get((repo, int(pr_number)))
+
+    def mark_pr_channel_announcement_status(
+        self, repo: str, pr_number: int, status: str
+    ) -> None:
+        row = self.pr_channel_announcements.get((repo, int(pr_number)))
+        if row:
+            row["status"] = status
+
 
 class MockDiscordWriter:
     """Mock Discord writer for testing."""
@@ -61,6 +86,8 @@ class MockDiscordWriter:
     def __init__(self) -> None:
         self.dms_sent: list[tuple[str, str]] = []
         self.messages_sent: list[tuple[str, str]] = []
+        self.messages_edited: list[tuple[str, str, str]] = []
+        self._next_message_id = 1000
     
     def send_dm(self, discord_user_id: str, content: str) -> bool:
         self.dms_sent.append((discord_user_id, content))
@@ -68,6 +95,24 @@ class MockDiscordWriter:
     
     def send_message(self, channel_id: str, content: str) -> bool:
         self.messages_sent.append((channel_id, content))
+        return True
+
+    def create_message(self, channel_id: str, content: str) -> str | None:
+        if not content:
+            return ""
+        self.messages_sent.append((channel_id, content))
+        self._next_message_id += 1
+        return str(self._next_message_id)
+
+    def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        content: str,
+        *,
+        embeds: list[dict] | None = None,
+    ) -> bool:
+        self.messages_edited.append((channel_id, message_id, content, embeds))
         return True
 
 
@@ -510,7 +555,7 @@ def test_send_notification_pr_reviewed_approved() -> None:
 
 
 def test_send_notification_pr_reviewed_comment() -> None:
-    """Test notification for PR review comments when enabled."""
+    """Comment-only reviews never DM, even when pr_review_comment is true."""
     storage = MockStorage()
     storage.verified_mappings = [
         {"discord_user_id": "discord123", "github_user": "contributor"},
@@ -537,10 +582,39 @@ def test_send_notification_pr_reviewed_comment() -> None:
         event, storage, discord_writer, policy, config, "test-org"
     )
 
-    assert result is True
-    assert len(discord_writer.dms_sent) == 1
-    assert "New Review Comments" in discord_writer.dms_sent[0][1]
-    assert "reviewer" in discord_writer.dms_sent[0][1]
+    assert result is False
+    assert discord_writer.dms_sent == []
+
+
+def test_send_notification_skips_self_review_comment() -> None:
+    """PR author replies show up as COMMENTED reviews — do not DM them as reviewer."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "Sashang-debug"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    event = ContributionEvent(
+        github_user="Sashang-debug",
+        event_type="pr_reviewed",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "pr_number": 51,
+            "state": "COMMENTED",
+            "pr_author": "sashang-debug",  # case differs from github_user
+            "review_id": 4999427982,
+        },
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+
+    assert result is False
+    assert discord_writer.dms_sent == []
 
 
 def test_send_notification_pr_reviewed_comment_disabled() -> None:
@@ -581,7 +655,7 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
         {"discord_user_id": "discord123", "github_user": "contributor"},
     ]
     storage.notifications_sent.add(
-        "pr_reviewed:test-repo:456:contributor:9001:COMMENT"
+        "pr_reviewed:test-repo:456:contributor:reviewer:COMMENT"
     )
     discord_writer = MockDiscordWriter()
     config = NotificationConfig(enabled=True, pr_review_comment=True)
@@ -606,6 +680,99 @@ def test_send_notification_pr_reviewed_comment_dedupe() -> None:
 
     assert result is False
     assert len(discord_writer.dms_sent) == 0
+
+
+def test_pr_review_comment_coalesces_multiple_review_ids_from_same_reviewer() -> None:
+    """Comment-only reviews are hard-disabled; no DMs even across many review_ids."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    def _event(review_id: int) -> ContributionEvent:
+        return ContributionEvent(
+            github_user="coderabbitai[bot]",
+            event_type="pr_reviewed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=datetime.now(UTC),
+            payload={
+                "pr_number": 56,
+                "state": "COMMENTED",
+                "pr_author": "contributor",
+                "review_id": review_id,
+            },
+        )
+
+    assert send_notification_for_event(
+        _event(1001), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert send_notification_for_event(
+        _event(1002), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert discord_writer.dms_sent == []
+
+
+def test_changes_requested_coalesces_multiple_reviews_from_same_reviewer() -> None:
+    """Many CHANGES_REQUESTED rounds / messages from one reviewer → one DM."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "contributor"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_review_result=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    def _event(review_id: int) -> ContributionEvent:
+        return ContributionEvent(
+            github_user="mentor1",
+            event_type="pr_reviewed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=datetime.now(UTC),
+            payload={
+                "pr_number": 56,
+                "state": "CHANGES_REQUESTED",
+                "pr_author": "contributor",
+                "review_id": review_id,
+            },
+        )
+
+    assert send_notification_for_event(
+        _event(2001), storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert send_notification_for_event(
+        _event(2002), storage, discord_writer, policy, config, "AOSSIE-Org"
+    ) is False
+    assert len(discord_writer.dms_sent) == 1
+    assert "Changes Requested" in discord_writer.dms_sent[0][1]
+
+
+def test_build_dedupe_key_comment_reviews_ignore_review_id() -> None:
+    base = {
+        "pr_number": 56,
+        "state": "COMMENT",
+        "pr_author": "contributor",
+    }
+    e1 = ContributionEvent(
+        github_user="coderabbitai[bot]",
+        event_type="pr_reviewed",
+        repo="r",
+        created_at=datetime.now(UTC),
+        payload={**base, "review_id": 1},
+    )
+    e2 = ContributionEvent(
+        github_user="coderabbitai[bot]",
+        event_type="pr_reviewed",
+        repo="r",
+        created_at=datetime.now(UTC),
+        payload={**base, "review_id": 2, "state": "COMMENTED"},
+    )
+    key1 = _build_dedupe_key(e1, "contributor")
+    key2 = _build_dedupe_key(e2, "contributor")
+    assert key1 == key2
+    assert key1 == "pr_reviewed:r:56:contributor:coderabbitai[bot]:COMMENT"
 
 
 def test_send_notification_channel_mode() -> None:
@@ -984,6 +1151,26 @@ def test_pr_opened_channel_notification_skips_when_pr_opened_disabled() -> None:
     assert discord_writer.messages_sent == []
 
 
+def test_pr_opened_channel_notification_skips_bots() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(github_user="dependabot[bot]"),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is False
+    assert discord_writer.messages_sent == []
+
+
 def test_pr_opened_channel_notification_posts_unverified_author() -> None:
     storage = MockStorage()
     storage.verified_mappings = []
@@ -1054,6 +1241,214 @@ def test_pr_opened_channel_notification_skips_when_discord_mutations_disallowed(
     assert result is False
     assert discord_writer.messages_sent == []
     assert policy.allow_discord_mutations is False
+
+
+def test_pr_opened_channel_notification_tracks_message_id() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    assert send_pr_opened_channel_notification(
+        _pr_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+    tracked = storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)
+    assert tracked is not None
+    assert tracked["channel_id"] == "1465995983791063140"
+    assert tracked["message_id"]
+    assert tracked["status"] == "open"
+
+
+def test_update_pr_channel_announcement_edits_on_merge() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        pr_number=42,
+        channel_id="chan-1",
+        message_id="msg-9",
+        pr_title="Test PR",
+        author_github="alice",
+        status="open",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "title": "Test PR", "merged_by": "mentor1"},
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert len(discord_writer.messages_edited) == 1
+    channel_id, message_id, content, embeds = discord_writer.messages_edited[0]
+    assert channel_id == "chan-1"
+    assert message_id == "msg-9"
+    assert content == ""
+    assert embeds
+    assert embeds[0]["color"] == 0x8250DF
+    assert "Merged:" in embeds[0]["title"]
+    assert "Merged by @mentor1" in embeds[0]["description"]
+    assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
+
+
+def test_update_pr_channel_announcement_merge_does_not_blame_author() -> None:
+    """Missing merged_by must not attribute the merge to the PR author."""
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="OrgExplorer",
+        pr_number=214,
+        channel_id="chan-org",
+        message_id="msg-org",
+        pr_title="feat: add organization filter",
+        author_github="jikrana1",
+        status="open",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="jikrana1",
+        event_type="pr_merged",
+        repo="OrgExplorer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 214, "title": "feat: add organization filter"},
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    embeds = discord_writer.messages_edited[0][3]
+    assert embeds
+    assert embeds[0]["description"] == "**Status:** Merged"
+    assert "jikrana1" not in embeds[0]["description"]
+    assert "Merged by" not in embeds[0]["description"]
+
+
+def test_update_pr_channel_announcement_edits_on_close() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="MiniChain",
+        pr_number=7,
+        channel_id="chan-2",
+        message_id="msg-2",
+        pr_title="WIP",
+        author_github="bob",
+        status="open",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_closed",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7, "title": "WIP", "closed_by": "bob"},
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "StabilityNexus"
+    )
+    assert len(discord_writer.messages_edited) == 1
+    embeds = discord_writer.messages_edited[0][3]
+    assert embeds
+    assert embeds[0]["color"] == 0xCF222E
+    assert "Closed:" in embeds[0]["title"]
+    assert "Closed by @bob" in embeds[0]["description"]
+
+
+def test_update_pr_channel_announcement_skips_untracked_old_messages() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 99, "title": "Old PR", "merged_by": "alice"},
+    )
+
+    assert (
+        update_pr_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert discord_writer.messages_edited == []
+
+
+def test_update_pr_channel_announcement_releases_claim_when_status_mark_fails() -> None:
+    """If Discord edit succeeds but status persistence fails, release claim for retry."""
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        pr_number=42,
+        channel_id="chan-1",
+        message_id="msg-9",
+        pr_title="Test PR",
+        author_github="alice",
+        status="open",
+    )
+
+    def _boom(repo: str, pr_number: int, status: str) -> None:
+        raise RuntimeError("db locked")
+
+    storage.mark_pr_channel_announcement_status = _boom  # type: ignore[method-assign]
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "title": "Test PR", "merged_by": "mentor1"},
+    )
+
+    assert (
+        update_pr_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert len(discord_writer.messages_edited) == 1
+    dedupe_key = "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:merged"
+    assert not storage.was_notification_sent(dedupe_key)
+    # Status stayed open so a later sync can retry mark after claim release.
+    assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
+
+
+def test_sqlite_pr_channel_announcement_roundtrip(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    storage.save_pr_channel_announcement(
+        repo="RepoA",
+        pr_number=3,
+        channel_id="c1",
+        message_id="m1",
+        pr_title="Hello",
+        author_github="alice",
+    )
+    row = storage.get_pr_channel_announcement("RepoA", 3)
+    assert row is not None
+    assert row["message_id"] == "m1"
+    assert storage.get_pr_channel_announcement("RepoA", 4) is None
+    storage.mark_pr_channel_announcement_status("RepoA", 3, "merged")
+    assert storage.get_pr_channel_announcement("RepoA", 3)["status"] == "merged"
 
 
 class MockGithubWriter:

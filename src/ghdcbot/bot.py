@@ -6,7 +6,8 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 import discord
 from discord import app_commands
 
@@ -58,7 +59,22 @@ from ghdcbot.plugins.registry import build_adapter
 # Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_THREAD = "thread"
+from ghdcbot.discord_command_permissions import (
+    format_slash_command_permission_denied,
+    slash_command_allowed,
+)
+from ghdcbot.adapters.discord.social_commands import register_social_commands
+from ghdcbot.engine.social_profiles import SocialProfileService
+from ghdcbot.help_link import (
+    HELP_LINK_COMMAND_NAME,
+    HelpLinkSessionStore,
+    HelpLinkStartView,
+    deliver_help_link_prompt,
+)
 
+# Slash command names used for permission checks (must match @tree.command name=...)
+SLASH_CMD_SYNC = "sync"
+SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
     "It was only required to prove ownership during the verification process."
@@ -494,7 +510,7 @@ class ThreadApproveView(discord.ui.View):
 
 
 def run_bot(config_path: str) -> None:
-    """Run the Discord bot with /link, /verify-link, /profile, /identity status, and /summary."""
+    """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
     configure_logging(config.runtime.log_level)
     logger = logging.getLogger("ghdcbot.bot")
@@ -503,6 +519,7 @@ def run_bot(config_path: str) -> None:
         config_path,
         config.runtime.data_dir,
     )
+    help_link_sessions = HelpLinkSessionStore()
     repo_contributor_roles = getattr(config, "repo_contributor_roles", None) or {}
     if repo_contributor_roles:
         logger.info(
@@ -1066,6 +1083,65 @@ def run_bot(config_path: str) -> None:
             return slash_command_allowed(interaction, config, command_name)
 
         return check
+
+    @tree.command(
+        name=SLASH_CMD_HELP_LINK,
+        description="Help a Discord member link GitHub (opens Start linking for them)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(contributor="Discord member who needs help linking GitHub")
+    @app_commands.checks.cooldown(1, 15.0, key=lambda i: (i.guild_id, i.user.id))
+    async def help_link_cmd(
+        interaction: discord.Interaction, contributor: discord.Member
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        if contributor.bot:
+            await interaction.followup.send(
+                "❌ Cannot help link a bot account.",
+                ephemeral=True,
+            )
+            return
+
+        target_id = str(contributor.id)
+        mentor_id = str(interaction.user.id)
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
+
+        session = help_link_sessions.create(
+            mentor_discord_id=mentor_id,
+            target_discord_id=target_id,
+        )
+        view = HelpLinkStartView(
+            service=service,
+            storage=storage,
+            target_discord_id=target_id,
+            mentor_discord_id=mentor_id,
+            session_id=session.session_id,
+            profile_settings_url=profile_settings_url,
+            verification_view_factory=IdentityVerificationView,
+            build_verification_embed=build_identity_verification_embed,
+            session_store=help_link_sessions,
+            max_age_days=max_age_days,
+        )
+        try:
+            status = await deliver_help_link_prompt(
+                interaction=interaction,
+                contributor=contributor,
+                mentor=interaction.user,
+                view=view,
+            )
+        except Exception:
+            help_link_sessions.clear_if_match(target_id, session.session_id)
+            logger.exception("help-link delivery failed")
+            await interaction.followup.send(
+                "❌ Could not start linking help. Please try again.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(status, ephemeral=True)
 
     @client.event
     async def on_message(message: discord.Message) -> None:
