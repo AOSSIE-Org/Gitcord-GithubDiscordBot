@@ -4,42 +4,61 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-
-
 import discord
 from discord import app_commands
 
+logger = logging.getLogger("ghdcbot.bot")
+
+from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
-from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
-from ghdcbot.engine.metrics import (
-    build_contribution_summary_message,
-    get_contribution_metrics,
-    rank_by_activity,
-    get_rank_for_user,
+from ghdcbot.core.modes import RunMode
+from ghdcbot.discord_command_permissions import (
+    format_slash_command_permission_denied,
+    slash_command_allowed,
 )
+from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
 )
-from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
-from ghdcbot.engine.pr_list import (
-    clamp_pr_list_args,
-    format_pr_list_messages,
-    select_recent_prs,
+from ghdcbot.engine.metrics import (
+    build_contribution_summary_message,
+    get_contribution_metrics,
+    get_rank_for_user,
+    rank_by_activity,
 )
+from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
     parse_pr_url,
 )
+from ghdcbot.engine.pr_list import (
+    clamp_pr_list_args,
+    format_pr_list_messages,
+    select_recent_prs,
+)
+from ghdcbot.engine.social_profiles import SocialProfileService
+from ghdcbot.engine.thread_to_issue import (
+    collect_thread_messages,
+    format_issue_body,
+    generate_issue_title,
+    resolve_authors,
+    strip_template_frontmatter,
+)
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
+
+# Slash command names used for permission checks (must match @tree.command name=...)
+SLASH_CMD_SYNC = "sync"
+SLASH_CMD_THREAD = "thread"
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
     slash_command_allowed,
@@ -56,7 +75,6 @@ from ghdcbot.help_link import (
 # Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
-
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
     "It was only required to prove ownership during the verification process."
@@ -304,6 +322,220 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+def clamp_thread_history_limit(limit: int | None) -> int:
+    """Clamp the message history limit for /thread to [1, 100], defaulting to 15."""
+    if limit is None:
+        return 15
+    return max(1, min(100, limit))
+
+
+def validate_thread_repo(owner: str, repo_name: str, config: Any) -> str | None:
+    """Validate repository owner and repo_name against config.github.org and repos filter.
+
+    Returns an error message string if validation fails, or None if valid.
+    """
+    configured_org = getattr(getattr(config, "github", None), "org", "") or ""
+    repo_filter = getattr(getattr(config, "github", None), "repos", None)
+    if repo_filter:
+        mode = getattr(repo_filter, "mode", "allow")
+        names = getattr(repo_filter, "names", [])
+        if mode == "allow":
+            if owner.lower() != configured_org.lower():
+                return f"❌ Repository owner `{owner}` does not match configured organization `{configured_org}`."
+            if repo_name not in names:
+                return f"❌ Repository `{repo_name}` is not in the allowed repositories list."
+        if mode == "deny" and repo_name in names:
+            return f"❌ Repository `{repo_name}` is excluded by configuration."
+    return None
+
+
+class ThreadEditTitleModal(discord.ui.Modal, title="Edit Issue Title"):
+    """Modal to allow customizing issue title before approving creation."""
+
+    def __init__(self, current_title: str, view: ThreadApproveView) -> None:
+        super().__init__()
+        self.parent_view = view
+        self.title_input = discord.ui.TextInput(
+            label="Issue Title",
+            default=current_title,
+            max_length=256,
+            required=True,
+        )
+        self.add_item(self.title_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        new_title = self.title_input.value.strip()
+        if new_title:
+            self.parent_view.issue_title = new_title
+        content = self.parent_view.build_preview_content()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=content, view=self.parent_view)
+        else:
+            await interaction.response.edit_message(content=content, view=self.parent_view)
+
+
+class ThreadApproveView(discord.ui.View):
+    """View with Approve (gated), Edit Title, and Cancel buttons for /thread issue drafting."""
+
+    def __init__(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        issue_title: str,
+        issue_body: str,
+        config: Any,
+        github_adapter: Any,
+        author_id: int,
+        timeout: float = 600.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.owner = owner
+        self.repo = repo
+        self.issue_title = issue_title
+        self.issue_body = issue_body
+        self.config = config
+        self.github_adapter = github_adapter
+        self.author_id = author_id
+
+        self.approve_button = discord.ui.Button(
+            label="Approve & Create Issue",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+        )
+        self.approve_button.callback = self.approve_creation
+        self.add_item(self.approve_button)
+
+        self.edit_button = discord.ui.Button(
+            label="Edit Title",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+        )
+        self.edit_button.callback = self.open_edit_title_modal
+        self.add_item(self.edit_button)
+
+        self.cancel_button = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+        )
+        self.cancel_button.callback = self.cancel_creation
+        self.add_item(self.cancel_button)
+
+    def _disable(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    def build_preview_content(self) -> str:
+        """Format an ephemeral preview message respecting Discord's character limit."""
+        header = (
+            f"📋 **Issue Preview for {self.owner}/{self.repo}**\n"
+            f"**Title:** {self.issue_title}\n\n"
+            f"**Body Excerpt:**\n"
+        )
+        footer = "\n\n⚠️ *Click **Approve & Create Issue** to create this issue on GitHub.*"
+        max_excerpt = 1900 - len(header) - len(footer) - 15
+        if len(self.issue_body) > max_excerpt:
+            excerpt = self.issue_body[: max_excerpt - 35] + "\n\n... *(truncated for preview)*"
+        else:
+            excerpt = self.issue_body
+        return f"{header}```markdown\n{excerpt}\n```{footer}"
+
+    async def approve_creation(self, interaction: discord.Interaction) -> None:
+        # Only the author who drafted the preview can approve it
+        if interaction.user.id != self.author_id:
+            msg = "❌ Only the member who initiated this issue preview can approve it."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+        # Gate check: if explicit permissions are configured for thread, respect them; otherwise available to everyone
+        perms = getattr(self.config.discord, "command_permissions", None) if getattr(self.config, "discord", None) else None
+        if perms and SLASH_CMD_THREAD in perms and not slash_command_allowed(interaction, self.config, SLASH_CMD_THREAD):
+            denial_msg = format_slash_command_permission_denied(self.config, SLASH_CMD_THREAD)
+            if interaction.response.is_done():
+                await interaction.followup.send(denial_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(denial_msg, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        self._disable()
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=self)
+        except (discord.HTTPException, discord.NotFound):
+            logger.debug("Failed to disable view on original message")
+
+        # Check write permissions & dry-run mode
+        github_cfg = getattr(self.config, "github", None)
+        perms = getattr(github_cfg, "permissions", None)
+        can_write = getattr(perms, "write", False) if perms else False
+        is_dry_run = getattr(getattr(self.config, "runtime", None), "mode", None) == RunMode.DRY_RUN
+
+        if not can_write or is_dry_run:
+            await interaction.followup.send(
+                f"ℹ️ **[DRY RUN]** Issue creation approved but not posted to GitHub "
+                f"(mode is DRY_RUN or github.permissions.write is disabled).\n"
+                f"**Target:** `{self.owner}/{self.repo}`\n"
+                f"**Title:** {self.issue_title}",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            created = await asyncio.to_thread(
+                self.github_adapter.create_issue,
+                owner=self.owner,
+                repo=self.repo,
+                title=self.issue_title,
+                body=self.issue_body,
+            )
+        except Exception as exc:
+            logger.exception("Failed to create issue from thread")
+            await interaction.followup.send(
+                f"❌ Failed to create issue: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        if not created or not created.get("html_url"):
+            err = getattr(self.github_adapter, "last_error", None) or "Unknown GitHub API error"
+            await interaction.followup.send(
+                f"❌ Failed to create issue: {err}",
+                ephemeral=True,
+            )
+            return
+
+        html_url = created.get("html_url")
+        number = created.get("number")
+        await interaction.followup.send(
+            f"🎉 Successfully created issue **[{self.owner}/{self.repo}#{number}]({html_url})**!",
+            ephemeral=True,
+        )
+
+    async def open_edit_title_modal(self, interaction: discord.Interaction) -> None:
+        modal = ThreadEditTitleModal(current_title=self.issue_title, view=self)
+        await interaction.response.send_modal(modal)
+
+    async def cancel_creation(self, interaction: discord.Interaction) -> None:
+        self._disable()
+        content = f"❌ Issue creation cancelled by <@{interaction.user.id}>."
+        if interaction.response.is_done():
+            await interaction.edit_original_response(
+                content=content,
+                view=self,
+            )
+        else:
+            await interaction.response.edit_message(
+                content=content,
+                view=self,
+            )
+
+
 def run_bot(config_path: str) -> None:
     """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
@@ -351,9 +583,11 @@ def run_bot(config_path: str) -> None:
     )
 
     intents = discord.Intents.default()
-    # Enable message content intent if passive PR preview is enabled
-    if getattr(config.discord, "pr_preview_channels", None):
-        intents.message_content = True
+    # Enable message content intent — required for /thread to read channel messages
+    # and for passive PR preview when pr_preview_channels is configured.
+    # NOTE: Discord deployments must enable the privileged 'MESSAGE_CONTENT' intent
+    # in the Discord Developer Portal (Applications -> Bot -> Privileged Gateway Intents).
+    intents.message_content = True
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
@@ -481,7 +715,7 @@ def run_bot(config_path: str) -> None:
         # 3. Create the Embed
         embed = discord.Embed(
             color=color,
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(UTC)
         )
 
         # Show github user link and avatar if linked, and set author details
@@ -530,7 +764,7 @@ def run_bot(config_path: str) -> None:
         if github_user:
             metrics_available = True
             try:
-                now_utc = datetime.now(timezone.utc)
+                now_utc = datetime.now(UTC)
                 start_30 = now_utc - timedelta(days=30)
 
                 def _fetch_metrics():
@@ -761,7 +995,7 @@ def run_bot(config_path: str) -> None:
     async def pr_list_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member,
-        count: Optional[app_commands.Range[int, 1, 100]] = None,
+        count: app_commands.Range[int, 1, 100] | None = None,
         skip: app_commands.Range[int, 0, 500] = 0,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -840,15 +1074,25 @@ def run_bot(config_path: str) -> None:
             if getattr(config, "identity", None) is not None:
                 max_age_days = getattr(config.identity, "verified_max_age_days", None)
             
-            status_info = {}
+            status_info = None
             if callable(get_status):
                 try:
-                    status_info = get_status(discord_user_id, max_age_days=max_age_days) or {}
-                except Exception:
-                    status_info = {}
+                    status_info = get_status(discord_user_id, max_age_days=max_age_days)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to get identity status for user %s: %s",
+                        discord_user_id,
+                        exc,
+                    )
+                    status_info = None
             
-            is_stale = status_info.get("is_stale", True) if status_info else True
-            status_badge = "✅ Verified" if not is_stale else "⚠️ Verification may be outdated"
+            if status_info is None or "is_stale" not in status_info:
+                status_badge = "ℹ️ Link status unavailable"
+            elif status_info.get("is_stale", False) or status_info.get("status") == "verified_stale":
+                status_badge = "⚠️ Verification may be outdated"
+            else:
+                status_badge = "✅ Verified"
+
             await interaction.followup.send(
                 f"GitHub user **{github_username}** is **{status_badge}** as Discord member <@{discord_user_id}>.",
                 ephemeral=True
@@ -1070,6 +1314,164 @@ def run_bot(config_path: str) -> None:
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
 
+    @tree.command(
+        name="thread",
+        description="Convert thread or channel discussion into a GitHub issue draft with approval gate",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Target GitHub repository (e.g. Gitcord or owner/repo)",
+        title="Custom issue title (leave empty to generate from discussion)",
+        limit="Number of messages to inspect (1-100, default: 15)",
+        template="Optional issue template name (e.g. bug_report)",
+    )
+    async def thread_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        title: str | None = None,
+        limit: int | None = None,
+        template: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        perms = getattr(config.discord, "command_permissions", None) if getattr(config, "discord", None) else None
+        if perms and SLASH_CMD_THREAD in perms and not slash_command_allowed(interaction, config, SLASH_CMD_THREAD):
+            denial_msg = format_slash_command_permission_denied(config, SLASH_CMD_THREAD)
+            await interaction.followup.send(denial_msg, ephemeral=True)
+            return
+
+        if not hasattr(interaction.channel, "history"):
+            await interaction.followup.send(
+                "❌ `/thread` cannot read message history in this channel type.",
+                ephemeral=True,
+            )
+            return
+
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        clamped_limit = clamp_thread_history_limit(limit)
+
+        repo_clean = repo.strip()
+        if "/" in repo_clean:
+            owner, repo_name = repo_clean.split("/", 1)
+            owner = owner.strip()
+            repo_name = repo_name.strip()
+        else:
+            owner = config.github.org
+            repo_name = repo_clean
+
+        # Validate against repo filter if configured
+        repo_error = validate_thread_repo(owner, repo_name, config)
+        if repo_error:
+            await interaction.followup.send(repo_error, ephemeral=True)
+            return
+
+        configured_org = getattr(getattr(config, "github", None), "org", "") or ""
+        if owner.lower() == configured_org.lower() and configured_org:
+            owner = configured_org
+
+        try:
+            raw_messages = [msg async for msg in interaction.channel.history(limit=clamped_limit)]
+        except discord.errors.Forbidden:
+            await interaction.followup.send(
+                "❌ Bot lacks permission to read message history in this channel.",
+                ephemeral=True,
+            )
+            return
+        except Exception as exc:
+            logger.exception("Failed to read channel history for /thread")
+            await interaction.followup.send(
+                f"❌ Failed to fetch channel messages: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        # If inside a Discord thread, ensure the opening/starter message is included
+        if is_thread:
+            starter_msg = getattr(interaction.channel, "starter_message", None)
+            if starter_msg is None:
+                parent = getattr(interaction.channel, "parent", None)
+                if parent and hasattr(parent, "fetch_message"):
+                    try:
+                        starter_msg = await parent.fetch_message(interaction.channel.id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        starter_msg = None
+
+            if starter_msg is None and hasattr(interaction.channel, "fetch_message"):
+                try:
+                    starter_msg = await interaction.channel.fetch_message(interaction.channel.id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    starter_msg = None
+
+            if starter_msg is not None:
+                existing_ids = {getattr(m, "id", None) for m in raw_messages}
+                if getattr(starter_msg, "id", None) not in existing_ids:
+                    raw_messages.append(starter_msg)
+
+        if not raw_messages:
+            await interaction.followup.send(
+                "❌ No messages found in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        collected = collect_thread_messages(raw_messages)
+        if not collected:
+            await interaction.followup.send(
+                "❌ No substantive human messages found in the collected history.",
+                ephemeral=True,
+            )
+            return
+
+        resolved = resolve_authors(collected, storage)
+        issue_title = title.strip() if title and title.strip() else generate_issue_title(resolved)
+
+        template_body = None
+        if template and hasattr(github_adapter, "get_issue_template"):
+            try:
+                raw_tpl = await asyncio.to_thread(
+                    github_adapter.get_issue_template,
+                    owner,
+                    repo_name,
+                    template.strip(),
+                )
+                if raw_tpl:
+                    template_body = strip_template_frontmatter(raw_tpl)
+            except (RuntimeError, ValueError, OSError) as e:
+                logger.warning("Failed to fetch issue template %s: %s", template, e)
+
+        issue_body = format_issue_body(resolved, template_body=template_body)
+
+        view = ThreadApproveView(
+            owner=owner,
+            repo=repo_name,
+            issue_title=issue_title,
+            issue_body=issue_body,
+            config=config,
+            github_adapter=github_adapter,
+            author_id=interaction.user.id,
+        )
+
+        preview_content = view.build_preview_content()
+        await interaction.followup.send(
+            content=preview_content,
+            view=view,
+            ephemeral=True,
+        )
+
+    async def thread_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        repo_filter = getattr(config.github, "repos", None)
+        names = getattr(repo_filter, "names", []) if repo_filter else []
+        if not names and getattr(config.github, "default_repo", None):
+            names = [config.github.default_repo]
+        choices = [name for name in names if current.lower() in name.lower()]
+        return [app_commands.Choice(name=c, value=c) for c in choices[:25]]
+
+    if hasattr(thread_cmd, "autocomplete"):
+        thread_cmd.autocomplete("repo")(thread_repo_autocomplete)
+
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
@@ -1130,7 +1532,15 @@ def run_bot(config_path: str) -> None:
         cmd_names = [c.name for c in synced]
         logger.info("Bot ready; slash commands synced for guild %s: %s", guild_id, cmd_names)
 
-    client.run(config.discord.token)
+    try:
+        client.run(config.discord.token)
+    except discord.errors.PrivilegedIntentsRequired as e:
+        logger.error(
+            "Discord bot startup failed: Privileged intent 'MESSAGE_CONTENT' is required but not enabled. "
+            "Please enable 'Message Content Intent' in the Discord Developer Portal: "
+            "https://discord.com/developers/applications -> Your Application -> Bot -> Privileged Gateway Intents."
+        )
+        raise SystemExit(1) from e
 
 
 def main(config_path: str) -> None:
