@@ -580,8 +580,7 @@ class GitHubRestAdapter:
             Created issue dict (with html_url, number) or None on failure.
         """
         claim_key = (owner, repo, title)
-        if not hasattr(self, "_publish_claims"):
-            self._publish_claims = {}
+        claim_key = (owner, repo, title)
 
         if claim_key in self._publish_claims:
             self._logger.info(
