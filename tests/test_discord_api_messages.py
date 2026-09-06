@@ -128,6 +128,7 @@ def test_edit_message_success() -> None:
     payload = mock_client.request.call_args.kwargs["json"]
     assert payload["content"] == "updated"
     assert payload["flags"] == 4
+    assert payload["allowed_mentions"] == {"parse": ["users"]}
 
 
 def test_edit_message_with_embeds_clears_suppress_flag() -> None:
@@ -142,6 +143,7 @@ def test_edit_message_with_embeds_clears_suppress_flag() -> None:
     assert payload["content"] == ""
     assert payload["embeds"] == embeds
     assert payload["flags"] == 0
+    assert payload["allowed_mentions"] == {"parse": ["users"]}
 
 
 def test_edit_message_truncates_at_2000_chars() -> None:
