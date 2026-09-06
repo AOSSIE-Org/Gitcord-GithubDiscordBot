@@ -322,7 +322,7 @@ def _extract_overview(messages: list[dict]) -> str:
 def _extract_participant_key_points(messages: list[dict]) -> list[tuple[str, list[str]]]:
     """Extract substantive takeaway statements grouped by participant."""
     author_points: dict[str, list[str]] = {}
-    seen_points: set[str] = set()
+    seen_by_author: dict[str, set[str]] = {}
 
     for msg in messages:
         author = _clean_participant_name(msg.get("github_user") or msg.get("author_name") or "Unknown")
@@ -334,15 +334,16 @@ def _extract_participant_key_points(messages: list[dict]) -> list[tuple[str, lis
         if _is_noise(cleaned):
             continue
 
+        author_seen = seen_by_author.setdefault(author, set())
         sentences = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
         for s in sentences:
             s_clean = s.strip().strip("•-* ")
             if len(s_clean) < 18 or _is_noise(s_clean):
                 continue
             norm = re.sub(r"\s+", " ", s_clean.lower())
-            if norm in seen_points:
+            if norm in author_seen:
                 continue
-            seen_points.add(norm)
+            author_seen.add(norm)
 
             if len(s_clean) > 220:
                 s_clean = s_clean[:217] + "..."
@@ -457,7 +458,10 @@ def _extract_references(messages: list[dict]) -> list[str]:
     return refs[:5]
 
 
-def summarize_thread_messages(messages: list[dict]) -> str:
+def summarize_thread_messages(
+    messages: list[dict],
+    include_transcript: bool = True,
+) -> str:
     """Build a structured, deterministic issue summary from thread messages.
 
     Emits only real data extracted from messages:
@@ -467,7 +471,7 @@ def summarize_thread_messages(messages: list[dict]) -> str:
     - Action items and next steps (if any)
     - Referenced links and issues (if any)
     - Participants list
-    - Cleaned conversation transcript
+    - Cleaned conversation transcript (included when include_transcript=True, e.g. for Discord previews; omitted when include_transcript=False for GitHub issue bodies)
     """
     if not messages:
         return "No messages captured to summarize."
@@ -516,8 +520,9 @@ def summarize_thread_messages(messages: list[dict]) -> str:
 
     sections.append("\n".join(summary_parts).strip())
     sections.append(f"\n**👥 Participants ({len(participants)}):** {', '.join(participants)}\n")
-    sections.append("### 💬 Thread Transcript\n")
-    sections.append(_format_transcript(messages))
+    if include_transcript:
+        sections.append("### 💬 Thread Transcript\n")
+        sections.append(_format_transcript(messages))
 
     return "\n".join(sections)
 
@@ -530,9 +535,10 @@ def format_issue_body(
 ) -> str:
     """Format collected messages into a GitHub issue body.
 
-    Includes a high-level summary describing the issue. The raw transcript
-    is NOT included in the GitHub issue — it is only viewable in the Discord
-    preview via the Toggle Transcript button.
+    Includes a high-level summary describing the issue. The full raw transcript
+    is excluded from the GitHub issue body (and from template sections like
+    Description or Steps to Reproduce) to keep published issues concise and clean,
+    while remaining available in the Discord preview.
 
     Args:
         messages: List of collected + author-resolved message dicts.
@@ -541,7 +547,7 @@ def format_issue_body(
     Returns:
         Formatted Markdown string ready for the GitHub issue body.
     """
-    summary = summarize_thread_messages(messages)
+    summary = summarize_thread_messages(messages, include_transcript=False)
     code_blocks = _collect_all_code_blocks(messages)
     env_info = extract_environment_info(messages)
     log_snippets = _collect_log_snippets(messages)

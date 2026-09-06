@@ -207,7 +207,7 @@ class TestGenerateIssueTitle:
 # ---------------------------------------------------------------------------
 
 class TestFormatIssueBodyNoTemplate:
-    def test_produces_transcript_section(self) -> None:
+    def test_excludes_transcript_section_from_issue_body(self) -> None:
         messages = [
             {
                 "author_name": "Alice",
@@ -219,7 +219,7 @@ class TestFormatIssueBodyNoTemplate:
             },
         ]
         body = format_issue_body(messages)
-        assert "📜 Source Transcript" not in body
+        assert "### 💬 Thread Transcript" not in body
         assert "@alice-gh" in body
         assert "Something is broken" in body
         assert "Gitcord" in body  # footer
@@ -274,6 +274,7 @@ class TestFormatIssueBodyWithTemplate:
         ]
         body = format_issue_body(messages, template_body=template)
         assert "### Description" in body
+        assert "### 💬 Thread Transcript" not in body
         assert "@alice-gh" in body
         assert "Gitcord" in body
 
@@ -469,6 +470,20 @@ class TestSummarizeThreadMessages:
         assert "Thread Transcript" in summary
         assert "<@1533304803537584279>" not in summary
 
+    def test_include_transcript_flag(self) -> None:
+        from ghdcbot.engine.thread_to_issue import summarize_thread_messages
+
+        messages = [
+            {"author_name": "Alice", "content": "Here is an issue with the build"},
+        ]
+
+        with_transcript = summarize_thread_messages(messages, include_transcript=True)
+        assert "### 💬 Thread Transcript" in with_transcript
+
+        without_transcript = summarize_thread_messages(messages, include_transcript=False)
+        assert "### 💬 Thread Transcript" not in without_transcript
+        assert "Here is an issue with the build" in without_transcript
+
 
 class TestGetIssueTemplate:
     def test_get_issue_template_markdown_success(self, monkeypatch) -> None:
@@ -528,6 +543,20 @@ class TestGetIssueTemplate:
             "/repos/AOSSIE/Gitcord/contents/.github/ISSUE_TEMPLATE/form_template.md"
         ]
         assert not any(".yml" in p or ".yaml" in p for p in requested_paths)
+
+    def test_get_issue_template_decode_error_returns_none(self, monkeypatch) -> None:
+        import httpx
+
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="t", org="AOSSIE", api_base="https://api.github.com")
+
+        def mock_request(method: str, path: str, params: dict) -> httpx.Response:
+            return httpx.Response(200, json={"content": "!!!invalid-base64!!!"})
+
+        monkeypatch.setattr(adapter, "_request", mock_request)
+        result = adapter.get_issue_template("AOSSIE", "Gitcord", "corrupt_template")
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -837,7 +866,11 @@ class TestThreadEditTitleModal:
             author_id=123,
         )
         modal = ThreadEditTitleModal(current_title="Old Title", view=view)
-        modal.title_input._value = "New Updated Title"
+
+        class _StubTextInput:
+            value = "New Updated Title"
+
+        modal.title_input = _StubTextInput()  # type: ignore[assignment]
 
         interaction = _FakeInteractionForView()
 
@@ -943,16 +976,14 @@ class TestDeterministicSummarizer:
         assert "### 💬 Thread Transcript" in summary
 
 
-class TestThreadCommandIntegration:
-    def test_starter_message_inclusion_in_thread(self) -> None:
+class TestCollectThreadMessagesOrdering:
+    """Tests verifying message ordering and normalization in collect_thread_messages."""
+
+    def test_collect_thread_messages_chronological_ordering_with_starter(self) -> None:
+        """Verify collect_thread_messages reverses newest-first input so earlier starter message appears first."""
         from unittest.mock import MagicMock
 
-        import discord
-
         from ghdcbot.engine.thread_to_issue import collect_thread_messages
-
-        thread_channel = MagicMock(spec=discord.Thread)
-        thread_channel.id = 1001
 
         starter_author = MagicMock()
         starter_author.id = 111
@@ -967,8 +998,6 @@ class TestThreadCommandIntegration:
         starter_msg.created_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
         starter_msg.attachments = []
 
-        thread_channel.starter_message = starter_msg
-
         reply_author = MagicMock()
         reply_author.id = 222
         reply_author.display_name = "ReplyUser"
@@ -982,14 +1011,192 @@ class TestThreadCommandIntegration:
         reply_msg.created_at = datetime(2026, 1, 1, 10, 5, tzinfo=UTC)
         reply_msg.attachments = []
 
-        raw_messages = [reply_msg]
-
-        if starter_msg.id not in {m.id for m in raw_messages}:
-            raw_messages.append(starter_msg)
+        # Newest-first history with reply followed by appended starter message
+        raw_messages = [reply_msg, starter_msg]
 
         collected = collect_thread_messages(raw_messages)
         assert len(collected) == 2
         assert collected[0]["content"] == "Initial bug report that started the thread"
         assert collected[1]["content"] == "I will fix this bug."
+
+
+class TestClampThreadHistoryLimit:
+    """Tests covering the default, lower boundary, upper boundary, and clamping behavior."""
+
+    def test_default_when_none(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(None) == 15
+
+    def test_lower_boundary(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(1) == 1
+
+    def test_upper_boundary(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(100) == 100
+
+    def test_clamping_below_minimum(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(0) == 1
+        assert clamp_thread_history_limit(-10) == 1
+
+    def test_clamping_above_maximum(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(101) == 100
+        assert clamp_thread_history_limit(500) == 100
+
+    def test_values_within_range(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        assert clamp_thread_history_limit(15) == 15
+        assert clamp_thread_history_limit(50) == 50
+
+    def test_same_limit_applied_regardless_of_channel_or_thread(self) -> None:
+        from ghdcbot.bot import clamp_thread_history_limit
+
+        # Both thread channels and non-thread channels use the same 1-100 range and 15 default
+        assert clamp_thread_history_limit(None) == 15
+        assert clamp_thread_history_limit(20) == 20
+
+
+class TestValidateThreadRepo:
+    """Tests covering repository owner validation and allow/deny filter checks."""
+
+    def test_rejects_owner_not_matching_configured_org(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=SimpleNamespace(mode="allow", names=["Gitcord"]),
+            )
+        )
+
+        error = validate_thread_repo("unauthorized-org", "Gitcord", config)
+        assert error is not None
+        assert "unauthorized-org" in error
+        assert "AOSSIE" in error
+
+    def test_accepts_owner_matching_configured_org_and_allowlist(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=SimpleNamespace(mode="allow", names=["Gitcord"]),
+            )
+        )
+
+        error = validate_thread_repo("AOSSIE", "Gitcord", config)
+        assert error is None
+
+    def test_accepts_owner_case_insensitive(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=SimpleNamespace(mode="allow", names=["Gitcord"]),
+            )
+        )
+
+        error = validate_thread_repo("aossie", "Gitcord", config)
+        assert error is None
+
+    def test_rejects_repo_not_in_allowlist(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=SimpleNamespace(mode="allow", names=["Gitcord"]),
+            )
+        )
+
+        error = validate_thread_repo("AOSSIE", "unlisted-repo", config)
+        assert error is not None
+        assert "unlisted-repo" in error
+        assert "allowed repositories list" in error
+
+    def test_deny_mode_rejects_denied_repo(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=SimpleNamespace(mode="deny", names=["excluded-repo"]),
+            )
+        )
+
+        error = validate_thread_repo("AOSSIE", "excluded-repo", config)
+        assert error is not None
+        assert "excluded by configuration" in error
+
+    def test_no_filter_allows_repo(self) -> None:
+        from types import SimpleNamespace
+
+        from ghdcbot.bot import validate_thread_repo
+
+        config = SimpleNamespace(
+            github=SimpleNamespace(
+                org="AOSSIE",
+                repos=None,
+            )
+        )
+
+        assert validate_thread_repo("AOSSIE", "any-repo", config) is None
+        assert validate_thread_repo("other-org", "any-repo", config) is None
+
+
+class TestExtractParticipantKeyPoints:
+    """Tests for _extract_participant_key_points scoping and deduplication."""
+
+    def test_deduplicates_statements_within_same_author(self) -> None:
+        from ghdcbot.engine.thread_to_issue import _extract_participant_key_points
+
+        statement = "We should update the database schema migration scripts."
+        messages = [
+            {"author_name": "Alice", "content": statement},
+            {"author_name": "Alice", "content": f"{statement} Please verify."},
+        ]
+
+        points = _extract_participant_key_points(messages)
+        assert len(points) == 1
+        author, items = points[0]
+        assert author == "@Alice"
+        assert items.count(statement) == 1
+
+    def test_preserves_duplicate_statements_across_different_authors(self) -> None:
+        from ghdcbot.engine.thread_to_issue import _extract_participant_key_points
+
+        statement = "We need to fix the authentication timeout problem."
+        messages = [
+            {"author_name": "Alice", "content": statement},
+            {"author_name": "Bob", "content": statement},
+        ]
+
+        points = dict(_extract_participant_key_points(messages))
+        assert "@Alice" in points
+        assert "@Bob" in points
+        assert statement in points["@Alice"]
+        assert statement in points["@Bob"]
+
+
+
 
 

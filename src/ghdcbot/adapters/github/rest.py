@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import random
 import re
@@ -27,6 +29,7 @@ _GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
 _GITHUB_MAX_RATE_LIMIT_RECOVERIES = 10
 _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS = 1.0
+_PUBLISH_CLAIM_TTL_SECONDS = 300.0
 
 
 def _github_retry_sleep_seconds(failed_attempt: int) -> float:
@@ -529,12 +532,43 @@ class GitHubRestAdapter:
         )
         return False
 
-    def _reconcile_issue_claim(self, owner: str, repo: str, title: str) -> dict | None:
-        """Check if an issue with the matching title already exists in the repo.
+    def _reconcile_issue_claim(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        claim_created_at: float | datetime | str | None = None,
+        *,
+        created_at: float | datetime | str | None = None,
+    ) -> dict | None:
+        """Check if an issue with the matching title exists in the repo at or after claim time.
 
         Used to reconcile pending publish claims after timeouts or network errors
-        to prevent duplicate issue creation.
+        to prevent duplicate issue creation while avoiding false matches on pre-existing issues.
         """
+        target_created_at = claim_created_at if claim_created_at is not None else created_at
+        claim_dt: datetime | None = None
+        if target_created_at is not None:
+            if isinstance(target_created_at, (int, float)):
+                claim_dt = datetime.fromtimestamp(target_created_at, tz=timezone.utc)
+            elif isinstance(target_created_at, str):
+                try:
+                    claim_dt = datetime.fromisoformat(target_created_at.replace("Z", "+00:00"))
+                    if claim_dt.tzinfo is None:
+                        claim_dt = claim_dt.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    claim_dt = None
+            elif isinstance(target_created_at, datetime):
+                claim_dt = (
+                    target_created_at
+                    if target_created_at.tzinfo
+                    else target_created_at.replace(tzinfo=timezone.utc)
+                )
+
+            if claim_dt is not None:
+                # GitHub issue timestamps have second-level resolution.
+                claim_dt = claim_dt.replace(microsecond=0)
+
         try:
             self._increment_sync_request_count()
             response = self._client.get(
@@ -548,6 +582,32 @@ class GitHubRestAdapter:
                         if isinstance(item, dict) and item.get("title") == title:
                             if "pull_request" in item:
                                 continue
+                            if claim_dt is not None:
+                                item_created_raw = item.get("created_at")
+                                if not item_created_raw:
+                                    continue
+                                try:
+                                    if isinstance(item_created_raw, (int, float)):
+                                        item_dt = datetime.fromtimestamp(
+                                            item_created_raw, tz=timezone.utc
+                                        )
+                                    elif isinstance(item_created_raw, datetime):
+                                        item_dt = (
+                                            item_created_raw
+                                            if item_created_raw.tzinfo
+                                            else item_created_raw.replace(tzinfo=timezone.utc)
+                                        )
+                                    else:
+                                        item_dt = datetime.fromisoformat(
+                                            str(item_created_raw).replace("Z", "+00:00")
+                                        )
+                                        if item_dt.tzinfo is None:
+                                            item_dt = item_dt.replace(tzinfo=timezone.utc)
+                                except (ValueError, TypeError):
+                                    continue
+
+                                if item_dt < claim_dt:
+                                    continue
                             return item
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             self._logger.warning(
@@ -555,6 +615,18 @@ class GitHubRestAdapter:
                 extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
             )
         return None
+
+    def _evict_expired_claims(self, now: float | None = None) -> None:
+        """Evict in-memory publish claims that have exceeded their TTL."""
+        current_time = now if now is not None else time.time()
+        expired = [
+            key
+            for key, claim in self._publish_claims.items()
+            if isinstance(claim, dict)
+            and (current_time - float(claim.get("created_at", 0.0))) > _PUBLISH_CLAIM_TTL_SECONDS
+        ]
+        for key in expired:
+            self._publish_claims.pop(key, None)
 
     def create_issue(
         self,
@@ -566,8 +638,9 @@ class GitHubRestAdapter:
     ) -> dict | None:
         """Create a new GitHub issue via POST /repos/{owner}/{repo}/issues.
 
-        Persists a durable publish claim before invoking POST, and reconciles that claim
-        with GitHub before any retry so timeouts after acceptance cannot create duplicates.
+        Tracks an in-memory publish claim (with TTL expiration) before invoking POST,
+        and reconciles that claim with GitHub before any retry so timeouts or transient
+        server failures after acceptance cannot create duplicates.
 
         Args:
             owner: Repository owner
@@ -579,15 +652,21 @@ class GitHubRestAdapter:
         Returns:
             Created issue dict (with html_url, number) or None on failure.
         """
-        claim_key = (owner, repo, title)
+        self._evict_expired_claims()
         claim_key = (owner, repo, title)
 
         if claim_key in self._publish_claims:
+            existing_claim = self._publish_claims[claim_key]
+            claim_created_at = (
+                existing_claim.get("created_at") if isinstance(existing_claim, dict) else None
+            )
             self._logger.info(
                 "Found existing publish claim; reconciling with GitHub before create",
                 extra={"owner": owner, "repo": repo, "title": title},
             )
-            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            reconciled = self._reconcile_issue_claim(
+                owner, repo, title, claim_created_at=claim_created_at
+            )
             if reconciled:
                 self.last_error = None
                 self._publish_claims.pop(claim_key, None)
@@ -606,11 +685,12 @@ class GitHubRestAdapter:
         if labels:
             payload["labels"] = labels
 
+        claim_time = time.time()
         self._publish_claims[claim_key] = {
             "title": title,
             "body": body,
             "labels": labels,
-            "created_at": time.time(),
+            "created_at": claim_time,
         }
 
         try:
@@ -625,7 +705,9 @@ class GitHubRestAdapter:
                 "GitHub create issue timed out (outcome uncertain; reconciling claim)",
                 extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
             )
-            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            reconciled = self._reconcile_issue_claim(
+                owner, repo, title, claim_created_at=claim_time
+            )
             if reconciled:
                 self.last_error = None
                 self._publish_claims.pop(claim_key, None)
@@ -646,7 +728,9 @@ class GitHubRestAdapter:
                 "GitHub create issue failed (network)",
                 extra={"owner": owner, "repo": repo, "title": title, "error": str(exc)},
             )
-            reconciled = self._reconcile_issue_claim(owner, repo, title)
+            reconciled = self._reconcile_issue_claim(
+                owner, repo, title, claim_created_at=claim_time
+            )
             if reconciled:
                 self.last_error = None
                 self._publish_claims.pop(claim_key, None)
@@ -679,6 +763,42 @@ class GitHubRestAdapter:
             )
             return data
 
+        # For 5xx responses, the outcome is uncertain: GitHub may have created the issue
+        # before encountering an internal failure. Reconcile with GitHub and retain the claim if uncertain.
+        if response.status_code >= 500:
+            self.last_error = (
+                f"GitHub API server error (HTTP {response.status_code}): "
+                f"{(response.text or '')[:200]}"
+            )
+            self._logger.warning(
+                "GitHub create issue failed with 5xx (outcome uncertain; reconciling claim)",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "status_code": response.status_code,
+                    "error_response": (response.text or "")[:500],
+                },
+            )
+            reconciled = self._reconcile_issue_claim(
+                owner, repo, title, claim_created_at=claim_time
+            )
+            if reconciled:
+                self.last_error = None
+                self._publish_claims.pop(claim_key, None)
+                self._logger.info(
+                    "GitHub issue reconciled following 5xx response",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": reconciled.get("number"),
+                        "html_url": reconciled.get("html_url"),
+                    },
+                )
+                return reconciled
+            # Retain the claim in self._publish_claims so subsequent retries reconcile before POSTing
+            return None
+
+        # For non-5xx, non-2xx responses (e.g. 4xx client errors), creation was definitively rejected
         self._publish_claims.pop(claim_key, None)
 
         if response.status_code == 404:
@@ -725,8 +845,6 @@ class GitHubRestAdapter:
         included — caller should strip it) or None if not found or if the template
         is not a Markdown file.
         """
-        import base64
-
         clean_name = template_name.removesuffix(".md")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", clean_name) or ".." in clean_name:
             self._logger.warning(
@@ -746,7 +864,7 @@ class GitHubRestAdapter:
             if content_b64:
                 try:
                     return base64.b64decode(content_b64).decode("utf-8")
-                except Exception:
+                except (binascii.Error, ValueError, UnicodeDecodeError):
                     self._logger.warning(
                         "Failed to decode issue template content",
                         extra={"owner": owner, "repo": repo, "path": path},

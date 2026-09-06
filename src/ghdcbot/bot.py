@@ -322,6 +322,33 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+def clamp_thread_history_limit(limit: int | None) -> int:
+    """Clamp the message history limit for /thread to [1, 100], defaulting to 15."""
+    if limit is None:
+        return 15
+    return max(1, min(100, limit))
+
+
+def validate_thread_repo(owner: str, repo_name: str, config: Any) -> str | None:
+    """Validate repository owner and repo_name against config.github.org and repos filter.
+
+    Returns an error message string if validation fails, or None if valid.
+    """
+    configured_org = getattr(getattr(config, "github", None), "org", "") or ""
+    repo_filter = getattr(getattr(config, "github", None), "repos", None)
+    if repo_filter:
+        mode = getattr(repo_filter, "mode", "allow")
+        names = getattr(repo_filter, "names", [])
+        if mode == "allow":
+            if owner.lower() != configured_org.lower():
+                return f"❌ Repository owner `{owner}` does not match configured organization `{configured_org}`."
+            if repo_name not in names:
+                return f"❌ Repository `{repo_name}` is not in the allowed repositories list."
+        if mode == "deny" and repo_name in names:
+            return f"❌ Repository `{repo_name}` is excluded by configuration."
+    return None
+
+
 class ThreadEditTitleModal(discord.ui.Modal, title="Edit Issue Title"):
     """Modal to allow customizing issue title before approving creation."""
 
@@ -1295,7 +1322,7 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(
         repo="Target GitHub repository (e.g. Gitcord or owner/repo)",
         title="Custom issue title (leave empty to generate from discussion)",
-        limit="Number of messages to inspect (1-500, default: all messages up to 500 in thread, 100 in channel)",
+        limit="Number of messages to inspect (1-100, default: 15)",
         template="Optional issue template name (e.g. bug_report)",
     )
     async def thread_cmd(
@@ -1321,10 +1348,7 @@ def run_bot(config_path: str) -> None:
             return
 
         is_thread = isinstance(interaction.channel, discord.Thread)
-        if limit is None:
-            clamped_limit = 500 if is_thread else 100
-        else:
-            clamped_limit = max(1, min(500, limit))
+        clamped_limit = clamp_thread_history_limit(limit)
 
         repo_clean = repo.strip()
         if "/" in repo_clean:
@@ -1336,22 +1360,14 @@ def run_bot(config_path: str) -> None:
             repo_name = repo_clean
 
         # Validate against repo filter if configured
-        repo_filter = getattr(config.github, "repos", None)
-        if repo_filter:
-            mode = getattr(repo_filter, "mode", "allow")
-            names = getattr(repo_filter, "names", [])
-            if mode == "allow" and repo_name not in names:
-                await interaction.followup.send(
-                    f"❌ Repository `{repo_name}` is not in the allowed repositories list.",
-                    ephemeral=True,
-                )
-                return
-            if mode == "deny" and repo_name in names:
-                await interaction.followup.send(
-                    f"❌ Repository `{repo_name}` is excluded by configuration.",
-                    ephemeral=True,
-                )
-                return
+        repo_error = validate_thread_repo(owner, repo_name, config)
+        if repo_error:
+            await interaction.followup.send(repo_error, ephemeral=True)
+            return
+
+        configured_org = getattr(getattr(config, "github", None), "org", "") or ""
+        if owner.lower() == configured_org.lower() and configured_org:
+            owner = configured_org
 
         try:
             raw_messages = [msg async for msg in interaction.channel.history(limit=clamped_limit)]
