@@ -269,7 +269,10 @@ class DiscordApiAdapter:
         if not channel_id or not message_id:
             return False
         text = (content or "")[:2000]
-        payload: dict = {"content": text}
+        payload: dict = {
+            "content": text,
+            "allowed_mentions": {"parse": ["users"]},
+        }
         if embeds is not None:
             payload["embeds"] = list(embeds)[:10]
             # Explicitly clear suppress-embeds if a prior edit set it.
