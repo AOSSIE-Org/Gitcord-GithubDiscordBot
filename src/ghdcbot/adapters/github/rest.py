@@ -727,7 +727,13 @@ class GitHubRestAdapter:
         """
         import base64
 
-        clean_name = template_name[:-3] if template_name.endswith(".md") else template_name
+        clean_name = template_name.removesuffix(".md")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", clean_name) or ".." in clean_name:
+            self._logger.warning(
+                "Rejected invalid issue template name",
+                extra={"owner": owner, "repo": repo},
+            )
+            return None
         path = f".github/ISSUE_TEMPLATE/{clean_name}.md"
         response = self._request(
             "GET",
