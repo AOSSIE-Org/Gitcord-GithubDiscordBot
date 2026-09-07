@@ -6,8 +6,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+
 import discord
 from discord import app_commands
 
@@ -51,11 +50,6 @@ from ghdcbot.engine.pr_status import (
     format_single_pr_status,
     get_configured_repo_names,
     resolve_repo_for_pr,
-)
-from ghdcbot.adapters.discord.social_commands import register_social_commands
-from ghdcbot.discord_command_permissions import (
-    format_slash_command_permission_denied,
-    slash_command_allowed,
 )
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (

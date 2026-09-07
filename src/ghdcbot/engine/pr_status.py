@@ -42,8 +42,6 @@ def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
         return candidate in filter_names
     if mode == "deny":
         return candidate not in filter_names
-    if mode == "deny":
-        return repo_name not in filter_names
     return True
 
 
