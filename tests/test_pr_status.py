@@ -1752,6 +1752,56 @@ class TestRepoRecommendationAndAutocomplete:
         assert "not allowed by Gitcord configuration" in (err or "")
 
     @pytest.mark.asyncio
+    async def test_resolve_repo_for_pr_filters_excluded_channel_mapped_repo(self) -> None:
+        """Auto-detect must not probe channel-mapped repos excluded by github.repos."""
+        from unittest.mock import MagicMock
+
+        from ghdcbot.config.models import (
+            BotConfig,
+            DiscordConfig,
+            GitHubConfig,
+            RepoFilterConfig,
+            RuntimeConfig,
+        )
+        from ghdcbot.engine.pr_status import resolve_repo_for_pr
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="fake",
+                discord_adapter="fake",
+                storage_adapter="fake",
+            ),
+            github=GitHubConfig(
+                org="test-org",
+                repos=RepoFilterConfig(mode="allow", names=["Allowed-A", "Allowed-B"]),
+            ),
+            discord=DiscordConfig(
+                guild_id="123",
+                token="fake",
+                pr_open_channels={
+                    "Allowed-A": "111",
+                    "Channel-Excluded": "999",
+                },
+            ),
+        )
+
+        def fake_get_pr(org: str, repo: str, num: int):
+            if repo == "Channel-Excluded":
+                return {"number": num}
+            return None
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_pull_request.side_effect = fake_get_pr
+
+        repo, err = await resolve_repo_for_pr(cfg, mock_adapter, 42, repo=None)
+        assert repo is None
+        assert "not found in configured repositories" in (err or "")
+        probed = {call.args[1] for call in mock_adapter.get_pull_request.call_args_list}
+        assert "Channel-Excluded" not in probed
+        assert probed <= {"Allowed-A", "Allowed-B"}
+
+    @pytest.mark.asyncio
     async def test_resolve_repo_for_pr_candidate_cap_and_bounded_concurrency(self) -> None:
         """Probe caps candidates at RESOLVE_REPO_MAX_CANDIDATES and bounds concurrency."""
         import time

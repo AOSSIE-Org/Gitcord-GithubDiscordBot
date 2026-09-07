@@ -162,7 +162,12 @@ async def resolve_repo_for_pr(
         return cleaned, None
 
     # Case 2: Auto-detect from Gitcord config
-    configured_repos = get_configured_repo_names(config)
+    # Channel/role maps may list repos outside github.repos; honor the filter.
+    configured_repos = [
+        candidate
+        for candidate in get_configured_repo_names(config)
+        if is_repo_allowed(repo_filter, candidate)
+    ]
     if not configured_repos:
         return (
             None,
