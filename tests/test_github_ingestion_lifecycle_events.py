@@ -13,7 +13,7 @@ from ghdcbot.adapters.github.rest import (
 
 
 class _MockClient:
-    def __init__(self, routes: dict[str, list]) -> None:
+    def __init__(self, routes: dict[str, object]) -> None:
         self._routes = routes
 
     def request(
@@ -37,7 +37,7 @@ def _adapter_with_repo(monkeypatch, pulls: list[dict]) -> GitHubRestAdapter:
             }
         ],
     )
-    routes = {
+    routes: dict[str, object] = {
         "/repos/owner/repo/issues": [],
         "/repos/owner/repo/pulls": pulls,
     }
@@ -46,6 +46,11 @@ def _adapter_with_repo(monkeypatch, pulls: list[dict]) -> GitHubRestAdapter:
         routes[f"/repos/owner/repo/pulls/{number}/reviews"] = []
         routes[f"/repos/owner/repo/pulls/{number}/comments"] = []
         routes[f"/repos/owner/repo/issues/{number}/comments"] = []
+        # List-PRs omits merged_by; GET single PR includes it (unless explicitly null).
+        detail = dict(pr)
+        if pr.get("merged_at") and "merged_by" not in pr:
+            detail["merged_by"] = {"login": "detail-merger"}
+        routes[f"/repos/owner/repo/pulls/{number}"] = detail
         closed_at = pr.get("closed_at")
         merged_at = pr.get("merged_at")
         timeline: list[dict] = []
@@ -54,8 +59,44 @@ def _adapter_with_repo(monkeypatch, pulls: list[dict]) -> GitHubRestAdapter:
         if merged_at:
             timeline.append({"event": "merged", "created_at": merged_at})
         routes[f"/repos/owner/repo/issues/{number}/timeline"] = timeline
-    adapter._client = _MockClient(routes)
+    adapter._client = _MockClient(routes)  # type: ignore[arg-type]
     return adapter
+
+
+def test_pr_merged_fetches_merged_by_from_single_pr(monkeypatch) -> None:
+    """List-PRs leaves merged_by null; ingestion must GET /pulls/{n} for the merger."""
+    adapter = _adapter_with_repo(
+        monkeypatch,
+        [
+            {
+                "number": 214,
+                "state": "closed",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-09T00:00:00Z",
+                "closed_at": "2024-01-09T00:00:00Z",
+                "merged_at": "2024-01-09T00:00:00Z",
+                "title": "feat: org filter",
+                "html_url": "https://github.com/owner/repo/pull/214",
+                "user": {"login": "jikrana1"},
+                # Intentionally no merged_by on list payload (GitHub list behavior).
+            }
+        ],
+    )
+    # Override detail route with the real merger (not the author).
+    adapter._client._routes["/repos/owner/repo/pulls/214"] = {
+        "number": 214,
+        "merged_at": "2024-01-09T00:00:00Z",
+        "user": {"login": "jikrana1"},
+        "merged_by": {"login": "Ri1tik"},
+        "base": {"ref": "main"},
+    }
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    merged = [event for event in events if event.event_type == "pr_merged"]
+    assert len(merged) == 1
+    assert merged[0].github_user == "jikrana1"
+    assert merged[0].payload.get("merged_by") == "Ri1tik"
 
 
 def test_pr_closed_emitted_when_closed_without_merge(monkeypatch) -> None:
@@ -117,6 +158,7 @@ def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
     assert len(merged) == 1
     assert merged[0].payload["pr_number"] == 21
     assert merged[0].payload["base_branch"] == "dev"
+    assert merged[0].payload.get("merged_by") == "detail-merger"
     assert len(closed) == 0
 
 

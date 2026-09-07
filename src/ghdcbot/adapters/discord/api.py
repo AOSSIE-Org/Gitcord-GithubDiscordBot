@@ -194,25 +194,111 @@ class DiscordApiAdapter:
 
     def send_message(self, channel_id: str, content: str) -> bool:
         """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
-        if not content:
-            return True
-        text = content[:2000]
+        return self.create_message(channel_id, content) is not None
+
+    def create_message(
+        self,
+        channel_id: str,
+        content: str,
+        *,
+        embeds: list[dict] | None = None,
+    ) -> str | None:
+        """Post a channel message and return its Discord message ID (or None on failure).
+
+        Empty content with no embeds is a no-op success that returns an empty string
+        sentinel so callers can distinguish \"nothing to send\" from a failed send (None).
+
+        ``SUPPRESS_EMBEDS`` is only set for plain-text posts so GitHub link previews are
+        hidden. It must not be set when custom embeds are included — Discord would hide
+        those embeds too and leave an empty-looking message.
+        """
+        embed_list = list(embeds or [])
+        if not content and not embed_list:
+            return ""
+        text = (content or "")[:2000]
+        payload: dict = {}
+        if text:
+            payload["content"] = text
+        if embed_list:
+            payload["embeds"] = embed_list[:10]
+        else:
+            payload["flags"] = 4  # SUPPRESS_EMBEDS — link previews only
         try:
             response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": text, "flags": 4},  # 4 = SUPPRESS_EMBEDS (no link previews)
+                json=payload,
             )
         except httpx.HTTPError as exc:
             self._logger.warning(
                 "Discord send_message failed",
                 extra={"channel_id": channel_id, "error": str(exc)},
             )
-            return False
+            return None
         if response.status_code not in (200, 201):
             self._logger.warning(
                 "Discord send_message failed",
                 extra={"channel_id": channel_id, "status_code": response.status_code},
+            )
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        message_id = data.get("id")
+        if not message_id:
+            return None
+        return str(message_id)
+
+    def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        content: str,
+        *,
+        embeds: list[dict] | None = None,
+    ) -> bool:
+        """Edit an existing channel message. Returns True on success.
+
+        When ``embeds`` is provided (including an empty list), the message embeds are
+        replaced. Pass ``embeds=[]`` to clear embeds after converting to plain text.
+
+        Never pairs custom embeds with ``SUPPRESS_EMBEDS`` (that flag hides them).
+        """
+        if not channel_id or not message_id:
+            return False
+        text = (content or "")[:2000]
+        payload: dict = {"content": text}
+        if embeds is not None:
+            payload["embeds"] = list(embeds)[:10]
+            # Explicitly clear suppress-embeds if a prior edit set it.
+            payload["flags"] = 0
+        else:
+            payload["flags"] = 4
+        try:
+            response = self._client.request(
+                "PATCH",
+                f"/channels/{channel_id}/messages/{message_id}",
+                json=payload,
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "error": str(exc),
+                },
+            )
+            return False
+        if response.status_code not in (200, 201):
+            self._logger.warning(
+                "Discord edit_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status_code": response.status_code,
+                },
             )
             return False
         return True

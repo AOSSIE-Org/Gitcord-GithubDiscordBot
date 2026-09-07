@@ -28,6 +28,8 @@ def slash_command_allowed(
     interaction: discord.Interaction,
     config: BotConfig,
     command_name: str,
+    *,
+    allow_all_by_default: bool = False,
 ) -> bool:
     """Return True if the member may run this slash command."""
     member = interaction.user
@@ -43,6 +45,8 @@ def slash_command_allowed(
         rule = perms[command_name]
 
     if rule is None:
+        if allow_all_by_default:
+            return True
         return _legacy_issue_assignee_allowed(member, config)
 
     if rule.allow_discord_administrators and member.guild_permissions.administrator:
