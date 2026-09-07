@@ -1006,6 +1006,13 @@ def run_bot(config_path: str) -> None:
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
 
+    ISSUE_LABELS = [
+        app_commands.Choice(name="Bug", value="bug"),
+        app_commands.Choice(name="Feature", value="feature"),
+        app_commands.Choice(name="Enhancement", value="enhancement"),
+        app_commands.Choice(name="Documentation", value="documentation"),
+        app_commands.Choice(name="Question", value="question"),
+    ]
     @tree.command(
         name="create-issue",
         description="Create a GitHub issue directly from Discord (verified users only)",
@@ -1015,14 +1022,17 @@ def run_bot(config_path: str) -> None:
         repo="Repository name to create the issue in",
         title="Issue title (1-256 characters)",
         description="Optional issue description/body",
-        labels="Optional comma-separated labels (e.g. bug,urgent)",
+        label="Optional issue label",
     )
+
+    @app_commands.choices(label=ISSUE_LABELS)
+
     async def create_issue_cmd(
         interaction: discord.Interaction,
         repo: str,
         title: str,
         description: str = "",
-        labels: str = "",
+        label: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         discord_user_id = str(interaction.user.id)
@@ -1059,7 +1069,7 @@ def run_bot(config_path: str) -> None:
             return
             
         # 4. Create issue
-        label_list = [l.strip() for l in labels.split(",") if l.strip()] if labels else None
+        label_list = [label] if label else None
         
         issue_data = await asyncio.to_thread(
             github_adapter.create_issue,
