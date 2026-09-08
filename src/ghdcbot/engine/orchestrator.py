@@ -23,6 +23,7 @@ from ghdcbot.engine.notifications import (
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
+    update_pr_channel_announcement_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
@@ -338,6 +339,23 @@ def _send_notifications_for_new_events(
                         "pr_author": event.payload.get("pr_author"),
                     },
                 )
+            if event.event_type in {"pr_merged", "pr_closed"}:
+                try:
+                    if update_pr_channel_announcement_for_event(
+                        event, storage, discord_writer, policy, config, github_org
+                    ):
+                        sent_count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "PR channel lifecycle update failed (non-blocking)",
+                        exc_info=True,
+                        extra={
+                            "error": str(exc),
+                            "event_type": event.event_type,
+                            "repo": event.repo,
+                            "pr_number": event.payload.get("pr_number"),
+                        },
+                    )
             if send_notification_for_event(event, storage, discord_writer, policy, config, github_org):
                 sent_count += 1
     if sent_count > 0:

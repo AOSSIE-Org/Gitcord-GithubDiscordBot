@@ -57,7 +57,7 @@ discord:
     issue_assignment: true
     pr_review_requested: true
     pr_review_result: true
-    pr_review_comment: true
+    pr_review_comment: false
     pr_merged: true
     pr_closed: true
     issue_reopened: true

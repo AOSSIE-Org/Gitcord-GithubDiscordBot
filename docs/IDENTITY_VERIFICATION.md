@@ -17,16 +17,20 @@ The project uses a lightweight verification-code flow instead of OAuth:
 
 The older `/verify-link github_username` command remains available and uses the same verification logic.
 
+Anyone can also start the same flow for a stuck contributor with `/help-link @member`. That opens a **target-only** **Start linking** button (DM preferred; if DMs are closed, a channel message that others can see but only the tagged member can use), then a username modal, then the same verification embed/buttons as `/link`.
+
 ## Main Files
 
 | File | Purpose |
 | --- | --- |
-| `src/ghdcbot/bot.py` | Discord slash commands and identity verification buttons: `/link`, `/verify-link`, `/profile`, `/unlink`. |
+| `src/ghdcbot/bot.py` | Discord slash commands and identity verification buttons: `/link`, `/verify-link`, `/help-link`, `/profile`, `/unlink`. |
+| `src/ghdcbot/help_link.py` | `/help-link` sessions, Start linking button, username modal, DM/channel delivery. |
 | `src/ghdcbot/engine/identity_linking.py` | Business logic for creating claims, verifying claims, generating codes, audit events, and unlinking. |
 | `src/ghdcbot/adapters/github/identity.py` | Read-only GitHub adapter that searches the user's bio and public gists for the code. |
 | `src/ghdcbot/adapters/storage/sqlite.py` | SQLite schema and persistence for pending and verified identity links. |
 | `src/ghdcbot/cli.py` | CLI version of the same `link` and `verify-link` workflow. |
 | `tests/test_identity_linking.py` | Tests covering code generation, verification, impersonation protection, stale refresh, unlinking, and status. |
+| `tests/test_help_link.py` | Tests for help sessions, Start button gating, modal claim creation, and DM/channel delivery. |
 
 ## High-Level Flow
 
