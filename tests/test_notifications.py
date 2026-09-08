@@ -17,9 +17,11 @@ from ghdcbot.engine.notifications import (
     _build_pr_opened_channel_message,
     _build_pr_opened_github_link_comment,
     _sanitize_discord_pr_title,
+    send_issue_opened_channel_notification,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
+    update_issue_channel_announcement_for_event,
     update_pr_channel_announcement_for_event,
 )
 
@@ -32,6 +34,7 @@ class MockStorage:
         self.notifications_sent: set[str] = set()
         self.audit_events: list[dict] = []
         self.pr_channel_announcements: dict[tuple[str, int], dict] = {}
+        self.issue_channel_announcements: dict[tuple[str, int], dict] = {}
     
     def list_verified_identity_mappings(self) -> list[dict]:
         return self.verified_mappings
@@ -78,6 +81,45 @@ class MockStorage:
         row = self.pr_channel_announcements.get((repo, int(pr_number)))
         if row:
             row["status"] = status
+
+    def save_issue_channel_announcement(self, **kwargs: object) -> None:
+        repo = str(kwargs["repo"])
+        issue_number = int(kwargs["issue_number"])  # type: ignore[arg-type]
+        self.issue_channel_announcements[(repo, issue_number)] = {
+            "repo": repo,
+            "issue_number": issue_number,
+            "channel_id": str(kwargs["channel_id"]),
+            "message_id": str(kwargs["message_id"]),
+            "status": str(kwargs.get("status") or "open"),
+            "issue_title": kwargs.get("issue_title"),
+            "author_github": kwargs.get("author_github"),
+            "assignee_github": kwargs.get("assignee_github"),
+        }
+
+    def get_issue_channel_announcement(self, repo: str, issue_number: int) -> dict | None:
+        return self.issue_channel_announcements.get((repo, int(issue_number)))
+
+    def update_issue_channel_announcement(
+        self,
+        repo: str,
+        issue_number: int,
+        *,
+        status: str | None = None,
+        assignee_github: str | None = None,
+        clear_assignee: bool = False,
+        issue_title: str | None = None,
+    ) -> None:
+        row = self.issue_channel_announcements.get((repo, int(issue_number)))
+        if not row:
+            return
+        if status is not None:
+            row["status"] = status
+        if clear_assignee:
+            row["assignee_github"] = None
+        elif assignee_github is not None:
+            row["assignee_github"] = assignee_github
+        if issue_title is not None:
+            row["issue_title"] = issue_title
 
 
 class MockDiscordWriter:
@@ -1449,6 +1491,286 @@ def test_sqlite_pr_channel_announcement_roundtrip(tmp_path) -> None:
     assert storage.get_pr_channel_announcement("RepoA", 4) is None
     storage.mark_pr_channel_announcement_status("RepoA", 3, "merged")
     assert storage.get_pr_channel_announcement("RepoA", 3)["status"] == "merged"
+
+
+def _issue_opened_event(
+    *,
+    github_user: str = "alice",
+    repo: str = "Gitcord-GithubDiscordBot",
+    issue_number: int = 7,
+    title: str = "Fix docs",
+    assignee: str | None = None,
+) -> ContributionEvent:
+    payload: dict = {"issue_number": issue_number, "title": title, "state": "open", "labels": []}
+    if assignee:
+        payload["assignee"] = assignee
+    return ContributionEvent(
+        github_user=github_user,
+        event_type="issue_opened",
+        repo=repo,
+        created_at=datetime.now(UTC),
+        payload=payload,
+    )
+
+
+def test_issue_opened_channel_notification_posts_with_assigned_none() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_channel_notification(
+        _issue_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    assert len(discord_writer.messages_sent) == 1
+    channel_id, message = discord_writer.messages_sent[0]
+    assert channel_id == "1465995983791063140"
+    assert "New Issue: [Gitcord-GithubDiscordBot #7" in message
+    assert "**Opened by:** alice - <@999>" in message
+    assert "**Assigned to:** None" in message
+    tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
+    assert tracked is not None
+    assert tracked["status"] == "open"
+    assert tracked["assignee_github"] is None
+
+
+def test_issue_opened_channel_notification_includes_existing_assignee() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_channel_notification(
+        _issue_opened_event(assignee="bob"),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    message = discord_writer.messages_sent[0][1]
+    assert "**Assigned to:** bob - <@888>" in message
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
+
+
+def test_issue_opened_channel_notification_skips_when_disabled() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    assert (
+        send_issue_opened_channel_notification(
+            _issue_opened_event(),
+            storage,
+            discord_writer,
+            policy,
+            config,
+            {"Gitcord-GithubDiscordBot": "chan"},
+            "AOSSIE-Org",
+        )
+        is False
+    )
+    assert discord_writer.messages_sent == []
+
+
+def test_update_issue_channel_announcement_edits_on_assign() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github=None,
+        status="open",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor"},
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is True
+    )
+    assert len(discord_writer.messages_edited) == 1
+    channel_id, message_id, content, _embeds = discord_writer.messages_edited[0]
+    assert channel_id == "chan"
+    assert message_id == "m42"
+    assert "**Opened by:** alice - <@999>" in content
+    assert "**Assigned to:** bob - <@888>" in content
+    assert "Closed" not in content
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
+
+
+def test_update_issue_channel_announcement_edits_on_close() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github="bob",
+        status="open",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="mentor1",
+        event_type="issue_closed",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "issue_number": 7,
+            "title": "Fix docs",
+            "state": "closed",
+            "closed_by": "mentor1",
+        },
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is True
+    )
+    content = discord_writer.messages_edited[0][2]
+    assert "Closed: [Gitcord-GithubDiscordBot #7" in content
+    assert "**Opened by:** alice - <@999>" in content
+    assert "**Assigned to:** bob - <@888>" in content
+    assert "**Status:** Closed by @mentor1" in content
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "closed"
+
+
+def test_update_issue_channel_announcement_close_keeps_assigned_none() -> None:
+    storage = MockStorage()
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github=None,
+        status="open",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_closed",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 7, "title": "Fix docs", "closed_by": "alice"},
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is True
+    )
+    content = discord_writer.messages_edited[0][2]
+    assert "**Assigned to:** None" in content
+    assert "**Opened by:** alice" in content
+
+
+def test_update_issue_channel_announcement_skips_untracked() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 99, "title": "Old"},
+    )
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert discord_writer.messages_edited == []
+
+
+def test_sqlite_issue_channel_announcement_roundtrip(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    storage.save_issue_channel_announcement(
+        repo="RepoA",
+        issue_number=9,
+        channel_id="c1",
+        message_id="m1",
+        issue_title="Hello",
+        author_github="alice",
+        assignee_github=None,
+    )
+    row = storage.get_issue_channel_announcement("RepoA", 9)
+    assert row is not None
+    assert row["message_id"] == "m1"
+    assert row["assignee_github"] is None
+    storage.update_issue_channel_announcement("RepoA", 9, assignee_github="bob")
+    assert storage.get_issue_channel_announcement("RepoA", 9)["assignee_github"] == "bob"
+    storage.update_issue_channel_announcement("RepoA", 9, status="closed")
+    assert storage.get_issue_channel_announcement("RepoA", 9)["status"] == "closed"
+
+
+def test_issue_payload_includes_assignee_and_closed_by() -> None:
+    from ghdcbot.adapters.github.rest import _issue_payload
+
+    payload = _issue_payload(
+        {
+            "number": 1,
+            "title": "T",
+            "state": "closed",
+            "labels": [{"name": "bug"}],
+            "assignee": {"login": "bob"},
+            "closed_by": {"login": "mentor1"},
+        }
+    )
+    assert payload["assignee"] == "bob"
+    assert payload["closed_by"] == "mentor1"
 
 
 class MockGithubWriter:

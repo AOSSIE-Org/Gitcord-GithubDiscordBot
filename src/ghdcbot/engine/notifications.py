@@ -449,6 +449,393 @@ def update_pr_channel_announcement_for_event(
     return True
 
 
+def send_issue_opened_channel_notification(
+    event: ContributionEvent,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    pr_open_channels: dict[str, str],
+    github_org: str,
+) -> bool:
+    """Post an issue-opened announcement to a repo-mapped Discord channel/thread.
+
+    Reuses ``discord.pr_open_channels``. Message always includes Opened by and
+    Assigned to (None until assigned). Verified authors/assignees are @mentioned.
+    """
+    if not config.enabled or not getattr(config, "issue_opened", False):
+        return False
+    if event.event_type != "issue_opened":
+        return False
+
+    channel_id = pr_open_channels.get(event.repo)
+    if not channel_id:
+        return False
+
+    author_github = event.github_user
+    if not author_github or _is_github_bot_login(author_github):
+        return False
+
+    issue_number = event.payload.get("issue_number")
+    if issue_number is None:
+        return False
+
+    assignee_raw = event.payload.get("assignee")
+    assignee_github = (
+        str(assignee_raw).strip()
+        if isinstance(assignee_raw, str) and assignee_raw.strip()
+        else None
+    )
+    if assignee_github and _is_github_bot_login(assignee_github):
+        assignee_github = None
+
+    author_discord_id = _resolve_github_to_discord(storage, author_github)
+    assignee_discord_id = (
+        _resolve_github_to_discord(storage, assignee_github) if assignee_github else None
+    )
+
+    dedupe_key = f"issue_opened_channel:{event.repo}:{issue_number}:{channel_id}"
+    message = _build_issue_channel_message(
+        github_org=github_org,
+        repo=event.repo,
+        issue_number=int(issue_number),
+        title=event.payload.get("title") or "Untitled",
+        author_github=author_github,
+        author_discord_id=author_discord_id,
+        assignee_github=assignee_github,
+        assignee_discord_id=assignee_discord_id,
+        status="open",
+        closed_by_github=None,
+        include_link_nudge=author_discord_id is None,
+    )
+    if not message:
+        return False
+
+    if not policy.allow_discord_mutations:
+        return False
+
+    send_msg = getattr(discord_writer, "send_message", None)
+    create_msg = getattr(discord_writer, "create_message", None)
+    if not callable(send_msg) and not callable(create_msg):
+        return False
+
+    notify_discord_id = author_discord_id or ""
+    try:
+        claimed = _claim_notification_sent(
+            storage, dedupe_key, event, notify_discord_id, channel_id, author_github
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim issue_opened channel notification",
+            exc_info=True,
+            extra={"error": str(exc), "channel_id": channel_id, "repo": event.repo},
+        )
+        return False
+    if not claimed:
+        return False
+
+    message_id: str | None = None
+    try:
+        if callable(create_msg):
+            message_id = create_msg(channel_id, message)
+            sent = message_id is not None
+            if message_id == "":
+                message_id = None
+        else:
+            sent = bool(send_msg(channel_id, message))
+    except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
+        logger.warning(
+            "Failed to send issue_opened channel notification",
+            exc_info=True,
+            extra={"error": str(exc), "channel_id": channel_id, "repo": event.repo},
+        )
+        return False
+
+    if sent:
+        if message_id:
+            save = getattr(storage, "save_issue_channel_announcement", None)
+            if callable(save):
+                try:
+                    save(
+                        repo=event.repo,
+                        issue_number=int(issue_number),
+                        channel_id=channel_id,
+                        message_id=message_id,
+                        issue_title=event.payload.get("title"),
+                        author_github=author_github,
+                        assignee_github=assignee_github,
+                        status="open",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to track issue_opened channel message for lifecycle edits",
+                        exc_info=True,
+                        extra={
+                            "error": str(exc),
+                            "channel_id": channel_id,
+                            "repo": event.repo,
+                            "issue_number": issue_number,
+                        },
+                    )
+        _audit_notification(storage, event, notify_discord_id, channel_id, author_github)
+        return True
+    _release_notification_claim(storage, dedupe_key)
+    return False
+
+
+def update_issue_channel_announcement_for_event(
+    event: ContributionEvent,
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+) -> bool:
+    """Edit a tracked issue channel message on assign or close.
+
+    Keeps Opened by always; Assigned to is None or the contributor; close adds Closed by.
+    """
+    if not config.enabled or not getattr(config, "update_issue_channel_on_lifecycle", True):
+        return False
+    if event.event_type not in {"issue_assigned", "issue_closed"}:
+        return False
+    if not policy.allow_discord_mutations:
+        return False
+
+    issue_number = event.payload.get("issue_number")
+    if issue_number is None:
+        return False
+
+    get_ann = getattr(storage, "get_issue_channel_announcement", None)
+    if not callable(get_ann):
+        return False
+    try:
+        tracked = get_ann(event.repo, int(issue_number))
+    except Exception as exc:
+        logger.warning(
+            "Failed to load tracked issue channel announcement",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "issue_number": issue_number},
+        )
+        return False
+    if not tracked:
+        return False
+
+    author_github = (tracked.get("author_github") or "").strip() or "unknown"
+    assignee_github = tracked.get("assignee_github")
+    status = tracked.get("status") or "open"
+    closed_by_github: str | None = None
+
+    if event.event_type == "issue_assigned":
+        new_assignee = (event.github_user or "").strip()
+        if not new_assignee or _is_github_bot_login(new_assignee):
+            return False
+        if (assignee_github or "").strip().lower() == new_assignee.lower() and status == "open":
+            return False
+        assignee_github = new_assignee
+        dedupe_key = f"issue_channel_assign:{event.repo}:{issue_number}:{new_assignee.lower()}"
+    else:
+        if status == "closed":
+            return False
+        status = "closed"
+        closed_by_github = (
+            (event.payload.get("closed_by") or "").strip()
+            or (event.github_user or "").strip()
+            or None
+        )
+        dedupe_key = f"issue_channel_lifecycle:{event.repo}:{issue_number}:closed"
+
+    author_discord_id = _resolve_github_to_discord(storage, author_github)
+    assignee_discord_id = (
+        _resolve_github_to_discord(storage, assignee_github) if assignee_github else None
+    )
+    title = (
+        event.payload.get("title")
+        or tracked.get("issue_title")
+        or "Untitled"
+    )
+    message = _build_issue_channel_message(
+        github_org=github_org,
+        repo=event.repo,
+        issue_number=int(issue_number),
+        title=title,
+        author_github=author_github,
+        author_discord_id=author_discord_id,
+        assignee_github=assignee_github if isinstance(assignee_github, str) else None,
+        assignee_discord_id=assignee_discord_id,
+        status=status,
+        closed_by_github=closed_by_github,
+        include_link_nudge=False,
+    )
+    if not message:
+        return False
+
+    try:
+        claimed = _claim_notification_sent(
+            storage,
+            dedupe_key,
+            event,
+            "",
+            tracked.get("channel_id"),
+            closed_by_github or assignee_github or author_github,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim issue channel lifecycle update",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "issue_number": issue_number},
+        )
+        return False
+    if not claimed:
+        return False
+
+    edit_msg = getattr(discord_writer, "edit_message", None)
+    if not callable(edit_msg):
+        _release_notification_claim(storage, dedupe_key)
+        return False
+
+    try:
+        edited = bool(
+            edit_msg(
+                str(tracked["channel_id"]),
+                str(tracked["message_id"]),
+                message,
+            )
+        )
+    except TypeError:
+        try:
+            edited = bool(
+                edit_msg(
+                    str(tracked["channel_id"]),
+                    str(tracked["message_id"]),
+                    message,
+                    embeds=None,
+                )
+            )
+        except Exception as exc:
+            _release_notification_claim(storage, dedupe_key)
+            logger.warning(
+                "Failed to edit issue channel announcement",
+                exc_info=True,
+                extra={
+                    "error": str(exc),
+                    "repo": event.repo,
+                    "issue_number": issue_number,
+                },
+            )
+            return False
+    except Exception as exc:
+        _release_notification_claim(storage, dedupe_key)
+        logger.warning(
+            "Failed to edit issue channel announcement",
+            exc_info=True,
+            extra={"error": str(exc), "repo": event.repo, "issue_number": issue_number},
+        )
+        return False
+
+    if not edited:
+        _release_notification_claim(storage, dedupe_key)
+        return False
+
+    update = getattr(storage, "update_issue_channel_announcement", None)
+    if callable(update):
+        try:
+            if event.event_type == "issue_assigned":
+                update(
+                    event.repo,
+                    int(issue_number),
+                    assignee_github=assignee_github,
+                    issue_title=str(title) if title else None,
+                )
+            else:
+                update(
+                    event.repo,
+                    int(issue_number),
+                    status="closed",
+                    issue_title=str(title) if title else None,
+                )
+        except Exception as exc:
+            _release_notification_claim(storage, dedupe_key)
+            logger.warning(
+                "Failed to update issue channel announcement after edit",
+                exc_info=True,
+                extra={"error": str(exc), "repo": event.repo, "issue_number": issue_number},
+            )
+            return False
+
+    _audit_notification(
+        storage,
+        event,
+        "",
+        tracked.get("channel_id"),
+        closed_by_github or assignee_github or author_github,
+    )
+    return True
+
+
+def _format_github_discord_person(github_user: str, discord_user_id: str | None) -> str:
+    gh = (github_user or "").strip() or "unknown"
+    if discord_user_id:
+        return f"{gh} - <@{discord_user_id}>"
+    return f"{gh} - unknown"
+
+
+def _build_issue_channel_message(
+    *,
+    github_org: str,
+    repo: str,
+    issue_number: int,
+    title: str,
+    author_github: str,
+    author_discord_id: str | None,
+    assignee_github: str | None,
+    assignee_discord_id: str | None,
+    status: str,
+    closed_by_github: str | None,
+    include_link_nudge: bool,
+) -> str | None:
+    """Build issue channel announcement text (open or closed)."""
+    issue_title = _sanitize_discord_pr_title(title)
+    url = _suppress_discord_embed(
+        f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
+    )
+    if status == "closed":
+        header = f"🔒 **Closed: [{repo} #{issue_number} — {issue_title}]({url})**"
+    else:
+        header = f"🆕 **New Issue: [{repo} #{issue_number} — {issue_title}]({url})**"
+
+    opened_line = (
+        f"**Opened by:** {_format_github_discord_person(author_github, author_discord_id)}"
+    )
+    if assignee_github:
+        assigned_line = (
+            "**Assigned to:** "
+            f"{_format_github_discord_person(assignee_github, assignee_discord_id)}"
+        )
+    else:
+        assigned_line = "**Assigned to:** None"
+
+    lines = [header, "", opened_line, assigned_line]
+    if status == "closed":
+        closer = (closed_by_github or "").lstrip("@").strip()
+        if closer:
+            lines.append(f"**Status:** Closed by @{closer}")
+        else:
+            lines.append("**Status:** Closed")
+    elif include_link_nudge:
+        lines.extend(
+            [
+                "",
+                (
+                    f"If you are `{author_github}`, please use `/link {author_github}` "
+                    "to link your github account to your Discord account."
+                ),
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
     """Return the merge/close actor when known.
 

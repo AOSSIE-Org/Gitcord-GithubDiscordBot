@@ -152,6 +152,21 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_pr_channel_announcements_status
                     ON pr_channel_announcements (status);
+                CREATE TABLE IF NOT EXISTS issue_channel_announcements (
+                    repo TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    issue_title TEXT,
+                    author_github TEXT,
+                    assignee_github TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (repo, issue_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_issue_channel_announcements_status
+                    ON issue_channel_announcements (status);
                 """
             )
 
@@ -821,6 +836,115 @@ class SqliteStorage:
                 WHERE repo = ? AND pr_number = ?
                 """,
                 (status, now, repo, int(pr_number)),
+            )
+
+    def save_issue_channel_announcement(
+        self,
+        *,
+        repo: str,
+        issue_number: int,
+        channel_id: str,
+        message_id: str,
+        issue_title: str | None = None,
+        author_github: str | None = None,
+        assignee_github: str | None = None,
+        status: str = "open",
+    ) -> None:
+        """Track a newly posted issue-opened channel message (future lifecycle edits)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO issue_channel_announcements
+                (repo, issue_number, channel_id, message_id, status, issue_title,
+                 author_github, assignee_github, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo, issue_number) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    message_id = excluded.message_id,
+                    status = excluded.status,
+                    issue_title = COALESCE(excluded.issue_title, issue_channel_announcements.issue_title),
+                    author_github = COALESCE(excluded.author_github, issue_channel_announcements.author_github),
+                    assignee_github = COALESCE(
+                        excluded.assignee_github, issue_channel_announcements.assignee_github
+                    ),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    repo,
+                    int(issue_number),
+                    channel_id,
+                    message_id,
+                    status,
+                    issue_title,
+                    author_github,
+                    assignee_github,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_issue_channel_announcement(self, repo: str, issue_number: int) -> dict | None:
+        """Return tracked issue channel announcement or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT repo, issue_number, channel_id, message_id, status, issue_title,
+                       author_github, assignee_github, created_at, updated_at
+                FROM issue_channel_announcements
+                WHERE repo = ? AND issue_number = ?
+                """,
+                (repo, int(issue_number)),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "repo": row[0],
+            "issue_number": row[1],
+            "channel_id": row[2],
+            "message_id": row[3],
+            "status": row[4],
+            "issue_title": row[5],
+            "author_github": row[6],
+            "assignee_github": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+
+    def update_issue_channel_announcement(
+        self,
+        repo: str,
+        issue_number: int,
+        *,
+        status: str | None = None,
+        assignee_github: str | None = None,
+        clear_assignee: bool = False,
+        issue_title: str | None = None,
+    ) -> None:
+        """Update tracked issue channel fields (status / assignee / title)."""
+        now = datetime.now(timezone.utc).isoformat()
+        sets: list[str] = ["updated_at = ?"]
+        values: list[Any] = [now]
+        if status is not None:
+            sets.append("status = ?")
+            values.append(status)
+        if clear_assignee:
+            sets.append("assignee_github = NULL")
+        elif assignee_github is not None:
+            sets.append("assignee_github = ?")
+            values.append(assignee_github)
+        if issue_title is not None:
+            sets.append("issue_title = ?")
+            values.append(issue_title)
+        values.extend([repo, int(issue_number)])
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE issue_channel_announcements
+                SET {", ".join(sets)}
+                WHERE repo = ? AND issue_number = ?
+                """,
+                tuple(values),
             )
 
     def mark_notification_sent(

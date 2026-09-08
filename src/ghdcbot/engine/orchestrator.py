@@ -20,9 +20,11 @@ from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
+    send_issue_opened_channel_notification,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
+    update_issue_channel_announcement_for_event,
     update_pr_channel_announcement_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
@@ -325,7 +327,21 @@ def _send_notifications_for_new_events(
             ):
                 sent_count += 1
             continue
-        if event.event_type in {"issue_assigned", "pr_reviewed", "pr_merged", "pr_closed", "issue_reopened", "pr_reopened"}:
+        if event.event_type == "issue_opened":
+            if send_issue_opened_channel_notification(
+                event, storage, discord_writer, policy, config, channels, github_org
+            ):
+                sent_count += 1
+            continue
+        if event.event_type in {
+            "issue_assigned",
+            "issue_closed",
+            "pr_reviewed",
+            "pr_merged",
+            "pr_closed",
+            "issue_reopened",
+            "pr_reopened",
+        }:
             if event.event_type == "pr_reviewed":
                 pr_reviewed_count += 1
                 logger.info(
@@ -356,6 +372,26 @@ def _send_notifications_for_new_events(
                             "pr_number": event.payload.get("pr_number"),
                         },
                     )
+            if event.event_type in {"issue_assigned", "issue_closed"}:
+                try:
+                    if update_issue_channel_announcement_for_event(
+                        event, storage, discord_writer, policy, config, github_org
+                    ):
+                        sent_count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Issue channel lifecycle update failed (non-blocking)",
+                        exc_info=True,
+                        extra={
+                            "error": str(exc),
+                            "event_type": event.event_type,
+                            "repo": event.repo,
+                            "issue_number": event.payload.get("issue_number"),
+                        },
+                    )
+            if event.event_type == "issue_closed":
+                # Channel announcement only (no assignee DM for close today).
+                continue
             if send_notification_for_event(event, storage, discord_writer, policy, config, github_org):
                 sent_count += 1
     if sent_count > 0:

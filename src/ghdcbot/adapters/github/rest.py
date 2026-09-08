@@ -2236,12 +2236,26 @@ def _check_pr_ci_status(pr: dict, owner: str, repo: str, client: httpx.Client) -
 
 
 def _issue_payload(issue: dict) -> dict:
-    return {
+    payload: dict = {
         "issue_number": issue.get("number"),
         "title": issue.get("title"),
         "state": issue.get("state"),
         "labels": [label.get("name") for label in issue.get("labels") or []],
     }
+    assignee = issue.get("assignee")
+    if isinstance(assignee, dict) and assignee.get("login"):
+        payload["assignee"] = assignee["login"]
+    else:
+        assignees = issue.get("assignees") or []
+        if isinstance(assignees, list):
+            for entry in assignees:
+                if isinstance(entry, dict) and entry.get("login"):
+                    payload["assignee"] = entry["login"]
+                    break
+    closed_by = issue.get("closed_by")
+    if isinstance(closed_by, dict) and closed_by.get("login"):
+        payload["closed_by"] = closed_by["login"]
+    return payload
 
 
 def _repo_name_from_search_issue(item: dict, org: str) -> str | None:
