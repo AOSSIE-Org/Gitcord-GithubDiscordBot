@@ -1903,11 +1903,16 @@ def test_pr_opened_github_link_comment_skips_duplicate() -> None:
 
 
 def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
-    dirty = "fix](https://evil.example) @everyone"
+    dirty = "fix](https://evil.example) @everyone <@999> <@!888> <@&777> <#666> @here"
     clean = _sanitize_discord_pr_title(dirty)
     assert "\\]" in clean
     assert "@everyone" not in clean
     assert "@\u200beveryone" in clean
+    assert "@here" not in clean
+    assert "<@" not in clean
+    assert "<#" not in clean
+    assert "<\u200b@" in clean
+    assert "<\u200b#" in clean
 
     message = _build_pr_opened_channel_message(
         ContributionEvent(
@@ -1941,6 +1946,69 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
     assert normal is not None
     assert "Normal title" in normal
     assert "**Author:** alice - <@123>" in normal
+
+
+def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -> None:
+    from ghdcbot.engine.notifications import _build_issue_channel_message
+
+    msg = _build_issue_channel_message(
+        github_org="AOSSIE-Org",
+        repo="Repo",
+        issue_number=1,
+        title="Ping <@999> and <@&111>",
+        author_github="alice",
+        author_discord_id="222",
+        assignee_github="bob",
+        assignee_discord_id="333",
+        status="open",
+        closed_by_github=None,
+        include_link_nudge=False,
+    )
+    assert msg is not None
+    assert "<@" not in msg.split("**Opened by:**")[0]  # title/header has no live mentions
+    assert "Ping <\u200b@999>" in msg
+    assert "**Opened by:** alice - <@222>" in msg
+    assert "**Assigned to:** bob - <@333>" in msg
+
+
+def test_update_issue_channel_announcement_skips_assign_when_closed() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github=None,
+        status="closed",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor"},
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert discord_writer.messages_edited == []
+    tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
+    assert tracked is not None
+    assert tracked["status"] == "closed"
+    assert tracked["assignee_github"] is None
 
 
 def test_pr_opened_github_link_comment_concurrent_claim(tmp_path) -> None:

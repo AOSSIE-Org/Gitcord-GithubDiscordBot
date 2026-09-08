@@ -628,6 +628,9 @@ def update_issue_channel_announcement_for_event(
     closed_by_github: str | None = None
 
     if event.event_type == "issue_assigned":
+        if status == "closed":
+            # Keep closed announcement (incl. Closed by) unchanged after late assigns.
+            return False
         new_assignee = (event.github_user or "").strip()
         if not new_assignee or _is_github_bot_login(new_assignee):
             return False
@@ -1028,13 +1031,22 @@ def _suppress_discord_embed(url: str) -> str:
 
 
 def _sanitize_discord_pr_title(title: str) -> str:
-    """Escape markdown link delimiters and neutralize mass-mention tokens in PR titles."""
+    """Escape markdown link delimiters and neutralize mention tokens in titles.
+
+    Used for PR and issue channel titles. Neutralizes ``@everyone`` / ``@here`` and
+    structured Discord mentions (``<@…>``, ``<@!…>``, ``<@&…>``, ``<#…>``) so
+    attacker-controlled titles cannot ping users/roles/channels. Trusted author /
+    assignee ``<@id>`` lines are built separately and are not passed through here.
+    """
     text = (title or "Untitled")[:100]
     text = text.replace("\\", "\\\\")
     for ch in ("[", "]", "(", ")"):
         text = text.replace(ch, f"\\{ch}")
     for mention in ("@everyone", "@here"):
         text = text.replace(mention, mention[0] + "\u200b" + mention[1:])
+    # Break <@…> / <@!…> / <@&…> / <#…> openers without touching later trusted mentions.
+    for opener in ("<@", "<#"):
+        text = text.replace(opener, opener[0] + "\u200b" + opener[1:])
     return text
 
 
