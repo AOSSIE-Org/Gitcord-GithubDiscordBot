@@ -99,7 +99,8 @@ class NotificationConfig(BaseModel):
     # Edit the tracked PR-opened channel message when that PR is later merged/closed.
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
-    # Edit tracked issue channel messages on assign / close (Opened by stays; Assigned to updates).
+    # Edit tracked issue channel messages on assign / unassign / close
+    # (Opened by stays; Assigned to updates to None or contributor).
     update_issue_channel_on_lifecycle: bool = True
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old

@@ -485,3 +485,66 @@ def test_issue_reopened_skipped_without_assignee(monkeypatch) -> None:
     reopened = [event for event in events if event.event_type == "issue_reopened"]
 
     assert len(reopened) == 0  # Should not emit if no assignee
+
+
+def test_issue_unassigned_emitted_from_timeline(monkeypatch) -> None:
+    """Timeline unassigned events become issue_unassigned contribution events."""
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [
+            {
+                "name": "repo",
+                "owner": {"login": "owner"},
+                "full_name": "owner/repo",
+            }
+        ],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [
+            {
+                "number": 40,
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-11T00:00:00Z",
+                "closed_at": None,
+                "title": "Needs owner",
+                "html_url": "https://github.com/owner/repo/issues/40",
+                "user": {"login": "alice"},
+                "assignees": [],
+            }
+        ],
+        "/repos/owner/repo/pulls": [],
+        "/repos/owner/repo/issues/40/comments": [],
+        "/repos/owner/repo/issues/40/timeline": [
+            {
+                "event": "assigned",
+                "created_at": "2024-01-09T09:00:00Z",
+                "assignee": {"login": "bob"},
+                "actor": {"login": "mentor"},
+            },
+            {
+                "event": "unassigned",
+                "created_at": "2024-01-11T12:00:00Z",
+                "assignee": {"login": "bob"},
+                "actor": {"login": "mentor"},
+            },
+        ],
+    }
+    adapter._client = _MockClient(routes)
+
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    events = list(adapter.list_contributions(since))
+    assigned = [e for e in events if e.event_type == "issue_assigned"]
+    unassigned = [e for e in events if e.event_type == "issue_unassigned"]
+
+    assert len(assigned) == 1
+    assert assigned[0].github_user == "bob"
+    assert assigned[0].payload.get("assigned_by") == "mentor"
+
+    assert len(unassigned) == 1
+    assert unassigned[0].github_user == "bob"
+    assert unassigned[0].payload["issue_number"] == 40
+    assert unassigned[0].payload.get("unassigned_by") == "mentor"
+    assert unassigned[0].payload.get("unassigned_at") == "2024-01-11T12:00:00Z"

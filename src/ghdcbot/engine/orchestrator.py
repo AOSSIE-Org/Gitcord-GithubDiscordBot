@@ -335,6 +335,7 @@ def _send_notifications_for_new_events(
             continue
         if event.event_type in {
             "issue_assigned",
+            "issue_unassigned",
             "issue_closed",
             "pr_reviewed",
             "pr_merged",
@@ -372,7 +373,7 @@ def _send_notifications_for_new_events(
                             "pr_number": event.payload.get("pr_number"),
                         },
                     )
-            if event.event_type in {"issue_assigned", "issue_closed"}:
+            if event.event_type in {"issue_assigned", "issue_unassigned", "issue_closed"}:
                 try:
                     if update_issue_channel_announcement_for_event(
                         event, storage, discord_writer, policy, config, github_org
@@ -389,8 +390,8 @@ def _send_notifications_for_new_events(
                             "issue_number": event.payload.get("issue_number"),
                         },
                     )
-            if event.event_type == "issue_closed":
-                # Channel announcement only (no assignee DM for close today).
+            if event.event_type in {"issue_closed", "issue_unassigned"}:
+                # Channel announcement only (no DM for close / unassign today).
                 continue
             if send_notification_for_event(event, storage, discord_writer, policy, config, github_org):
                 sent_count += 1

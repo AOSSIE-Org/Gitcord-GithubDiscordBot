@@ -1625,12 +1625,13 @@ class GitHubRestAdapter:
     def _issue_assignment_events(
         self, owner: str, repo: str, issue: dict, since: datetime, timeline_events: list[dict]
     ) -> Iterable[ContributionEvent]:
-        """Emit issue_assigned events from pre-fetched timeline data."""
+        """Emit issue_assigned / issue_unassigned events from pre-fetched timeline data."""
         issue_number = issue.get("number")
         if not issue_number:
             return
         for event in timeline_events:
-            if event.get("event") != "assigned":
+            event_name = event.get("event")
+            if event_name not in {"assigned", "unassigned"}:
                 continue
             created_at = _parse_iso8601(event.get("created_at"))
             if not created_at or created_at < since:
@@ -1644,12 +1645,17 @@ class GitHubRestAdapter:
             payload = _issue_payload(issue)
             actor = event.get("actor")
             if actor and isinstance(actor, dict):
-                assigned_by = actor.get("login")
-                if assigned_by:
-                    payload["assigned_by"] = assigned_by
+                actor_login = actor.get("login")
+                if actor_login:
+                    if event_name == "assigned":
+                        payload["assigned_by"] = actor_login
+                    else:
+                        payload["unassigned_by"] = actor_login
+            if event_name == "unassigned" and event.get("created_at"):
+                payload["unassigned_at"] = event.get("created_at")
             yield ContributionEvent(
                 github_user=assignee_login,
-                event_type="issue_assigned",
+                event_type="issue_assigned" if event_name == "assigned" else "issue_unassigned",
                 repo=repo,
                 created_at=created_at,
                 payload=payload,

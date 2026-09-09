@@ -592,13 +592,13 @@ def update_issue_channel_announcement_for_event(
     config: NotificationConfig,
     github_org: str,
 ) -> bool:
-    """Edit a tracked issue channel message on assign or close.
+    """Edit a tracked issue channel message on assign, unassign, or close.
 
     Keeps Opened by always; Assigned to is None or the contributor; close adds Closed by.
     """
     if not config.enabled or not getattr(config, "update_issue_channel_on_lifecycle", True):
         return False
-    if event.event_type not in {"issue_assigned", "issue_closed"}:
+    if event.event_type not in {"issue_assigned", "issue_unassigned", "issue_closed"}:
         return False
     if not policy.allow_discord_mutations:
         return False
@@ -626,6 +626,7 @@ def update_issue_channel_announcement_for_event(
     assignee_github = tracked.get("assignee_github")
     status = tracked.get("status") or "open"
     closed_by_github: str | None = None
+    audit_actor = author_github
 
     if event.event_type == "issue_assigned":
         if status == "closed":
@@ -637,7 +638,27 @@ def update_issue_channel_announcement_for_event(
         if (assignee_github or "").strip().lower() == new_assignee.lower() and status == "open":
             return False
         assignee_github = new_assignee
+        audit_actor = new_assignee
         dedupe_key = f"issue_channel_assign:{event.repo}:{issue_number}:{new_assignee.lower()}"
+    elif event.event_type == "issue_unassigned":
+        if status == "closed":
+            return False
+        removed = (event.github_user or "").strip()
+        if not removed:
+            return False
+        current = (assignee_github or "").strip()
+        if not current:
+            return False
+        if current.lower() != removed.lower():
+            # Displayed assignee wasn't the one removed (multi-assignee edge case).
+            return False
+        assignee_github = None
+        audit_actor = removed
+        unassigned_at = event.payload.get("unassigned_at") or event.created_at.isoformat()
+        dedupe_key = (
+            f"issue_channel_unassign:{event.repo}:{issue_number}:"
+            f"{removed.lower()}:{unassigned_at}"
+        )
     else:
         if status == "closed":
             return False
@@ -647,6 +668,7 @@ def update_issue_channel_announcement_for_event(
             or (event.github_user or "").strip()
             or None
         )
+        audit_actor = closed_by_github or author_github
         dedupe_key = f"issue_channel_lifecycle:{event.repo}:{issue_number}:closed"
 
     author_discord_id = _resolve_github_to_discord(storage, author_github)
@@ -681,7 +703,7 @@ def update_issue_channel_announcement_for_event(
             event,
             "",
             tracked.get("channel_id"),
-            closed_by_github or assignee_github or author_github,
+            audit_actor,
         )
     except Exception as exc:
         logger.warning(
@@ -751,6 +773,13 @@ def update_issue_channel_announcement_for_event(
                     assignee_github=assignee_github,
                     issue_title=str(title) if title else None,
                 )
+            elif event.event_type == "issue_unassigned":
+                update(
+                    event.repo,
+                    int(issue_number),
+                    clear_assignee=True,
+                    issue_title=str(title) if title else None,
+                )
             else:
                 update(
                     event.repo,
@@ -772,7 +801,7 @@ def update_issue_channel_announcement_for_event(
         event,
         "",
         tracked.get("channel_id"),
-        closed_by_github or assignee_github or author_github,
+        audit_actor,
     )
     return True
 
