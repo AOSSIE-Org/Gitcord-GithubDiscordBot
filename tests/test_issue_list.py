@@ -152,16 +152,112 @@ def test_resolve_repo_for_issue():
 def test_github_rest_adapter_list_repo_open_issues():
     from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
-    adapter = GitHubRestAdapter("fake-token", "fake-org", "https://api.github.com")
     fake_items = [
         {"number": 1, "title": "Real issue 1", "state": "open"},
         {"number": 2, "title": "Pull request 2", "state": "open", "pull_request": {"url": "..."}},
         {"number": 3, "title": "Real issue 3", "state": "open"},
     ]
 
-    adapter._paginate = MagicMock(return_value=[fake_items])
-    issues = adapter.list_repo_open_issues("fake-org", "fake-repo", per_page=10)
+    with GitHubRestAdapter("fake-token", "fake-org", "https://api.github.com") as adapter:
+        adapter._paginate = MagicMock(return_value=[fake_items])
+        issues = adapter.list_repo_open_issues("fake-org", "fake-repo", limit=10)
 
-    assert len(issues) == 2
-    assert [i["number"] for i in issues] == [1, 3]
+        assert len(issues) == 2
+        assert [i["number"] for i in issues] == [1, 3]
+        adapter._paginate.assert_called_once_with(
+            "/repos/fake-org/fake-repo/issues",
+            params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
+        )
+
+        # Verify per_page specifies GitHub API page size
+        adapter._paginate.reset_mock()
+        adapter._paginate.return_value = [fake_items]
+        adapter.list_repo_open_issues("fake-org", "fake-repo", limit=10, per_page=25)
+        adapter._paginate.assert_called_once_with(
+            "/repos/fake-org/fake-repo/issues",
+            params={"state": "open", "sort": "created", "direction": "desc", "per_page": 25},
+        )
+
+        # Verify per_page > 100 is clamped and does not exceed limit
+        adapter._paginate.reset_mock()
+        adapter._paginate.return_value = [fake_items]
+        limited = adapter.list_repo_open_issues("fake-org", "fake-repo", limit=1, per_page=200)
+        assert len(limited) == 1
+        assert limited[0]["number"] == 1
+        adapter._paginate.assert_called_once_with(
+            "/repos/fake-org/fake-repo/issues",
+            params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
+        )
+
+        # Verify non-positive limit returns empty list without making API calls
+        adapter._paginate.reset_mock()
+        assert adapter.list_repo_open_issues("fake-org", "fake-repo", limit=0) == []
+        adapter._paginate.assert_not_called()
+
+        # Verify mock returning None or yielding None propagates None
+        adapter._paginate = MagicMock(return_value=None)
+        assert adapter.list_repo_open_issues("fake-org", "fake-repo") is None
+        adapter._paginate = MagicMock(return_value=[None])
+        assert adapter.list_repo_open_issues("fake-org", "fake-repo") is None
+
+    assert adapter._client.is_closed
+
+    # Verify request failure (None from _request) propagates None
+    with GitHubRestAdapter("fake-token", "fake-org", "https://api.github.com") as real_paginate_adapter:
+        real_paginate_adapter._request = MagicMock(return_value=None)
+        assert real_paginate_adapter.list_repo_open_issues("fake-org", "nonexistent-repo") is None
+
+        # Verify non-200 response (e.g. 500 server error) propagates None
+        error_response = MagicMock(status_code=500)
+        real_paginate_adapter._request = MagicMock(return_value=error_response)
+        assert real_paginate_adapter.list_repo_open_issues("fake-org", "server-error-repo") is None
+
+        # Verify 200 OK with empty issues list returns empty list [] (not None)
+        ok_empty_response = MagicMock(status_code=200)
+        ok_empty_response.json.return_value = []
+        ok_empty_response.headers = {}
+        real_paginate_adapter._request = MagicMock(return_value=ok_empty_response)
+        assert real_paginate_adapter.list_repo_open_issues("fake-org", "empty-repo") == []
+
+    assert real_paginate_adapter._client.is_closed
+
+
+def test_issue_handling_fetch_error_vs_empty():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    async def _handle(raw_issues: list[dict] | None) -> list[dict]:
+        followup = AsyncMock()
+        if raw_issues is None:
+            await followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+        else:
+            issues = filter_open_issues(raw_issues, limit=10)
+            messages = format_issue_list_messages(
+                issues=issues,
+                org="fake-org",
+                repo="fake-repo",
+                limit=10,
+            )
+            for message in messages:
+                await followup.send(
+                    message,
+                    ephemeral=True,
+                    suppress_embeds=True,
+                )
+        return followup.send.call_args_list
+
+    # Error case (raw_issues is None)
+    calls_err = asyncio.run(_handle(None))
+    assert len(calls_err) == 1
+    assert "❌ Error fetching issues. Please try again later." in calls_err[0].args[0]
+
+    # Empty case (raw_issues is [])
+    calls_empty = asyncio.run(_handle([]))
+    assert len(calls_empty) == 1
+    assert "No open issues found in **fake-repo**." in calls_empty[0].args[0]
+
+
 

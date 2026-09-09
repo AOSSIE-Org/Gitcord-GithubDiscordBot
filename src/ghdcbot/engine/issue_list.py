@@ -6,9 +6,9 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from ghdcbot.config.access import cfg_get
 from ghdcbot.engine.issue_assignment import resolve_github_to_discord
 from ghdcbot.engine.pr_status import (
-    _cfg_get,
     get_configured_repo_names,
     is_repo_allowed,
 )
@@ -215,9 +215,9 @@ def resolve_repo_for_issue(
     """
     repo_filter = None
     if config:
-        github_cfg = _cfg_get(config, "github")
+        github_cfg = cfg_get(config, "github")
         if github_cfg:
-            repo_filter = _cfg_get(github_cfg, "repos")
+            repo_filter = cfg_get(github_cfg, "repos")
 
     # 1. Explicit repo argument
     if repo and repo.strip():
@@ -235,9 +235,9 @@ def resolve_repo_for_issue(
 
     # 2. Check config.discord.pr_open_channels
     if channel_id and config:
-        discord_cfg = _cfg_get(config, "discord")
+        discord_cfg = cfg_get(config, "discord")
         if discord_cfg:
-            pr_open_channels = _cfg_get(discord_cfg, "pr_open_channels")
+            pr_open_channels = cfg_get(discord_cfg, "pr_open_channels")
             if isinstance(pr_open_channels, dict):
                 for r, cid in pr_open_channels.items():
                     if str(cid) == str(channel_id) and is_repo_allowed(repo_filter, r):

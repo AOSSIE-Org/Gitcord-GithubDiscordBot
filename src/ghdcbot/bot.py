@@ -1038,6 +1038,13 @@ def run_bot(config_path: str) -> None:
             )
             return
 
+        if raw_issues is None:
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
         issues = filter_open_issues(raw_issues, limit=effective_limit)
         messages = format_issue_list_messages(
             issues=issues,

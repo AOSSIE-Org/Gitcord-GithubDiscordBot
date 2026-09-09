@@ -113,6 +113,7 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        self._last_paginate_error = False
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
@@ -622,20 +623,43 @@ class GitHubRestAdapter:
             )
             return False
 
-    def list_repo_open_issues(self, owner: str, repo: str, per_page: int = 100) -> list[dict]:
+    def list_repo_open_issues(
+        self,
+        owner: str,
+        repo: str,
+        limit: int = 100,
+        per_page: int = 100,
+    ) -> list[dict] | None:
         """Fetch open issues for a repository, excluding pull requests.
 
-        Returns list of issue dicts, newest first.
+        :param owner: Repository owner/org.
+        :param repo: Repository name.
+        :param limit: Maximum number of open issues to collect across pages.
+        :param per_page: Page size for each GitHub API request (clamped to 1..100).
+        :return: List of issue dicts, newest first, or None on fetch error.
         """
+        if limit <= 0:
+            return []
+
         issues: list[dict] = []
-        params = {"state": "open", "sort": "created", "direction": "desc", "per_page": min(per_page, 100)}
-        for page in self._paginate(f"/repos/{owner}/{repo}/issues", params=params):
+        page_size = max(1, min(per_page, 100))
+        params = {"state": "open", "sort": "created", "direction": "desc", "per_page": page_size}
+        pages = self._paginate(f"/repos/{owner}/{repo}/issues", params=params)
+        if pages is None:
+            return None
+        for page in pages:
+            if page is None:
+                return None
             for item in page:
                 if "pull_request" in item:
                     continue
                 issues.append(item)
-                if len(issues) >= per_page:
+                if len(issues) >= limit:
                     return issues
+
+        if getattr(self, "_last_paginate_error", False):
+            return None
+
         return issues
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
@@ -1791,12 +1815,15 @@ class GitHubRestAdapter:
                 }
 
     def _paginate(self, path: str, params: dict) -> Iterator[list]:
+        self._last_paginate_error = False
         page = 1
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
+                self._last_paginate_error = True
                 return
             if response.status_code != 200:
+                self._last_paginate_error = True
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
@@ -1827,12 +1854,15 @@ class GitHubRestAdapter:
         return repos, response.status_code
 
     def _paginate_from_page(self, path: str, params: dict, start_page: int) -> Iterator[list]:
+        self._last_paginate_error = False
         page = start_page
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
+                self._last_paginate_error = True
                 return
             if response.status_code != 200:
+                self._last_paginate_error = True
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
