@@ -2248,16 +2248,25 @@ def _issue_payload(issue: dict) -> dict:
         "state": issue.get("state"),
         "labels": [label.get("name") for label in issue.get("labels") or []],
     }
+    logins: list[str] = []
+    seen: set[str] = set()
     assignee = issue.get("assignee")
     if isinstance(assignee, dict) and assignee.get("login"):
-        payload["assignee"] = assignee["login"]
-    else:
-        assignees = issue.get("assignees") or []
-        if isinstance(assignees, list):
-            for entry in assignees:
-                if isinstance(entry, dict) and entry.get("login"):
-                    payload["assignee"] = entry["login"]
-                    break
+        login = str(assignee["login"]).strip()
+        if login:
+            logins.append(login)
+            seen.add(login.lower())
+    for entry in issue.get("assignees") or []:
+        if not isinstance(entry, dict):
+            continue
+        login = str(entry.get("login") or "").strip()
+        if not login or login.lower() in seen:
+            continue
+        logins.append(login)
+        seen.add(login.lower())
+    if logins:
+        payload["assignee"] = logins[0]
+        payload["assignees"] = logins
     closed_by = issue.get("closed_by")
     if isinstance(closed_by, dict) and closed_by.get("login"):
         payload["closed_by"] = closed_by["login"]
