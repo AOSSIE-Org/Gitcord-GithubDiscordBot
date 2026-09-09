@@ -24,6 +24,12 @@ from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
 )
+from ghdcbot.engine.issue_list import (
+    clamp_issue_limit,
+    filter_open_issues,
+    format_issue_list_messages,
+    resolve_repo_for_issue,
+)
 from ghdcbot.engine.metrics import (
     build_contribution_summary_message,
     get_contribution_metrics,
@@ -966,6 +972,86 @@ def run_bot(config_path: str) -> None:
             suggestions,
         )
         return [app_commands.Choice(name=r, value=r) for r in suggestions]
+
+    @tree.command(
+        name="issue",
+        description="List recent open issues in the project channel (excluding PRs)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        limit="How many recent open issues to show (optional, default 10, max 50)",
+    )
+    @app_commands.checks.cooldown(1, 15.0)
+    async def issue_cmd(
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 50] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = interaction.channel_id
+        channel_name = getattr(interaction.channel, "name", None)
+        resolved_repo, error_msg = resolve_repo_for_issue(
+            config=config,
+            channel_id=channel_id,
+            channel_name=channel_name,
+        )
+        if error_msg or not resolved_repo:
+            await interaction.followup.send(
+                error_msg or "❌ Unable to determine repository.",
+                ephemeral=True,
+            )
+            return
+
+        effective_limit = clamp_issue_limit(limit)
+        logger.info(
+            "/issue requested",
+            extra={
+                "repo": resolved_repo,
+                "requested_limit": limit,
+                "effective_limit": effective_limit,
+                "user_id": str(interaction.user.id),
+            },
+        )
+
+        try:
+            list_issues = getattr(github_adapter, "list_repo_open_issues", None)
+            if not callable(list_issues):
+                await interaction.followup.send(
+                    "❌ This GitHub adapter cannot list repository issues.",
+                    ephemeral=True,
+                )
+                return
+            raw_issues = await asyncio.to_thread(
+                list_issues,
+                config.github.org,
+                resolved_repo,
+                effective_limit,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to list issues for /issue",
+                extra={"repo": resolved_repo, "user_id": str(interaction.user.id)},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        issues = filter_open_issues(raw_issues, limit=effective_limit)
+        messages = format_issue_list_messages(
+            issues=issues,
+            org=config.github.org,
+            repo=resolved_repo,
+            limit=effective_limit,
+            storage=storage,
+        )
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
 
     @tree.command(
         name="who-is",

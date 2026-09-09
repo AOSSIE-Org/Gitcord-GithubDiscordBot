@@ -622,6 +622,22 @@ class GitHubRestAdapter:
             )
             return False
 
+    def list_repo_open_issues(self, owner: str, repo: str, per_page: int = 100) -> list[dict]:
+        """Fetch open issues for a repository, excluding pull requests.
+
+        Returns list of issue dicts, newest first.
+        """
+        issues: list[dict] = []
+        params = {"state": "open", "sort": "created", "direction": "desc", "per_page": min(per_page, 100)}
+        for page in self._paginate(f"/repos/{owner}/{repo}/issues", params=params):
+            for item in page:
+                if "pull_request" in item:
+                    continue
+                issues.append(item)
+                if len(issues) >= per_page:
+                    return issues
+        return issues
+
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.
 
