@@ -825,6 +825,9 @@ def update_issue_channel_announcement_for_event(
         tracked.get("channel_id"),
         audit_actor,
     )
+    # Release status-/user-keyed claims so assign ↔ unassign ↔ re-assign cycles work
+    # (tracked assignee_github already prevents duplicate no-op edits).
+    _release_notification_claim(storage, dedupe_key)
     return True
 
 

@@ -100,7 +100,7 @@ class NotificationConfig(BaseModel):
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
     # Edit tracked issue channel messages on assign / unassign / close
-    # (Opened by stays; Assigned to updates to None or contributor).
+    # (Opened by stays; Assigned to lists current assignees or None).
     update_issue_channel_on_lifecycle: bool = True
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old

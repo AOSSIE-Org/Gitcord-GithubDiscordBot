@@ -1923,6 +1923,72 @@ def test_update_issue_channel_announcement_reassigns_to_someone_else() -> None:
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "carol"
 
 
+def test_update_issue_channel_announcement_assign_unassign_reassign_same_user() -> None:
+    """Same assignee after unassign must update Discord again (claim released)."""
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github=None,
+        status="open",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    assign = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 7, "title": "Fix docs"},
+    )
+    unassign = ContributionEvent(
+        github_user="bob",
+        event_type="issue_unassigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "issue_number": 7,
+            "title": "Fix docs",
+            "unassigned_at": "2026-09-09T12:00:00Z",
+        },
+    )
+    reassign = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 7, "title": "Fix docs"},
+    )
+
+    assert update_issue_channel_announcement_for_event(
+        assign, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert "**Assigned to:** bob - <@888>" in discord_writer.messages_edited[-1][2]
+    assert "issue_channel_assign:Gitcord-GithubDiscordBot:7:bob" not in storage.notifications_sent
+
+    assert update_issue_channel_announcement_for_event(
+        unassign, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert "**Assigned to:** None" in discord_writer.messages_edited[-1][2]
+
+    assert update_issue_channel_announcement_for_event(
+        reassign, storage, discord_writer, policy, config, "AOSSIE-Org"
+    )
+    assert "**Assigned to:** bob - <@888>" in discord_writer.messages_edited[-1][2]
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
+    assert len(discord_writer.messages_edited) == 3
+
+
 def test_update_issue_channel_announcement_unassign_keeps_remaining() -> None:
     storage = MockStorage()
     storage.verified_mappings = [
