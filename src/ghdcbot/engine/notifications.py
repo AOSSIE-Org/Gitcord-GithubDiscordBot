@@ -313,7 +313,7 @@ def update_pr_channel_announcement_for_event(
     """
     if not config.enabled or not getattr(config, "update_pr_channel_on_lifecycle", True):
         return False
-    if event.event_type not in {"pr_merged", "pr_closed"}:
+    if event.event_type not in {"pr_merged", "pr_closed", "pr_reopened"}:
         return False
     if not policy.allow_discord_mutations:
         return False
@@ -338,26 +338,47 @@ def update_pr_channel_announcement_for_event(
         # Pre-feature / untracked opens: do not invent edits for old Discord messages.
         return False
 
-    status = "merged" if event.event_type == "pr_merged" else "closed"
+    if event.event_type == "pr_merged":
+        status = "merged"
+    elif event.event_type == "pr_closed":
+        status = "closed"
+    else:
+        status = "open"
+
     if tracked.get("status") == status:
         return False
 
-    actor = _pr_lifecycle_actor(event)
-    built = _build_pr_lifecycle_channel_message(
-        event,
-        github_org,
-        status=status,
-        actor_github=actor or "",
-        tracked=tracked,
-    )
-    if not built:
-        return False
-    message, embeds = built
+    if status == "open":
+        author_github = tracked.get("author_github") or event.github_user or ""
+        discord_user_id = _resolve_github_to_discord(storage, author_github)
+        
+        # event payload might not have 'title' for pr_reopened depending on adapter, so fallback to tracked
+        if not event.payload.get("title") and tracked.get("pr_title"):
+            event.payload["title"] = tracked["pr_title"]
+            
+        message = _build_pr_opened_channel_message(
+            event, github_org, author_github, discord_user_id
+        )
+        if not message:
+            return False
+        embeds = []
+    else:
+        actor = _pr_lifecycle_actor(event)
+        built = _build_pr_lifecycle_channel_message(
+            event,
+            github_org,
+            status=status,
+            actor_github=actor or "",
+            tracked=tracked,
+        )
+        if not built:
+            return False
+        message, embeds = built
 
     dedupe_key = f"pr_channel_lifecycle:{event.repo}:{pr_number}:{status}"
     try:
         claimed = _claim_notification_sent(
-            storage, dedupe_key, event, "", tracked.get("channel_id"), actor or ""
+            storage, dedupe_key, event, "", tracked.get("channel_id"), actor if status != "open" else author_github
         )
     except Exception as exc:
         logger.warning(
@@ -445,7 +466,9 @@ def update_pr_channel_announcement_for_event(
                 extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
             )
             return False
-    _audit_notification(storage, event, "", tracked.get("channel_id"), actor or "")
+    actor_name = author_github if status == "open" else (actor or "")
+    _audit_notification(storage, event, "", tracked.get("channel_id"), actor_name)
+    _release_notification_claim(storage, dedupe_key)
     return True
 
 

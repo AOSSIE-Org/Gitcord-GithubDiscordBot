@@ -1411,6 +1411,119 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     assert "Closed by @bob" in embeds[0]["description"]
 
 
+def test_update_pr_channel_announcement_reopened() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.verified_mappings = [{"github_user": "bob", "discord_user_id": "d-bob"}]
+    storage.save_pr_channel_announcement(
+        repo="MiniChain",
+        pr_number=7,
+        channel_id="chan-2",
+        message_id="msg-2",
+        pr_title="WIP",
+        author_github="bob",
+        status="closed",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7, "title": "WIP"},
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "StabilityNexus"
+    )
+    assert len(discord_writer.messages_edited) == 1
+    edited_msg = discord_writer.messages_edited[0][2]
+    embeds = discord_writer.messages_edited[0][3]
+    assert not embeds
+    assert "New PR:" in edited_msg
+    assert "WIP" in edited_msg
+    assert "<@d-bob>" in edited_msg
+
+
+def test_update_pr_channel_announcement_reopened_fallback() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="MiniChain",
+        pr_number=7,
+        channel_id="chan-2",
+        message_id="msg-2",
+        pr_title="TrackedTitle",
+        author_github="bob",
+        status="closed",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7},  # No title here
+    )
+
+    assert update_pr_channel_announcement_for_event(
+        event, storage, discord_writer, policy, config, "StabilityNexus"
+    )
+    assert len(discord_writer.messages_edited) == 1
+    edited_msg = discord_writer.messages_edited[0][2]
+    assert "TrackedTitle" in edited_msg
+
+
+def test_update_pr_channel_announcement_close_reopen_close() -> None:
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="MiniChain",
+        pr_number=7,
+        channel_id="chan-2",
+        message_id="msg-2",
+        pr_title="WIP",
+        author_github="bob",
+        status="open",
+    )
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    close_event1 = ContributionEvent(
+        github_user="bob",
+        event_type="pr_closed",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7, "closed_by": "bob"},
+    )
+    assert update_pr_channel_announcement_for_event(close_event1, storage, discord_writer, policy, config, "test")
+    assert storage.get_pr_channel_announcement("MiniChain", 7)["status"] == "closed"
+    
+    reopen_event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_reopened",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7},
+    )
+    assert update_pr_channel_announcement_for_event(reopen_event, storage, discord_writer, policy, config, "test")
+    assert storage.get_pr_channel_announcement("MiniChain", 7)["status"] == "open"
+
+    close_event2 = ContributionEvent(
+        github_user="bob",
+        event_type="pr_closed",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 7, "closed_by": "bob"},
+    )
+    assert update_pr_channel_announcement_for_event(close_event2, storage, discord_writer, policy, config, "test")
+    assert storage.get_pr_channel_announcement("MiniChain", 7)["status"] == "closed"
+    
+    assert len(discord_writer.messages_edited) == 3
+
+
 def test_update_pr_channel_announcement_skips_untracked_old_messages() -> None:
     storage = MockStorage()
     discord_writer = MockDiscordWriter()

@@ -356,7 +356,7 @@ def _send_notifications_for_new_events(
                         "pr_author": event.payload.get("pr_author"),
                     },
                 )
-            if event.event_type in {"pr_merged", "pr_closed"}:
+            if event.event_type in {"pr_merged", "pr_closed", "pr_reopened"}:
                 try:
                     if update_pr_channel_announcement_for_event(
                         event, storage, discord_writer, policy, config, github_org
