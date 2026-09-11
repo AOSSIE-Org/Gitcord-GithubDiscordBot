@@ -1072,9 +1072,72 @@ def send_pr_opened_github_link_comment(
     Independent of github.permissions.write (assignments) so orgs that disable
     auto-assign can still nudge contributors. Skipped in dry-run/observer.
     """
-    if not config.enabled or not config.pr_opened_github_comment:
+    return _send_opened_github_link_comment(
+        event,
+        storage,
+        github_writer,
+        policy,
+        config,
+        github_org,
+        invite_url,
+        enabled=bool(config.enabled and config.pr_opened_github_comment),
+        expected_event_type="pr_opened",
+        number_payload_key="pr_number",
+        dedupe_prefix="pr_opened_github_link",
+        kind="PR",
+        log_label="PR",
+    )
+
+
+def send_issue_opened_github_link_comment(
+    event: ContributionEvent,
+    storage: Storage,
+    github_writer: Any,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+    invite_url: str | None,
+) -> bool:
+    """Comment on a newly opened issue asking an unverified author to /link in Discord.
+
+    Same behavior as ``send_pr_opened_github_link_comment``, for issues.
+    """
+    return _send_opened_github_link_comment(
+        event,
+        storage,
+        github_writer,
+        policy,
+        config,
+        github_org,
+        invite_url,
+        enabled=bool(config.enabled and config.issue_opened_github_comment),
+        expected_event_type="issue_opened",
+        number_payload_key="issue_number",
+        dedupe_prefix="issue_opened_github_link",
+        kind="issue",
+        log_label="issue",
+    )
+
+
+def _send_opened_github_link_comment(
+    event: ContributionEvent,
+    storage: Storage,
+    github_writer: Any,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+    invite_url: str | None,
+    *,
+    enabled: bool,
+    expected_event_type: str,
+    number_payload_key: str,
+    dedupe_prefix: str,
+    kind: str,
+    log_label: str,
+) -> bool:
+    if not enabled:
         return False
-    if event.event_type != "pr_opened":
+    if event.event_type != expected_event_type:
         return False
     if policy.mode != RunMode.ACTIVE:
         return False
@@ -1087,27 +1150,27 @@ def send_pr_opened_github_link_comment(
         return False
 
     invite = (invite_url or "").strip()
+    number = event.payload.get(number_payload_key)
     if not invite:
         logger.warning(
-            "Skipping PR GitHub link comment: discord.invite_url is not set",
-            extra={"repo": event.repo, "pr_number": event.payload.get("pr_number")},
+            f"Skipping {log_label} GitHub link comment: discord.invite_url is not set",
+            extra={"repo": event.repo, number_payload_key: number},
         )
         return False
 
-    pr_number = event.payload.get("pr_number")
-    if pr_number is None:
+    if number is None:
         return False
 
-    dedupe_key = f"pr_opened_github_link:{event.repo}:{pr_number}"
+    dedupe_key = f"{dedupe_prefix}:{event.repo}:{number}"
     try:
         claimed = _claim_notification_sent(
             storage, dedupe_key, event, "", None, author_github
         )
     except Exception as exc:
         logger.warning(
-            "Failed to claim PR GitHub link comment notification",
+            f"Failed to claim {log_label} GitHub link comment notification",
             exc_info=True,
-            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+            extra={"error": str(exc), "repo": event.repo, number_payload_key: number},
         )
         return False
     if not claimed:
@@ -1117,20 +1180,20 @@ def send_pr_opened_github_link_comment(
     if not callable(create_comment):
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
-            "Skipping PR GitHub link comment: github writer has no create_issue_comment",
-            extra={"repo": event.repo, "pr_number": pr_number},
+            f"Skipping {log_label} GitHub link comment: github writer has no create_issue_comment",
+            extra={"repo": event.repo, number_payload_key: number},
         )
         return False
 
-    body = _build_pr_opened_github_link_comment(author_github, invite)
+    body = _build_opened_github_link_comment(author_github, invite, kind=kind)
     try:
-        sent = bool(create_comment(github_org, event.repo, int(pr_number), body))
+        sent = bool(create_comment(github_org, event.repo, int(number), body))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
-            "Failed to post PR GitHub link comment",
+            f"Failed to post {log_label} GitHub link comment",
             exc_info=True,
-            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+            extra={"error": str(exc), "repo": event.repo, number_payload_key: number},
         )
         return False
 
@@ -1147,10 +1210,23 @@ def _is_github_bot_login(login: str) -> bool:
 
 def _build_pr_opened_github_link_comment(author_github: str, invite_url: str) -> str:
     """Polished GitHub markdown asking an unverified PR author to link via Discord."""
+    return _build_opened_github_link_comment(author_github, invite_url, kind="PR")
+
+
+def _build_opened_github_link_comment(
+    author_github: str, invite_url: str, *, kind: str
+) -> str:
+    """Polished GitHub markdown asking an unverified author to link via Discord."""
+    opened_label = "PR" if kind == "PR" else "issue"
+    after_link = (
+        "reviews, merges, and more"
+        if kind == "PR"
+        else "assignments, mentions, and more"
+    )
     return (
         "### Link your account with Gitcord\n"
         "\n"
-        f"Thanks for opening this PR, **@{author_github}**!\n"
+        f"Thanks for opening this {opened_label}, **@{author_github}**!\n"
         "\n"
         "To receive Discord notifications and contributor tracking for this organization:\n"
         "\n"
@@ -1159,7 +1235,7 @@ def _build_pr_opened_github_link_comment(author_github: str, invite_url: str) ->
         "3. Paste the verification code into your GitHub **bio** (or a public gist)\n"
         f"4. Click **Verify** in Discord (or run `/verify-link {author_github}`)\n"
         "\n"
-        "Once linked, Gitcord can notify you about reviews, merges, and more.\n"
+        f"Once linked, Gitcord can notify you about {after_link}.\n"
         "\n"
         "— *Posted by Gitcord*"
     )

@@ -18,6 +18,7 @@ from ghdcbot.engine.notifications import (
     _build_pr_opened_github_link_comment,
     _sanitize_discord_pr_title,
     send_issue_opened_channel_notification,
+    send_issue_opened_github_link_comment,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
@@ -2344,6 +2345,76 @@ def test_build_pr_opened_github_link_comment_format() -> None:
     assert "`/link alice`" in body
     assert "`/verify-link alice`" in body
     assert "bio" in body.lower()
+    assert "opening this PR" in body
+
+
+def test_issue_opened_github_link_comment_posts_for_unverified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = []
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(github_user="stranger", issue_number=77),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is True
+    assert len(github_writer.comments) == 1
+    owner, repo, number, body = github_writer.comments[0]
+    assert owner == "AOSSIE-Org"
+    assert repo == "Gitcord-GithubDiscordBot"
+    assert number == 77
+    assert "opening this issue" in body
+    assert "/link stranger" in body
+    assert "issue_opened_github_link:Gitcord-GithubDiscordBot:77" in storage.notifications_sent
+
+
+def test_issue_opened_github_link_comment_skips_verified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(github_user="alice"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_issue_opened_github_link_comment_skips_when_disabled() -> None:
+    storage = MockStorage()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
 
 
 def test_pr_opened_github_link_comment_posts_for_unverified() -> None:

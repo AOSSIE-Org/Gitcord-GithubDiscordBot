@@ -21,3 +21,5 @@ github:
 
 discord:
   token: "${DISCORD_TOKEN}"
+  # Required for pr_opened_github_comment / issue_opened_github_comment (/link nudge).
+  invite_url: "https://discord.gg/YzDKeEfWtS"

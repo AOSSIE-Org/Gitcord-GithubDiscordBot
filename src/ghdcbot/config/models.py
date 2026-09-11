@@ -96,6 +96,8 @@ class NotificationConfig(BaseModel):
     issue_opened: bool = False
     # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.
     pr_opened_github_comment: bool = False
+    # When true, unverified issue authors get the same GitcordApp /link comment on the issue.
+    issue_opened_github_comment: bool = False
     # Edit the tracked PR-opened channel message when that PR is later merged/closed.
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
@@ -120,7 +122,7 @@ class DiscordConfig(BaseModel):
     guild_id: str
     token: str
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
-    # Optional: public Discord invite URL (used in GitHub PR link-nudge comments).
+    # Optional: public Discord invite URL (used in GitHub PR/issue link-nudge comments).
     invite_url: str | None = None
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
