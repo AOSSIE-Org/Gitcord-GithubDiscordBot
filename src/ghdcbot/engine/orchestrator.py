@@ -273,22 +273,16 @@ class Orchestrator:
                 close()
 
 
-def _notification_event_sort_key(event: ContributionEvent) -> tuple:
-    """Sort key so Discord notifications go out in chronological open/activity order.
+def _notification_event_sort_key(event: ContributionEvent) -> datetime:
+    """Sort key so Discord notifications go out in chronological order.
 
-    Ingestion often yields GitHub API order (newest-first within a repo). Sorting only
-    affects the notification pass — storage/cursor still use the original list.
+    Ingestion often yields GitHub API order (newest-first within a repo). Sorting
+    only affects the notification pass — storage/cursor still use the original list.
+
+    Equal timestamps keep ingestion order (stable sort) so timeline pairs like
+    unassign→assign at the same second are not reordered by event_type.
     """
-    payload = event.payload or {}
-    return (
-        event.created_at,
-        event.event_type,
-        event.repo,
-        str(payload.get("pr_number") or payload.get("issue_number") or ""),
-        event.github_user or "",
-        # Final tie-breaker: equal-time pr_reviewed rows stay deterministic across ingest order.
-        str(payload.get("review_id") or ""),
-    )
+    return event.created_at
 
 
 def _send_notifications_for_new_events(

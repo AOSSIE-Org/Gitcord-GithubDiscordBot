@@ -2565,6 +2565,111 @@ def test_update_issue_channel_announcement_skips_assign_when_closed() -> None:
     assert tracked["assignee_github"] is None
 
 
+def test_update_issue_channel_announcement_skips_assign_when_payload_closed() -> None:
+    """Missed close must not reopen the channel card via a late assign (payload state=closed)."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "888", "github_user": "bob"}]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github=None,
+        status="open",  # tracked never got the close update
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "issue_number": 7,
+            "title": "Fix docs",
+            "state": "closed",
+            "assigned_by": "mentor",
+        },
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert discord_writer.messages_edited == []
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] is None
+
+
+def test_update_issue_channel_announcement_skips_unassign_when_payload_closed() -> None:
+    storage = MockStorage()
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github="bob",
+        status="open",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_unassigned",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "issue_number": 7,
+            "title": "Fix docs",
+            "state": "closed",
+            "unassigned_at": "2026-09-11T08:00:00Z",
+        },
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is False
+    )
+    assert discord_writer.messages_edited == []
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
+
+
+def test_notification_sort_preserves_equal_timestamp_ingest_order() -> None:
+    """Same-second unassign→assign must not be reordered by event_type alphabetically."""
+    from ghdcbot.engine.orchestrator import _notification_event_sort_key
+
+    ts = datetime(2026, 9, 11, 8, 0, 0, tzinfo=UTC)
+    unassign = ContributionEvent(
+        github_user="bob",
+        event_type="issue_unassigned",
+        repo="Repo",
+        created_at=ts,
+        payload={"issue_number": 1, "unassigned_at": ts.isoformat()},
+    )
+    assign = ContributionEvent(
+        github_user="bob",
+        event_type="issue_assigned",
+        repo="Repo",
+        created_at=ts,
+        payload={"issue_number": 1},
+    )
+    # Timeline / ingest order: unassign then assign (reassignment).
+    ordered = sorted([unassign, assign], key=_notification_event_sort_key)
+    assert [e.event_type for e in ordered] == ["issue_unassigned", "issue_assigned"]
+    # Opposite ingest order stays opposite (stable sort on equal created_at).
+    ordered_rev = sorted([assign, unassign], key=_notification_event_sort_key)
+    assert [e.event_type for e in ordered_rev] == ["issue_assigned", "issue_unassigned"]
+
+
 def test_pr_opened_github_link_comment_concurrent_claim(tmp_path) -> None:
     storage = SqliteStorage(str(tmp_path))
     storage.init_schema()

@@ -655,8 +655,8 @@ def update_issue_channel_announcement_for_event(
     clear_assignee = False
 
     if event.event_type == "issue_assigned":
-        if status == "closed":
-            # Keep closed announcement (incl. Closed by) unchanged after late assigns.
+        if status == "closed" or _payload_issue_state_is_closed(event):
+            # Keep closed announcement unchanged (tracked or payload says closed).
             return False
         new_assignee = (event.github_user or "").strip()
         if not new_assignee or _is_github_bot_login(new_assignee):
@@ -667,7 +667,7 @@ def update_issue_channel_announcement_for_event(
         audit_actor = new_assignee
         dedupe_key = f"issue_channel_assign:{event.repo}:{issue_number}:{new_assignee.lower()}"
     elif event.event_type == "issue_unassigned":
-        if status == "closed":
+        if status == "closed" or _payload_issue_state_is_closed(event):
             return False
         removed = (event.github_user or "").strip()
         if not removed:
@@ -861,6 +861,12 @@ def update_issue_channel_announcement_for_event(
     # (tracked assignee_github already prevents duplicate no-op edits).
     _release_notification_claim(storage, dedupe_key)
     return True
+
+
+def _payload_issue_state_is_closed(event: ContributionEvent) -> bool:
+    """True when the GitHub issue payload reports state=closed."""
+    state = str((event.payload or {}).get("state") or "").strip().lower()
+    return state == "closed"
 
 
 def _parse_assignees(raw: object) -> list[str]:
