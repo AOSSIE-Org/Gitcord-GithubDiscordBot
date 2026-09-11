@@ -1467,12 +1467,10 @@ class TestRepoRecommendationAndAutocomplete:
 
     @pytest.mark.asyncio
     async def test_pr_status_single_pr_suppress_embeds(self) -> None:
-        """pr_status_cmd sends single PR status message with suppress_embeds=True."""
+        """PRStatusModal sends single PR status message with suppress_embeds=True."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        import discord
-
-        from ghdcbot.bot import run_bot
+        from ghdcbot.bot import PRStatusModal
         from ghdcbot.config.models import (
             BotConfig,
             DiscordConfig,
@@ -1496,34 +1494,6 @@ class TestRepoRecommendationAndAutocomplete:
             discord=DiscordConfig(guild_id="123", token="fake"),
         )
 
-        captured = []
-        orig_tree_init = discord.app_commands.CommandTree.__init__
-
-        def mock_tree_init(tree_self: Any, client: Any) -> None:
-            captured.append(tree_self)
-            orig_tree_init(tree_self, client)
-
-        with (
-            patch("ghdcbot.bot.load_config", return_value=cfg),
-            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
-            patch("ghdcbot.bot.build_adapter"),
-            patch("ghdcbot.bot.GitHubIdentityReader"),
-            patch("ghdcbot.bot.IdentityLinkService"),
-            patch("ghdcbot.bot.SocialProfileService"),
-            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
-            patch("discord.Client.run", side_effect=SystemExit(0)),
-        ):
-            try:
-                run_bot("dummy.yaml")
-            except SystemExit:
-                pass
-
-        pr_status = next(
-            cmd
-            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
-            if cmd.name == "pr-status"
-        )
-
         mock_interaction = MagicMock()
         mock_interaction.response.defer = AsyncMock()
         mock_interaction.followup.send = AsyncMock()
@@ -1544,8 +1514,11 @@ class TestRepoRecommendationAndAutocomplete:
             is_draft=False,
         )
 
+        modal = PRStatusModal(repo="Knowledge-Agent", config=cfg, github_adapter=MagicMock())
+        modal.pr_number._value = "1"
+
         with patch("ghdcbot.bot.fetch_pr_health", return_value=sample_health):
-            await pr_status.callback(mock_interaction, repo="Knowledge-Agent", pr_number=1)
+            await modal.on_submit(mock_interaction)
 
         mock_interaction.followup.send.assert_awaited_once()
         kwargs = mock_interaction.followup.send.call_args.kwargs
@@ -1862,12 +1835,10 @@ class TestRepoRecommendationAndAutocomplete:
 
     @pytest.mark.asyncio
     async def test_pr_status_cmd_auto_detects_repo_when_omitted(self) -> None:
-        """pr_status_cmd works end-to-end without repo argument (auto-resolves from config)."""
+        """PRStatusModal works end-to-end without repo argument (auto-resolves from config)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        import discord
-
-        from ghdcbot.bot import run_bot
+        from ghdcbot.bot import PRStatusModal
         from ghdcbot.config.models import (
             BotConfig,
             DiscordConfig,
@@ -1891,34 +1862,6 @@ class TestRepoRecommendationAndAutocomplete:
             discord=DiscordConfig(guild_id="123", token="fake"),
         )
 
-        captured = []
-        orig_tree_init = discord.app_commands.CommandTree.__init__
-
-        def mock_tree_init(tree_self: Any, client: Any) -> None:
-            captured.append(tree_self)
-            orig_tree_init(tree_self, client)
-
-        with (
-            patch("ghdcbot.bot.load_config", return_value=cfg),
-            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
-            patch("ghdcbot.bot.build_adapter"),
-            patch("ghdcbot.bot.GitHubIdentityReader"),
-            patch("ghdcbot.bot.IdentityLinkService"),
-            patch("ghdcbot.bot.SocialProfileService"),
-            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
-            patch("discord.Client.run", side_effect=SystemExit(0)),
-        ):
-            try:
-                run_bot("dummy.yaml")
-            except SystemExit:
-                pass
-
-        pr_status = next(
-            cmd
-            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
-            if cmd.name == "pr-status"
-        )
-
         mock_interaction = MagicMock()
         mock_interaction.response.defer = AsyncMock()
         mock_interaction.followup.send = AsyncMock()
@@ -1939,9 +1882,12 @@ class TestRepoRecommendationAndAutocomplete:
             is_draft=False,
         )
 
+        modal = PRStatusModal(repo=None, config=cfg, github_adapter=MagicMock())
+        modal.pr_number._value = "2"
+
         # Call WITHOUT repo parameter
         with patch("ghdcbot.bot.fetch_pr_health", return_value=sample_health) as mock_fetch:
-            await pr_status.callback(mock_interaction, repo=None, pr_number=2)
+            await modal.on_submit(mock_interaction)
 
         # Verify fetch_pr_health was called with auto-detected "Knowledge-Agent"
         mock_fetch.assert_called_once()
@@ -2065,12 +2011,10 @@ class TestRepoRecommendationAndAutocomplete:
 
     @pytest.mark.asyncio
     async def test_pr_status_cmd_informs_when_target_is_issue(self) -> None:
-        """When number points to an Issue rather than a PR, pr_status_cmd explains it clearly."""
+        """When number points to an Issue rather than a PR, PRStatusModal explains it clearly."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        import discord
-
-        from ghdcbot.bot import run_bot
+        from ghdcbot.bot import PRStatusModal
         from ghdcbot.config.models import (
             BotConfig,
             DiscordConfig,
@@ -2093,13 +2037,6 @@ class TestRepoRecommendationAndAutocomplete:
             discord=DiscordConfig(guild_id="123", token="fake"),
         )
 
-        captured = []
-        orig_tree_init = discord.app_commands.CommandTree.__init__
-
-        def mock_tree_init(tree_self: Any, client: Any) -> None:
-            captured.append(tree_self)
-            orig_tree_init(tree_self, client)
-
         mock_github = MagicMock()
         # get_pull_request returns None, get_issue returns an issue without 'pull_request'
         mock_github.get_pull_request.return_value = None
@@ -2108,32 +2045,14 @@ class TestRepoRecommendationAndAutocomplete:
             "state": "closed",
         }
 
-        with (
-            patch("ghdcbot.bot.load_config", return_value=cfg),
-            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
-            patch("ghdcbot.bot.build_adapter", return_value=mock_github),
-            patch("ghdcbot.bot.GitHubIdentityReader"),
-            patch("ghdcbot.bot.IdentityLinkService"),
-            patch("ghdcbot.bot.SocialProfileService"),
-            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
-            patch("discord.Client.run", side_effect=SystemExit(0)),
-        ):
-            try:
-                run_bot("dummy.yaml")
-            except SystemExit:
-                pass
-
-        pr_status = next(
-            cmd
-            for cmd in captured[0].get_commands(guild=discord.Object(id=123))
-            if cmd.name == "pr-status"
-        )
+        modal = PRStatusModal(repo=None, config=cfg, github_adapter=mock_github)
+        modal.pr_number._value = "1"
 
         mock_interaction = MagicMock()
         mock_interaction.response.defer = AsyncMock()
         mock_interaction.followup.send = AsyncMock()
 
-        await pr_status.callback(mock_interaction, repo=None, pr_number=1)
+        await modal.on_submit(mock_interaction)
 
         mock_interaction.followup.send.assert_awaited_once()
         msg = mock_interaction.followup.send.call_args[0][0]

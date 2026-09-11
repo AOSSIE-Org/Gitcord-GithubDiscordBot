@@ -1341,7 +1341,7 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0x8250DF
-    assert "Merged:" in embeds[0]["title"]
+    assert "Merged 🟣" in embeds[0]["title"]
     assert "Merged by @mentor1" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
@@ -1408,7 +1408,7 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "Closed:" in embeds[0]["title"]
+    assert "Closed 🔴" in embeds[0]["title"]
     assert "Closed by @bob" in embeds[0]["description"]
 
 
@@ -1585,6 +1585,68 @@ def test_update_pr_channel_announcement_releases_claim_when_status_mark_fails() 
     dedupe_key = "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:merged"
     assert not storage.was_notification_sent(dedupe_key)
     # Status stayed open so a later sync can retry mark after claim release.
+    assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
+
+
+def test_update_pr_channel_announcement_releases_claim_when_audit_fails() -> None:
+    """If audit appending fails, release claim for the closed event so reopen can still happen."""
+    import pytest
+
+    storage = MockStorage()
+    discord_writer = MockDiscordWriter()
+    storage.save_pr_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        pr_number=42,
+        channel_id="chan-1",
+        message_id="msg-9",
+        pr_title="Test PR",
+        author_github="alice",
+        status="open",
+    )
+
+    def _boom(*args, **kwargs) -> None:
+        raise RuntimeError("audit failed")
+
+    storage.append_audit_event = _boom  # type: ignore[method-assign]
+    config = NotificationConfig(enabled=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    # 1. Simulate pr_closed
+    close_event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_closed",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "title": "Test PR", "closed_by": "mentor1"},
+    )
+
+    with pytest.raises(RuntimeError, match="audit failed"):
+        update_pr_channel_announcement_for_event(
+            close_event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+
+    # Discord was edited and DB was marked closed, but dedupe was released.
+    assert len(discord_writer.messages_edited) == 1
+    assert discord_writer.messages_edited[0][2] == ""
+    assert "Closed 🔴" in discord_writer.messages_edited[0][3][0]["title"]
+
+    # 2. Simulate pr_reopened
+    reopen_event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_reopened",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "title": "Test PR"},
+    )
+
+    # Even if audit fails again, the Discord edit happens and DB marks it reopened.
+    with pytest.raises(RuntimeError, match="audit failed"):
+        update_pr_channel_announcement_for_event(
+            reopen_event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+
+    assert len(discord_writer.messages_edited) == 2
+    assert "Test PR" in discord_writer.messages_edited[1][2]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
 
 
