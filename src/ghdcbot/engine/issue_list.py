@@ -258,4 +258,4 @@ def resolve_repo_for_issue(
     if not configured_repos:
         return None, "❌ No repositories configured in Gitcord."
 
-    return None, "❌ Could not auto-detect repository from this channel. Please run this command in a project channel."
+    return None, "❌ Could not auto-detect repository from this channel. Please run this command in a project channel or specify repo."

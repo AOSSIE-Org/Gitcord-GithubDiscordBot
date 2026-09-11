@@ -975,15 +975,17 @@ def run_bot(config_path: str) -> None:
 
     @tree.command(
         name="issue",
-        description="List recent open issues in the project channel (excluding PRs)",
+        description="List recent open issues in the project channel or specified repository (excluding PRs)",
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(
+        repo="Repository name (optional; auto-detected from channel or config if omitted)",
         limit="How many recent open issues to show (optional, default 10, max 50)",
     )
     @app_commands.checks.cooldown(1, 15.0)
     async def issue_cmd(
         interaction: discord.Interaction,
+        repo: str | None = None,
         limit: app_commands.Range[int, 1, 50] = 10,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -994,6 +996,7 @@ def run_bot(config_path: str) -> None:
             config=config,
             channel_id=channel_id,
             channel_name=channel_name,
+            repo=repo,
         )
         if error_msg or not resolved_repo:
             await interaction.followup.send(
@@ -1059,6 +1062,20 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True,
                 suppress_embeds=True,
             )
+
+    @issue_cmd.autocomplete("repo")
+    async def issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        configured_repos = get_configured_repo_names(config)
+        suggestions = filter_repo_suggestions(configured_repos, current)
+        logger.debug(
+            "Autocomplete for issue repo: current=%r, suggestions=%s",
+            current,
+            suggestions,
+        )
+        return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
         name="who-is",
