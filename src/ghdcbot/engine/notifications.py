@@ -608,13 +608,19 @@ def update_issue_channel_announcement_for_event(
     config: NotificationConfig,
     github_org: str,
 ) -> bool:
-    """Edit a tracked issue channel message on assign, unassign, or close.
+    """Edit a tracked issue channel message on assign, unassign, close, or reopen.
 
-    Keeps Opened by always; Assigned to lists current assignees (or None); close adds Closed by.
+    Open posts list Opened by / assignees; closed posts show only Closed by.
+    Reopen restores the open announcement from tracked author/assignees.
     """
     if not config.enabled or not getattr(config, "update_issue_channel_on_lifecycle", True):
         return False
-    if event.event_type not in {"issue_assigned", "issue_unassigned", "issue_closed"}:
+    if event.event_type not in {
+        "issue_assigned",
+        "issue_unassigned",
+        "issue_closed",
+        "issue_reopened",
+    }:
         return False
     if not policy.allow_discord_mutations:
         return False
@@ -672,6 +678,15 @@ def update_issue_channel_announcement_for_event(
         dedupe_key = (
             f"issue_channel_unassign:{event.repo}:{issue_number}:"
             f"{removed.lower()}:{unassigned_at}"
+        )
+    elif event.event_type == "issue_reopened":
+        if status == "open":
+            return False
+        status = "open"
+        audit_actor = author_github
+        reopened_at = event.payload.get("reopened_at") or event.created_at.isoformat()
+        dedupe_key = (
+            f"issue_channel_lifecycle:{event.repo}:{issue_number}:open:{reopened_at}"
         )
     else:
         if status == "closed":
@@ -802,6 +817,13 @@ def update_issue_channel_announcement_for_event(
                         assignee_github=assignee_stored,
                         issue_title=str(title) if title else None,
                     )
+            elif event.event_type == "issue_reopened":
+                update(
+                    event.repo,
+                    int(issue_number),
+                    status="open",
+                    issue_title=str(title) if title else None,
+                )
             else:
                 update(
                     event.repo,
@@ -892,16 +914,25 @@ def _build_issue_channel_message(
     closed_by_github: str | None,
     include_link_nudge: bool,
 ) -> str | None:
-    """Build issue channel announcement text (open or closed)."""
+    """Build issue channel announcement text (open or closed).
+
+    Open posts include Opened by / Assigned to. Closed posts keep only the
+    Closed header and Closed by status (metadata returns on reopen).
+    """
     issue_title = _sanitize_discord_pr_title(title)
     url = _suppress_discord_embed(
         f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
     )
     if status == "closed":
         header = f"🔒 **Closed: [{repo} #{issue_number} — {issue_title}]({url})**"
-    else:
-        header = f"🆕 **New Issue: [{repo} #{issue_number} — {issue_title}]({url})**"
+        closer = (closed_by_github or "").lstrip("@").strip()
+        if closer:
+            status_line = f"**Status:** Closed by @{closer}"
+        else:
+            status_line = "**Status:** Closed"
+        return "\n".join([header, "", status_line])
 
+    header = f"🆕 **New Issue: [{repo} #{issue_number} — {issue_title}]({url})**"
     opened_line = (
         f"**Opened by:** {_format_github_discord_person(author_github, author_discord_id)}"
     )
@@ -916,13 +947,7 @@ def _build_issue_channel_message(
         assigned_line = "**Assigned to:** None"
 
     lines = [header, "", opened_line, assigned_line]
-    if status == "closed":
-        closer = (closed_by_github or "").lstrip("@").strip()
-        if closer:
-            lines.append(f"**Status:** Closed by @{closer}")
-        else:
-            lines.append("**Status:** Closed")
-    elif include_link_nudge:
+    if include_link_nudge:
         lines.extend(
             [
                 "",

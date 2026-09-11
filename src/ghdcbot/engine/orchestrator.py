@@ -373,7 +373,12 @@ def _send_notifications_for_new_events(
                             "pr_number": event.payload.get("pr_number"),
                         },
                     )
-            if event.event_type in {"issue_assigned", "issue_unassigned", "issue_closed"}:
+            if event.event_type in {
+                "issue_assigned",
+                "issue_unassigned",
+                "issue_closed",
+                "issue_reopened",
+            }:
                 try:
                     if update_issue_channel_announcement_for_event(
                         event, storage, discord_writer, policy, config, github_org

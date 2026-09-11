@@ -2170,13 +2170,13 @@ def test_update_issue_channel_announcement_edits_on_close() -> None:
     )
     content = discord_writer.messages_edited[0][2]
     assert "Closed: [Gitcord-GithubDiscordBot #7" in content
-    assert "**Opened by:** alice - <@999>" in content
-    assert "**Assigned to:** bob - <@888>" in content
+    assert "**Opened by:**" not in content
+    assert "**Assigned to:**" not in content
     assert "**Status:** Closed by @mentor1" in content
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "closed"
 
 
-def test_update_issue_channel_announcement_close_keeps_assigned_none() -> None:
+def test_update_issue_channel_announcement_close_omits_opened_and_assigned() -> None:
     storage = MockStorage()
     storage.save_issue_channel_announcement(
         repo="Gitcord-GithubDiscordBot",
@@ -2206,8 +2206,55 @@ def test_update_issue_channel_announcement_close_keeps_assigned_none() -> None:
         is True
     )
     content = discord_writer.messages_edited[0][2]
-    assert "**Assigned to:** None" in content
-    assert "**Opened by:** alice" in content
+    assert "**Opened by:**" not in content
+    assert "**Assigned to:**" not in content
+    assert "**Status:** Closed by @alice" in content
+
+
+def test_update_issue_channel_announcement_reopen_restores_opened_and_assigned() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"},
+        {"discord_user_id": "888", "github_user": "bob"},
+    ]
+    storage.save_issue_channel_announcement(
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=7,
+        channel_id="chan",
+        message_id="m42",
+        issue_title="Fix docs",
+        author_github="alice",
+        assignee_github="bob",
+        status="closed",
+    )
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, update_issue_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="bob",
+        event_type="issue_reopened",
+        repo="Gitcord-GithubDiscordBot",
+        created_at=datetime.now(UTC),
+        payload={
+            "issue_number": 7,
+            "title": "Fix docs",
+            "assignee": "bob",
+            "reopened_at": "2026-09-11T08:00:00Z",
+        },
+    )
+
+    assert (
+        update_issue_channel_announcement_for_event(
+            event, storage, discord_writer, policy, config, "AOSSIE-Org"
+        )
+        is True
+    )
+    content = discord_writer.messages_edited[0][2]
+    assert "New Issue: [Gitcord-GithubDiscordBot #7" in content
+    assert "**Opened by:** alice - <@999>" in content
+    assert "**Assigned to:** bob - <@888>" in content
+    assert "**Status:**" not in content
+    assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "open"
 
 
 def test_update_issue_channel_announcement_skips_untracked() -> None:

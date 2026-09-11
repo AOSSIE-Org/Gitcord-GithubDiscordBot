@@ -1696,6 +1696,18 @@ class GitHubRestAdapter:
                 [assignee_login] if assignee_login else []
             )
             if not assignees_to_notify:
+                # Still emit one reopen for channel lifecycle; DM is skipped (no assignee).
+                payload = _issue_payload(issue)
+                payload["reopened_at"] = event.get("created_at")
+                actor = event.get("actor") if isinstance(event.get("actor"), dict) else None
+                actor_login = (actor.get("login") if actor else None) or "unknown"
+                yield ContributionEvent(
+                    github_user=actor_login,
+                    event_type="issue_reopened",
+                    repo=repo,
+                    created_at=created_at,
+                    payload=payload,
+                )
                 continue
 
             for resolved_assignee in assignees_to_notify:
