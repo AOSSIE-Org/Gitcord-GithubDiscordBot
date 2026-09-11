@@ -103,6 +103,10 @@ def _append_repo_search_qualifiers(
     return query
 
 
+class GitHubPaginationError(RuntimeError):
+    """Raised when GitHub pagination encounters an HTTP or network error."""
+
+
 class GitHubRestAdapter:
     def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -113,7 +117,6 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
-        self._last_paginate_error = False
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
@@ -644,20 +647,24 @@ class GitHubRestAdapter:
         issues: list[dict] = []
         page_size = max(1, min(per_page, 100))
         params = {"state": "open", "sort": "created", "direction": "desc", "per_page": page_size}
-        pages = self._paginate(f"/repos/{owner}/{repo}/issues", params=params)
-        if pages is None:
-            return None
-        for page in pages:
-            if page is None:
+        try:
+            pages = self._paginate(
+                f"/repos/{owner}/{repo}/issues",
+                params=params,
+                raise_on_error=True,
+            )
+            if pages is None:
                 return None
-            for item in page:
-                if "pull_request" in item:
-                    continue
-                issues.append(item)
-                if len(issues) >= limit:
-                    return issues
-
-        if getattr(self, "_last_paginate_error", False):
+            for page in pages:
+                if page is None:
+                    return None
+                for item in page:
+                    if "pull_request" in item:
+                        continue
+                    issues.append(item)
+                    if len(issues) >= limit:
+                        return issues
+        except GitHubPaginationError:
             return None
 
         return issues
@@ -1814,16 +1821,25 @@ class GitHubRestAdapter:
                     "created_at": pr.get("created_at"),
                 }
 
-    def _paginate(self, path: str, params: dict) -> Iterator[list]:
-        self._last_paginate_error = False
+    def _paginate(
+        self,
+        path: str,
+        params: dict,
+        *,
+        raise_on_error: bool = False,
+    ) -> Iterator[list]:
         page = 1
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
-                self._last_paginate_error = True
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request failed: {path}")
                 return
             if response.status_code != 200:
-                self._last_paginate_error = True
+                if raise_on_error:
+                    raise GitHubPaginationError(
+                        f"GitHub request failed with status {response.status_code}: {path}"
+                    )
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
@@ -1853,16 +1869,26 @@ class GitHubRestAdapter:
                 repos.extend(page)
         return repos, response.status_code
 
-    def _paginate_from_page(self, path: str, params: dict, start_page: int) -> Iterator[list]:
-        self._last_paginate_error = False
+    def _paginate_from_page(
+        self,
+        path: str,
+        params: dict,
+        start_page: int,
+        *,
+        raise_on_error: bool = False,
+    ) -> Iterator[list]:
         page = start_page
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
-                self._last_paginate_error = True
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request failed: {path}")
                 return
             if response.status_code != 200:
-                self._last_paginate_error = True
+                if raise_on_error:
+                    raise GitHubPaginationError(
+                        f"GitHub request failed with status {response.status_code}: {path}"
+                    )
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},

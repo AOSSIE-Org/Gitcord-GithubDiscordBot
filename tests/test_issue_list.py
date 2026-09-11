@@ -189,6 +189,7 @@ def test_github_rest_adapter_list_repo_open_issues():
         adapter._paginate.assert_called_once_with(
             "/repos/fake-org/fake-repo/issues",
             params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
+            raise_on_error=True,
         )
 
         # Verify per_page specifies GitHub API page size
@@ -198,6 +199,7 @@ def test_github_rest_adapter_list_repo_open_issues():
         adapter._paginate.assert_called_once_with(
             "/repos/fake-org/fake-repo/issues",
             params={"state": "open", "sort": "created", "direction": "desc", "per_page": 25},
+            raise_on_error=True,
         )
 
         # Verify per_page > 100 is clamped and does not exceed limit
@@ -209,6 +211,7 @@ def test_github_rest_adapter_list_repo_open_issues():
         adapter._paginate.assert_called_once_with(
             "/repos/fake-org/fake-repo/issues",
             params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
+            raise_on_error=True,
         )
 
         # Verify non-positive limit returns empty list without making API calls
@@ -220,6 +223,12 @@ def test_github_rest_adapter_list_repo_open_issues():
         adapter._paginate = MagicMock(return_value=None)
         assert adapter.list_repo_open_issues("fake-org", "fake-repo") is None
         adapter._paginate = MagicMock(return_value=[None])
+        assert adapter.list_repo_open_issues("fake-org", "fake-repo") is None
+
+        # Verify GitHubPaginationError propagates as None
+        from ghdcbot.adapters.github.rest import GitHubPaginationError
+
+        adapter._paginate = MagicMock(side_effect=GitHubPaginationError("Request failed"))
         assert adapter.list_repo_open_issues("fake-org", "fake-repo") is None
 
     assert adapter._client.is_closed
@@ -244,63 +253,162 @@ def test_github_rest_adapter_list_repo_open_issues():
     assert real_paginate_adapter._client.is_closed
 
 
-def test_issue_handling_fetch_error_vs_empty():
+def test_list_repo_open_issues_concurrency() -> None:
+    """Concurrent list_repo_open_issues invocations do not corrupt each other's error state."""
+    import concurrent.futures
+    from typing import Any
+    from unittest.mock import MagicMock
+
+    from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+    with GitHubRestAdapter("fake-token", "fake-org", "https://api.github.com") as adapter:
+        def fake_request(method: str, path: str, params: dict | None = None) -> Any:
+            if "fail-repo" in path:
+                return MagicMock(status_code=500)
+            if "success-repo" in path:
+                res = MagicMock(status_code=200)
+                res.json.return_value = [{"number": 1, "title": "Success issue", "state": "open"}]
+                res.headers = {}
+                return res
+            return None
+
+        adapter._request = MagicMock(side_effect=fake_request)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            fut_fail = executor.submit(adapter.list_repo_open_issues, "fake-org", "fail-repo")
+            fut_success = executor.submit(adapter.list_repo_open_issues, "fake-org", "success-repo")
+
+            assert fut_fail.result() is None
+            success_issues = fut_success.result()
+            assert success_issues is not None
+            assert len(success_issues) == 1
+            assert success_issues[0]["number"] == 1
+
+
+def test_issue_handling_fetch_error_vs_empty() -> None:
+    """Exercise real issue_cmd.callback with None (fetch error) and [] (empty list)."""
     import asyncio
-    from unittest.mock import AsyncMock
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock, patch
 
-    async def _handle(raw_issues: list[dict] | None) -> list[dict]:
-        followup = AsyncMock()
-        if raw_issues is None:
-            await followup.send(
-                "❌ Error fetching issues. Please try again later.",
-                ephemeral=True,
-            )
-        else:
-            issues = filter_open_issues(raw_issues, limit=10)
-            messages = format_issue_list_messages(
-                issues=issues,
-                org="fake-org",
-                repo="fake-repo",
-                limit=10,
-            )
-            for message in messages:
-                await followup.send(
-                    message,
-                    ephemeral=True,
-                    suppress_embeds=True,
-                )
-        return followup.send.call_args_list
+    import discord
 
-    # Error case (raw_issues is None)
-    calls_err = asyncio.run(_handle(None))
-    assert len(calls_err) == 1
-    assert "❌ Error fetching issues. Please try again later." in calls_err[0].args[0]
+    from ghdcbot.bot import run_bot
+    from ghdcbot.config.models import (
+        BotConfig,
+        DiscordConfig,
+        GitHubConfig,
+        RepoFilterConfig,
+        RuntimeConfig,
+    )
 
-    # Empty case (raw_issues is [])
-    calls_empty = asyncio.run(_handle([]))
-    assert len(calls_empty) == 1
-    assert "No open issues found in **fake-repo**." in calls_empty[0].args[0]
+    cfg = BotConfig(
+        runtime=RuntimeConfig(
+            data_dir="./data",
+            github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        ),
+        github=GitHubConfig(
+            org="test-org",
+            repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent", "Devr.AI"]),
+        ),
+        discord=DiscordConfig(guild_id="123", token="fake"),
+    )
+
+    captured = []
+    orig_tree_init = discord.app_commands.CommandTree.__init__
+
+    def mock_tree_init(tree_self: Any, client: Any) -> None:
+        captured.append(tree_self)
+        orig_tree_init(tree_self, client)
+
+    mock_gh = MagicMock()
+
+    with (
+        patch("ghdcbot.bot.load_config", return_value=cfg),
+        patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+        patch("ghdcbot.bot.build_adapter", return_value=mock_gh),
+        patch("ghdcbot.bot.GitHubIdentityReader"),
+        patch("ghdcbot.bot.IdentityLinkService"),
+        patch("ghdcbot.bot.SocialProfileService"),
+        patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+        patch("discord.Client.run", side_effect=SystemExit(0)),
+    ):
+        try:
+            run_bot("dummy.yaml")
+        except SystemExit:
+            pass
+
+    tree = captured[0]
+    issue_cmd = next(c for c in tree.get_commands(guild=discord.Object(id=123)) if c.name == "issue")
+
+    # 1. Error case (list_repo_open_issues returns None)
+    mock_gh.list_repo_open_issues.return_value = None
+    mock_interaction = MagicMock()
+    mock_interaction.response.defer = AsyncMock()
+    mock_interaction.followup.send = AsyncMock()
+    mock_interaction.channel_id = 99999
+    mock_interaction.channel.name = "general"
+    mock_interaction.user.id = 456
+
+    asyncio.run(issue_cmd.callback(mock_interaction, repo="Devr.AI", limit=5))
+
+    mock_interaction.followup.send.assert_called_once()
+    err_text = mock_interaction.followup.send.call_args[0][0]
+    assert "❌ Error fetching issues. Please try again later." in err_text
+
+    # 2. Empty case (list_repo_open_issues returns [])
+    mock_gh.list_repo_open_issues.return_value = []
+    mock_interaction.followup.send.reset_mock()
+
+    asyncio.run(issue_cmd.callback(mock_interaction, repo="Devr.AI", limit=5))
+
+    mock_interaction.followup.send.assert_called_once()
+    empty_text = mock_interaction.followup.send.call_args[0][0]
+    assert "No open issues found in **Devr.AI**." in empty_text
 
 
 def test_issue_repo_autocomplete_choice_creation() -> None:
-    """Issue repo autocomplete choices filter and map correctly."""
-    from discord import app_commands
+    """Issue repo autocomplete choices filter and map correctly via get_issue_repo_choices."""
+    from ghdcbot.bot import get_issue_repo_choices
+    from ghdcbot.config.models import (
+        BotConfig,
+        DiscordConfig,
+        GitHubConfig,
+        RepoFilterConfig,
+        RuntimeConfig,
+    )
 
-    from ghdcbot.engine.pr_status import filter_repo_suggestions
+    cfg = BotConfig(
+        runtime=RuntimeConfig(
+            data_dir="./data",
+            github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        ),
+        github=GitHubConfig(
+            org="test-org",
+            repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent", "Devr.AI"]),
+        ),
+        discord=DiscordConfig(guild_id="123", token="fake"),
+    )
 
-    repos = ["Knowledge-Agent", "Devr.AI", "Gitcord"]
-    suggestions = filter_repo_suggestions(repos, "know")
-    choices = [app_commands.Choice(name=r, value=r) for r in suggestions]
+    choices = get_issue_repo_choices(cfg, "dev")
     assert len(choices) == 1
-    assert choices[0].name == "Knowledge-Agent"
-    assert choices[0].value == "Knowledge-Agent"
+    assert choices[0].name == "Devr.AI"
+    assert choices[0].value == "Devr.AI"
+
+    # Multiple match
+    all_choices = get_issue_repo_choices(cfg, "")
+    assert len(all_choices) == 2
+    assert [c.name for c in all_choices] == ["Knowledge-Agent", "Devr.AI"]
 
 
 def test_issue_repo_autocomplete_integration() -> None:
     """In run_bot, /issue command has repo param with autocomplete connected to config."""
-    import asyncio
     from typing import Any
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     import discord
 
@@ -359,18 +467,10 @@ def test_issue_repo_autocomplete_integration() -> None:
     assert len(issue_cmds) == 1
     issue = issue_cmds[0]
 
-    # Verify repo parameter exists and has autocomplete registered
+    # Verify repo parameter exists and has autocomplete registered using public API
     repo_params = [p for p in issue.parameters if p.name == "repo"]
     assert len(repo_params) == 1
     assert repo_params[0].autocomplete is True
-
-    # Call the autocomplete callback and verify suggestions from config
-    callback = issue._params["repo"].autocomplete
-    mock_interaction = MagicMock()
-    choices = asyncio.run(callback(mock_interaction, "dev"))
-    assert len(choices) == 1
-    assert choices[0].name == "Devr.AI"
-    assert choices[0].value == "Devr.AI"
 
 
 def test_issue_cmd_with_explicit_repo() -> None:

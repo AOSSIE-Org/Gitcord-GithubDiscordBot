@@ -397,6 +397,15 @@ async def handle_app_command_error(
             logger.error("Could not send error message to user")
 
 
+def get_issue_repo_choices(
+    config: Any, current: str
+) -> list[app_commands.Choice[str]]:
+    """Generate autocomplete choices for the /issue repo option from config."""
+    configured_repos = get_configured_repo_names(config)
+    suggestions = filter_repo_suggestions(configured_repos, current)
+    return [app_commands.Choice(name=r, value=r) for r in suggestions]
+
+
 def run_bot(config_path: str) -> None:
     """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
@@ -1068,14 +1077,13 @@ def run_bot(config_path: str) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        configured_repos = get_configured_repo_names(config)
-        suggestions = filter_repo_suggestions(configured_repos, current)
+        choices = get_issue_repo_choices(config, current)
         logger.debug(
-            "Autocomplete for issue repo: current=%r, suggestions=%s",
+            "Autocomplete for issue repo: current=%r, count=%d",
             current,
-            suggestions,
+            len(choices),
         )
-        return [app_commands.Choice(name=r, value=r) for r in suggestions]
+        return choices
 
     @tree.command(
         name="who-is",
