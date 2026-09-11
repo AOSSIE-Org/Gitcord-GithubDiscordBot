@@ -38,6 +38,7 @@ from ghdcbot.engine.pr_context import (
 )
 from ghdcbot.engine.pr_list import (
     clamp_pr_list_args,
+    filter_prs_by_repo,
     format_pr_list_messages,
     select_recent_prs,
 )
@@ -49,6 +50,7 @@ from ghdcbot.engine.pr_status import (
     format_all_pr_status,
     format_single_pr_status,
     get_configured_repo_names,
+    is_repo_allowed,
     resolve_repo_for_pr,
 )
 from ghdcbot.engine.social_profiles import SocialProfileService
@@ -764,6 +766,7 @@ def run_bot(config_path: str) -> None:
     )
     @app_commands.describe(
         contributor="Discord member whose PRs to list",
+        repo="Repository name (optional; omit for all configured repos)",
         count="How many recent PRs to show (optional, default 10, max 100)",
         skip="How many recent PRs to skip first (M, optional)",
     )
@@ -771,18 +774,21 @@ def run_bot(config_path: str) -> None:
     async def pr_list_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member,
+        repo: str | None = None,
         count: app_commands.Range[int, 1, 100] | None = None,
         skip: app_commands.Range[int, 0, 500] = 0,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
         n, m = clamp_pr_list_args(count=count, skip=int(skip))
+        repo_name = (repo or "").strip() or None
         logger.info(
             "/pr requested",
             extra={
                 "requested_count": count,
                 "effective_count": n,
                 "skip": m,
+                "repo": repo_name,
                 "contributor_id": str(contributor.id),
             },
         )
@@ -797,6 +803,15 @@ def run_bot(config_path: str) -> None:
             )
             return
 
+        if repo_name:
+            repo_filter = getattr(getattr(config, "github", None), "repos", None)
+            if not is_repo_allowed(repo_filter, repo_name):
+                await interaction.followup.send(
+                    f"❌ Repository **{repo_name}** is not allowed by Gitcord configuration.",
+                    ephemeral=True,
+                )
+                return
+
         try:
             list_for_author = getattr(github_adapter, "list_pull_requests_for_author", None)
             if not callable(list_for_author):
@@ -805,11 +820,31 @@ def run_bot(config_path: str) -> None:
                     ephemeral=True,
                 )
                 return
-            all_prs = await asyncio.to_thread(list_for_author, github_user)
+            all_prs = await asyncio.to_thread(
+                list_for_author, github_user, repo=repo_name
+            )
+        except TypeError:
+            # Older adapters may not accept repo=; fall back and filter locally.
+            try:
+                all_prs = await asyncio.to_thread(list_for_author, github_user)
+            except Exception:
+                logger.exception(
+                    "Failed to list pull requests for /pr",
+                    extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+                )
+                await interaction.followup.send(
+                    "❌ Error fetching PRs. Please try again later.",
+                    ephemeral=True,
+                )
+                return
         except Exception:
             logger.exception(
                 "Failed to list pull requests for /pr",
-                extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+                extra={
+                    "github_user": github_user,
+                    "discord_user_id": str(contributor.id),
+                    "repo": repo_name,
+                },
             )
             await interaction.followup.send(
                 "❌ Error fetching PRs. Please try again later.",
@@ -817,7 +852,8 @@ def run_bot(config_path: str) -> None:
             )
             return
 
-        selected = select_recent_prs(all_prs, count=n, skip=m)
+        scoped = filter_prs_by_repo(all_prs, repo_name)
+        selected = select_recent_prs(scoped, count=n, skip=m)
         messages = format_pr_list_messages(
             contributor_mention=contributor.mention,
             github_user=github_user,
@@ -825,6 +861,7 @@ def run_bot(config_path: str) -> None:
             org=config.github.org,
             count=n,
             skip=m,
+            repo=repo_name,
         )
         for message in messages:
             await interaction.followup.send(
@@ -832,6 +869,20 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True,
                 suppress_embeds=True,
             )
+
+    @pr_list_cmd.autocomplete("repo")
+    async def pr_list_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        configured_repos = get_configured_repo_names(config)
+        suggestions = filter_repo_suggestions(configured_repos, current)
+        logger.debug(
+            "Autocomplete for /pr repo: current=%r, suggestions=%s",
+            current,
+            suggestions,
+        )
+        return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
         name="who-is",

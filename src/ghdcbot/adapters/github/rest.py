@@ -183,11 +183,14 @@ class GitHubRestAdapter:
             log_label="open PRs",
         )
 
-    def list_pull_requests_for_author(self, github_user: str) -> list[dict]:
+    def list_pull_requests_for_author(
+        self, github_user: str, *, repo: str | None = None
+    ) -> list[dict]:
         """List recent PRs (open/merged/closed) for one author via Search API.
 
         Newest-updated first. Each item includes ``status``: open | merged | closed.
         Scoped to the configured org and active repo allowlist/denylist.
+        When ``repo`` is set, search is limited to that repository name.
         """
         return self._search_pull_requests_for_author(
             github_user,
@@ -196,6 +199,7 @@ class GitHubRestAdapter:
             log_label="PRs",
             sort="updated",
             order="desc",
+            repo=repo,
         )
 
     def _search_pull_requests_for_author(
@@ -207,6 +211,7 @@ class GitHubRestAdapter:
         log_label: str,
         sort: str | None = None,
         order: str | None = None,
+        repo: str | None = None,
     ) -> list[dict]:
         author = (github_user or "").strip()
         if not author:
@@ -222,11 +227,25 @@ class GitHubRestAdapter:
             else:
                 denied_names = names
 
+        repo_name = (repo or "").strip()
+        if repo_name:
+            allowed_lower = (
+                {n.lower() for n in allowed_names} if allowed_names is not None else None
+            )
+            denied_lower = {n.lower() for n in denied_names}
+            if allowed_lower is not None and repo_name.lower() not in allowed_lower:
+                return []
+            if repo_name.lower() in denied_lower:
+                return []
+            scope = f"repo:{self._org}/{repo_name}"
+        else:
+            scope = f"org:{self._org}"
+
         extra = (query_extra or "").strip()
-        base_query = f"is:pr author:{author} org:{self._org}"
+        base_query = f"is:pr author:{author} {scope}"
         if extra:
-            base_query = f"is:pr {extra} author:{author} org:{self._org}"
-        # Org-scoped search only; allow/deny applied below per result.
+            base_query = f"is:pr {extra} author:{author} {scope}"
+        # Org/repo-scoped search; allow/deny still applied below per result.
         queries = _build_author_pr_search_queries(base_query)
 
         results: list[dict] = []
