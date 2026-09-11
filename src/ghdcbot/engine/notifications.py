@@ -512,7 +512,7 @@ def send_issue_opened_channel_notification(
     ]
 
     dedupe_key = f"issue_opened_channel:{event.repo}:{issue_number}:{channel_id}"
-    message = _build_issue_channel_message(
+    message_built = _build_issue_channel_message(
         github_org=github_org,
         repo=event.repo,
         issue_number=int(issue_number),
@@ -524,6 +524,9 @@ def send_issue_opened_channel_notification(
         closed_by_github=None,
         include_link_nudge=author_discord_id is None,
     )
+    if not message_built:
+        return False
+    message, _embeds = message_built
     if not message:
         return False
 
@@ -710,7 +713,7 @@ def update_issue_channel_announcement_for_event(
         or tracked.get("issue_title")
         or "Untitled"
     )
-    message = _build_issue_channel_message(
+    message_built = _build_issue_channel_message(
         github_org=github_org,
         repo=event.repo,
         issue_number=int(issue_number),
@@ -722,8 +725,9 @@ def update_issue_channel_announcement_for_event(
         closed_by_github=closed_by_github,
         include_link_nudge=False,
     )
-    if not message:
+    if not message_built:
         return False
+    message, embeds = message_built
 
     try:
         claimed = _claim_notification_sent(
@@ -755,16 +759,22 @@ def update_issue_channel_announcement_for_event(
                 str(tracked["channel_id"]),
                 str(tracked["message_id"]),
                 message,
+                embeds=embeds,
             )
         )
     except TypeError:
+        # Older DiscordWriter mocks/adapters without embeds kwarg.
+        if embeds:
+            emb = embeds[0]
+            fallback = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+        else:
+            fallback = message or ""
         try:
             edited = bool(
                 edit_msg(
                     str(tracked["channel_id"]),
                     str(tracked["message_id"]),
-                    message,
-                    embeds=None,
+                    fallback,
                 )
             )
         except Exception as exc:
@@ -901,6 +911,11 @@ def _format_github_discord_person(github_user: str, discord_user_id: str | None)
     return f"{gh} - unknown"
 
 
+# GitHub Primer status colors (match PR badge hues in the GitHub UI).
+_GITHUB_MERGED_PURPLE = 0x8250DF  # Primer done/merged
+_GITHUB_CLOSED_RED = 0xCF222E  # Primer danger/closed
+
+
 def _build_issue_channel_message(
     *,
     github_org: str,
@@ -913,25 +928,33 @@ def _build_issue_channel_message(
     status: str,
     closed_by_github: str | None,
     include_link_nudge: bool,
-) -> str | None:
-    """Build issue channel announcement text (open or closed).
+) -> tuple[str, list[dict]] | None:
+    """Build issue channel announcement content + embeds.
 
-    Open posts include Opened by / Assigned to. Closed posts keep only the
-    Closed header and Closed by status (metadata returns on reopen).
+    Open posts: plain text (Opened by / Assigned to). Closed posts: red embed
+    card matching PR close styling (empty content so Discord shows one box).
     """
     issue_title = _sanitize_discord_pr_title(title)
-    url = _suppress_discord_embed(
-        f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
-    )
+    raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
     if status == "closed":
-        header = f"🔒 **Closed: [{repo} #{issue_number} — {issue_title}]({url})**"
         closer = (closed_by_github or "").lstrip("@").strip()
-        if closer:
-            status_line = f"**Status:** Closed by @{closer}"
-        else:
-            status_line = "**Status:** Closed"
-        return "\n".join([header, "", status_line])
+        status_line = (
+            f"**Status:** Closed by @{closer}" if closer else "**Status:** Closed"
+        )
+        embed_title = f"Closed: {repo} #{issue_number} — {issue_title}"
+        if len(embed_title) > 256:
+            embed_title = embed_title[:253] + "..."
+        embeds = [
+            {
+                "title": embed_title,
+                "url": raw_url,
+                "description": status_line,
+                "color": _GITHUB_CLOSED_RED,
+            }
+        ]
+        return "", embeds
 
+    url = _suppress_discord_embed(raw_url)
     header = f"🆕 **New Issue: [{repo} #{issue_number} — {issue_title}]({url})**"
     opened_line = (
         f"**Opened by:** {_format_github_discord_person(author_github, author_discord_id)}"
@@ -957,7 +980,7 @@ def _build_issue_channel_message(
                 ),
             ]
         )
-    return "\n".join(lines)
+    return "\n".join(lines), []
 
 
 def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
@@ -979,11 +1002,6 @@ def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
     )
     actor = str(actor).strip()
     return actor or None
-
-
-# GitHub Primer status colors (match PR badge hues in the GitHub UI).
-_GITHUB_MERGED_PURPLE = 0x8250DF  # Primer done/merged
-_GITHUB_CLOSED_RED = 0xCF222E  # Primer danger/closed
 
 
 def _build_pr_lifecycle_channel_message(

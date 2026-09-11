@@ -2168,11 +2168,16 @@ def test_update_issue_channel_announcement_edits_on_close() -> None:
         )
         is True
     )
-    content = discord_writer.messages_edited[0][2]
-    assert "Closed: [Gitcord-GithubDiscordBot #7" in content
-    assert "**Opened by:**" not in content
-    assert "**Assigned to:**" not in content
-    assert "**Status:** Closed by @mentor1" in content
+    channel_id, message_id, content, embeds = discord_writer.messages_edited[0]
+    assert channel_id == "chan"
+    assert message_id == "m42"
+    assert content == ""
+    assert embeds
+    assert embeds[0]["color"] == 0xCF222E
+    assert "Closed: Gitcord-GithubDiscordBot #7" in embeds[0]["title"]
+    assert "**Opened by:**" not in embeds[0]["title"]
+    assert "**Assigned to:**" not in (embeds[0].get("description") or "")
+    assert "Closed by @mentor1" in embeds[0]["description"]
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "closed"
 
 
@@ -2205,10 +2210,13 @@ def test_update_issue_channel_announcement_close_omits_opened_and_assigned() -> 
         )
         is True
     )
-    content = discord_writer.messages_edited[0][2]
-    assert "**Opened by:**" not in content
-    assert "**Assigned to:**" not in content
-    assert "**Status:** Closed by @alice" in content
+    content, embeds = discord_writer.messages_edited[0][2], discord_writer.messages_edited[0][3]
+    assert content == ""
+    assert embeds
+    assert embeds[0]["color"] == 0xCF222E
+    assert "**Opened by:**" not in embeds[0]["title"]
+    assert "**Assigned to:**" not in (embeds[0].get("description") or "")
+    assert "Closed by @alice" in embeds[0]["description"]
 
 
 def test_update_issue_channel_announcement_reopen_restores_opened_and_assigned() -> None:
@@ -2249,7 +2257,8 @@ def test_update_issue_channel_announcement_reopen_restores_opened_and_assigned()
         )
         is True
     )
-    content = discord_writer.messages_edited[0][2]
+    content, embeds = discord_writer.messages_edited[0][2], discord_writer.messages_edited[0][3]
+    assert embeds == []
     assert "New Issue: [Gitcord-GithubDiscordBot #7" in content
     assert "**Opened by:** alice - <@999>" in content
     assert "**Assigned to:** bob - <@888>" in content
@@ -2495,7 +2504,7 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
 def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -> None:
     from ghdcbot.engine.notifications import _build_issue_channel_message
 
-    msg = _build_issue_channel_message(
+    msg_built = _build_issue_channel_message(
         github_org="AOSSIE-Org",
         repo="Repo",
         issue_number=1,
@@ -2507,7 +2516,9 @@ def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -
         closed_by_github=None,
         include_link_nudge=False,
     )
-    assert msg is not None
+    assert msg_built is not None
+    msg, embeds = msg_built
+    assert embeds == []
     assert "<@" not in msg.split("**Opened by:**")[0]  # title/header has no live mentions
     assert "Ping <\u200b@999>" in msg
     assert "**Opened by:** alice - <@222>" in msg
