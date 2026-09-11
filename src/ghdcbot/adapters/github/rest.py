@@ -227,12 +227,13 @@ class GitHubRestAdapter:
             else:
                 denied_names = names
 
+        allowed_lower = (
+            {n.lower() for n in allowed_names} if allowed_names is not None else None
+        )
+        denied_lower = {n.lower() for n in denied_names}
+
         repo_name = (repo or "").strip()
         if repo_name:
-            allowed_lower = (
-                {n.lower() for n in allowed_names} if allowed_names is not None else None
-            )
-            denied_lower = {n.lower() for n in denied_names}
             if allowed_lower is not None and repo_name.lower() not in allowed_lower:
                 return []
             if repo_name.lower() in denied_lower:
@@ -285,9 +286,10 @@ class GitHubRestAdapter:
                     repo_name = _repo_name_from_search_issue(item, self._org)
                     if not repo_name:
                         continue
-                    if allowed_names is not None and repo_name not in allowed_names:
+                    repo_key = repo_name.lower()
+                    if allowed_lower is not None and repo_key not in allowed_lower:
                         continue
-                    if repo_name in denied_names:
+                    if repo_key in denied_lower:
                         continue
                     dedupe_key = (repo_name, item.get("number"))
                     if dedupe_key in seen:
