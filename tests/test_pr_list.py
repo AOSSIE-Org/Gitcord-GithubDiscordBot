@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ghdcbot.engine.pr_list import (
     clamp_pr_list_args,
+    filter_prs_by_repo,
     format_pr_list_messages,
     format_pr_list_report,
     group_prs_by_status,
@@ -47,6 +48,18 @@ def test_select_recent_prs_skips_then_takes() -> None:
     # Newest first: 5,4,3,2,1 — skip 1 → start at 4, take 2 → 4,3
     selected = select_recent_prs(prs, count=2, skip=1)
     assert [pr["number"] for pr in selected] == [4, 3]
+
+
+def test_filter_prs_by_repo_case_insensitive() -> None:
+    prs = [
+        _pr(repo="Ell-ena", number=1, status="open", title="A", updated_at="2026-07-03T10:00:00Z"),
+        _pr(repo="PictoPy", number=2, status="merged", title="B", updated_at="2026-07-02T10:00:00Z"),
+        _pr(repo="ell-ena", number=3, status="closed", title="C", updated_at="2026-07-01T10:00:00Z"),
+    ]
+    assert filter_prs_by_repo(prs, None) == prs
+    assert filter_prs_by_repo(prs, "  ") == prs
+    filtered = filter_prs_by_repo(prs, "ell-ena")
+    assert [pr["number"] for pr in filtered] == [1, 3]
 
 
 def test_group_prs_by_status() -> None:
@@ -106,6 +119,29 @@ def test_format_pr_list_report_groups_like_bruno() -> None:
     assert "1. [PictoPy #12](<" in message
 
 
+def test_format_pr_list_report_with_repo_filter() -> None:
+    prs = [
+        _pr(
+            repo="Ell-ena",
+            number=10,
+            status="open",
+            title="Scoped",
+            updated_at="2026-07-05T10:00:00Z",
+        ),
+    ]
+    message = format_pr_list_report(
+        contributor_mention="<@123>",
+        github_user="alice",
+        prs=prs,
+        org="AOSSIE-Org",
+        count=10,
+        skip=0,
+        repo="Ell-ena",
+    )
+    assert "in `Ell-ena`" in message
+    assert "last 10" in message
+
+
 def test_format_pr_list_report_empty() -> None:
     message = format_pr_list_report(
         contributor_mention="<@123>",
@@ -116,6 +152,20 @@ def test_format_pr_list_report_empty() -> None:
         skip=0,
     )
     assert "No PRs found in configured repos." in message
+
+
+def test_format_pr_list_report_empty_for_repo() -> None:
+    message = format_pr_list_report(
+        contributor_mention="<@123>",
+        github_user="alice",
+        prs=[],
+        org="AOSSIE-Org",
+        count=5,
+        skip=0,
+        repo="PictoPy",
+    )
+    assert "No PRs found in `PictoPy`." in message
+    assert "in `PictoPy`" in message
 
 
 def test_format_pr_list_messages_splits_instead_of_truncating() -> None:

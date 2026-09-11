@@ -92,11 +92,18 @@ class NotificationConfig(BaseModel):
     issue_reopened: bool = True  # Issue reopened (notifies assignee)
     pr_reopened: bool = True  # PR reopened (notifies author)
     pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
+    # Issue opened → same repo-mapped channels as PRs (discord.pr_open_channels).
+    issue_opened: bool = False
     # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.
     pr_opened_github_comment: bool = False
+    # When true, unverified issue authors get the same GitcordApp /link comment on the issue.
+    issue_opened_github_comment: bool = False
     # Edit the tracked PR-opened channel message when that PR is later merged/closed.
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
+    # Edit tracked issue channel messages on assign / unassign / close / reopen
+    # (open: Opened by + assignees; closed: Closed by only; reopen restores open lines).
+    update_issue_channel_on_lifecycle: bool = True
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
@@ -115,13 +122,13 @@ class DiscordConfig(BaseModel):
     guild_id: str
     token: str
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
-    # Optional: public Discord invite URL (used in GitHub PR link-nudge comments).
+    # Optional: public Discord invite URL (used in GitHub PR/issue link-nudge comments).
     invite_url: str | None = None
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
     pr_preview_channels: list[str] = Field(default_factory=list)
-    # Repo short name → Discord channel/thread ID for pr_opened notifications (verified authors only).
+    # Repo short name → Discord channel/thread ID for pr_opened / issue_opened channel posts.
     pr_open_channels: dict[str, str] = Field(default_factory=dict)
     # Optional: verified-only GitHub → Discord notifications
     notifications: NotificationConfig | None = None

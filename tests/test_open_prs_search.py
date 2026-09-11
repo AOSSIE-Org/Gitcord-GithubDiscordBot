@@ -211,3 +211,72 @@ def test_list_pull_requests_for_author_classifies_status(monkeypatch) -> None:
     assert by_number[1]["updated_at"] == "2026-07-12T10:00:00Z"
     assert by_number[2]["updated_at"] == "2026-07-11T10:00:00Z"
     assert by_number[3]["updated_at"] == "2026-07-10T10:00:00Z"
+
+
+def test_list_pull_requests_for_author_scopes_to_repo(monkeypatch) -> None:
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient(
+        {
+            "items": [
+                {
+                    "number": 40,
+                    "title": "Scoped",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/PictoPy/pull/40",
+                    "created_at": "2026-07-11T10:00:00Z",
+                    "updated_at": "2026-07-12T10:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/PictoPy",
+                    "user": {"login": "alice"},
+                    "pull_request": {},
+                },
+            ]
+        }
+    )
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr("ghdcbot.adapters.github.rest._load_repo_filter", lambda: None)
+
+    prs = adapter.list_pull_requests_for_author("alice", repo="PictoPy")
+
+    assert len(client.calls) == 1
+    _method, path, params = client.calls[0]
+    assert path == "/search/issues"
+    assert params is not None
+    assert params["q"] == "is:pr author:alice repo:AOSSIE-Org/PictoPy"
+    assert "org:" not in params["q"]
+    assert len(prs) == 1
+    assert prs[0]["repo"] == "PictoPy"
+    assert prs[0]["number"] == 40
+
+
+def test_list_pull_requests_for_author_allowlist_is_case_insensitive(monkeypatch) -> None:
+    """GitHub may return different casing than the allowlist entry."""
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient(
+        {
+            "items": [
+                {
+                    "number": 10,
+                    "title": "Allowed casing mismatch",
+                    "state": "open",
+                    "html_url": "https://github.com/AOSSIE-Org/PictoPy/pull/10",
+                    "created_at": "2026-07-11T10:00:00Z",
+                    "updated_at": "2026-07-12T10:00:00Z",
+                    "repository_url": "https://api.github.com/repos/AOSSIE-Org/PictoPy",
+                    "user": {"login": "alice"},
+                    "pull_request": {},
+                },
+            ]
+        }
+    )
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: RepoFilterConfig(mode="allow", names=["pictopy"]),
+    )
+
+    prs = adapter.list_pull_requests_for_author("alice")
+
+    assert len(prs) == 1
+    assert prs[0]["repo"] == "PictoPy"
+    assert prs[0]["number"] == 10
+

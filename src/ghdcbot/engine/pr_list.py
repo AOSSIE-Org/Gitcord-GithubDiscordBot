@@ -34,6 +34,15 @@ def select_recent_prs(
     return list(ordered[m : m + n])
 
 
+def filter_prs_by_repo(prs: Iterable[dict], repo: str | None) -> list[dict]:
+    """Keep PRs whose ``repo`` matches ``repo`` (case-insensitive). Empty ``repo`` = no filter."""
+    cleaned = (repo or "").strip()
+    if not cleaned:
+        return list(prs)
+    target = cleaned.lower()
+    return [pr for pr in prs if str(pr.get("repo") or "").strip().lower() == target]
+
+
 def group_prs_by_status(prs: Sequence[dict]) -> dict[str, list[dict]]:
     """Split PRs into closed / merged / open buckets (Bruno display order)."""
     grouped: dict[str, list[dict]] = {"closed": [], "merged": [], "open": []}
@@ -53,6 +62,7 @@ def format_pr_list_report(
     org: str,
     count: int | None = None,
     skip: int = 0,
+    repo: str | None = None,
 ) -> str:
     """Build a single Discord-oriented report string (may exceed 2000 chars)."""
     return "\n".join(
@@ -63,6 +73,7 @@ def format_pr_list_report(
             org=org,
             count=count,
             skip=skip,
+            repo=repo,
         )
     ).rstrip()
 
@@ -75,6 +86,7 @@ def format_pr_list_messages(
     org: str,
     count: int | None = None,
     skip: int = 0,
+    repo: str | None = None,
 ) -> list[str]:
     """Build one or more Discord messages under the length limit (no silent truncation)."""
     lines = _build_pr_list_lines(
@@ -84,6 +96,7 @@ def format_pr_list_messages(
         org=org,
         count=count,
         skip=skip,
+        repo=repo,
     )
     return _chunk_message_lines(lines, max_chars=_MAX_MESSAGE_CHARS)
 
@@ -96,17 +109,23 @@ def _build_pr_list_lines(
     org: str,
     count: int | None = None,
     skip: int = 0,
+    repo: str | None = None,
 ) -> list[str]:
     n, m = clamp_pr_list_args(count=count, skip=skip)
     # Bruno: show GitHub username as a profile link (not "GitHub: name").
     github_link = f"[{github_user}](https://github.com/{github_user})"
     header = f"Recent PRs for {contributor_mention} ({github_link})"
+    repo_label = (repo or "").strip()
+    if repo_label:
+        header += f" in `{repo_label}`"
     if m > 0:
         header += f" — showing {n} after skipping {m}"
     else:
         header += f" — last {n}"
 
     if not prs:
+        if repo_label:
+            return [header, "", f"No PRs found in `{repo_label}`."]
         return [header, "", "No PRs found in configured repos."]
 
     grouped = group_prs_by_status(prs)

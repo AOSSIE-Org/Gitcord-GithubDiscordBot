@@ -44,6 +44,8 @@ class SyncSession(AbstractContextManager["SyncSession"]):
 
     _EVENT_SUMMARY_TYPES = (
         "issue_opened",
+        "issue_assigned",
+        "issue_unassigned",
         "issue_closed",
         "pr_opened",
         "pr_merged",
