@@ -1,30 +1,27 @@
-"""Tests for on_app_command_error handler in bot.py.
+"""Tests for handle_app_command_error handler in bot.py.
 
 Verifies that all three error branches (CommandOnCooldown, CheckFailure,
 generic Exception) correctly dispatch user-visible feedback via
 interaction.followup.send() when the interaction has been deferred, and
 via interaction.response.send_message() when it has not.
 
-The error handler under test lives in run_bot() as a nested closure.
-Rather than bootstrapping the full Discord client, we extract the handler
-logic into a standalone async helper and test it with lightweight fakes
-that mirror the patterns used in test_who_is_command.py and
-test_social_commands.py.
+Directly imports and tests the production `handle_app_command_error`
+from `ghdcbot.bot`.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from discord import app_commands
 
+from ghdcbot.bot import handle_app_command_error
+
 # ---------------------------------------------------------------------------
 # Fakes -- mirrors _FakeFollowup / _FakeResponse / _FakeInteraction used
-# in test_who_is_command.py and test_social_commands.py, extended with
-# send_message tracking and is_done() state.
+# across Gitcord tests, extended with send_message tracking and is_done() state.
 # ---------------------------------------------------------------------------
 
 
@@ -32,7 +29,7 @@ class _FakeFollowup:
     """Records messages sent via interaction.followup.send()."""
 
     def __init__(self) -> None:
-        self.messages: list[dict] = []
+        self.messages: list[dict[str, Any]] = []
 
     async def send(self, content: str | None = None, **kwargs: Any) -> None:
         self.messages.append({"content": content, **kwargs})
@@ -43,7 +40,7 @@ class _FakeResponse:
 
     def __init__(self, *, deferred: bool = False) -> None:
         self._deferred = deferred
-        self.sent_messages: list[dict] = []
+        self.sent_messages: list[dict[str, Any]] = []
 
     def is_done(self) -> bool:
         return self._deferred
@@ -62,97 +59,9 @@ class _FakeInteraction:
         self.response = _FakeResponse(deferred=deferred)
         self.followup = _FakeFollowup()
         self.user = MagicMock(name="fakeuser", id=12345)
+        self.user.name = "fakeuser"
         self.command = MagicMock(name="fakecommand")
         self.command.name = "test-cmd"
-
-
-# ---------------------------------------------------------------------------
-# Handler under test -- extracted from bot.py on_app_command_error.
-# This mirrors the exact logic of the production handler so we can test
-# each branch without needing a live Discord client.
-# ---------------------------------------------------------------------------
-
-
-def _stub_format_permission_denied(_config: Any, _cmd_name: str) -> str:
-    """Stand-in for format_slash_command_permission_denied."""
-    return "Permission denied for this command."
-
-
-async def _on_app_command_error(
-    interaction: _FakeInteraction,
-    error: app_commands.AppCommandError,
-    *,
-    config: Any = None,
-    format_denied: Any = _stub_format_permission_denied,
-) -> None:
-    """Reproduce the on_app_command_error handler logic from bot.py.
-
-    This must stay in sync with the production handler.  Any divergence
-    means the tests are no longer validating the real code path.
-    """
-    logger = logging.getLogger("ghdcbot.bot.test")
-
-    if isinstance(error, app_commands.CommandOnCooldown):
-        retry_after = int(error.retry_after) + 1
-        message = f"This command is on cooldown. Try again in {retry_after}s."
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
-        except Exception:
-            logger.exception("Failed to send cooldown message")
-        return
-
-    if isinstance(error, app_commands.CheckFailure):
-        try:
-            cmd_name = interaction.command.name if interaction.command else "unknown"
-            error_message = format_denied(config, cmd_name)
-            logger.info(
-                "Check failure for user %s (%s) on command %s.",
-                interaction.user.name,
-                interaction.user.id,
-                cmd_name,
-            )
-
-            # Use followup if response was already deferred, else send_message
-            if interaction.response.is_done():
-                await interaction.followup.send(error_message, ephemeral=True)
-            else:
-                await interaction.response.send_message(error_message, ephemeral=True)
-        except Exception as e:
-            logger.exception("Failed to send permission denied message", exc_info=e)
-            # Try one more time with a simple message
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "You do not have permission to use this command.",
-                        ephemeral=True,
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "You do not have permission to use this command.",
-                        ephemeral=True,
-                    )
-            except Exception:  # noqa: BLE001
-                logger.error("Could not send any error message to user")
-        return
-
-    # General / unknown error fallback
-    logger.exception("App command error", exc_info=error)
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "An unexpected error occurred. Please try again later.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                "An unexpected error occurred. Please try again later.",
-                ephemeral=True,
-            )
-    except Exception:  # noqa: BLE001
-        logger.error("Could not send error message to user")
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +101,7 @@ class TestGenericErrorHandler:
         through followup.send() instead of response.send_message()."""
         interaction = _FakeInteraction(deferred=True)
 
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
 
         # followup.send must have been called exactly once
         assert len(interaction.followup.messages) == 1
@@ -205,7 +114,7 @@ class TestGenericErrorHandler:
         through response.send_message()."""
         interaction = _FakeInteraction(deferred=False)
 
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
 
         # response.send_message must have been called exactly once
         assert len(interaction.response.sent_messages) == 1
@@ -218,19 +127,19 @@ class TestGenericErrorHandler:
         invoking user sees it."""
         # Test deferred path
         interaction = _FakeInteraction(deferred=True)
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
         assert interaction.followup.messages[0]["ephemeral"] is True
 
         # Test non-deferred path
         interaction = _FakeInteraction(deferred=False)
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
         assert interaction.response.sent_messages[0]["ephemeral"] is True
 
     @pytest.mark.asyncio
     async def test_message_content(self) -> None:
         """The error message must contain a user-friendly error string."""
         interaction = _FakeInteraction(deferred=True)
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
         content = interaction.followup.messages[0]["content"]
         assert "unexpected error" in content.lower()
 
@@ -247,7 +156,7 @@ class TestGenericErrorHandler:
         interaction.followup.send = _raise  # type: ignore[assignment]
 
         # Must not raise
-        await _on_app_command_error(interaction, _generic_error())
+        await handle_app_command_error(interaction, _generic_error())  # type: ignore[arg-type]
 
         # Verify the error was logged
         assert any(
@@ -269,7 +178,7 @@ class TestCooldownErrorHandler:
         """Cooldown message must use followup.send() when deferred."""
         interaction = _FakeInteraction(deferred=True)
 
-        await _on_app_command_error(interaction, _cooldown_error(9.0))
+        await handle_app_command_error(interaction, _cooldown_error(9.0))  # type: ignore[arg-type]
 
         assert len(interaction.followup.messages) == 1
         assert len(interaction.response.sent_messages) == 0
@@ -279,7 +188,7 @@ class TestCooldownErrorHandler:
         """Cooldown message must use response.send_message() when not deferred."""
         interaction = _FakeInteraction(deferred=False)
 
-        await _on_app_command_error(interaction, _cooldown_error(9.0))
+        await handle_app_command_error(interaction, _cooldown_error(9.0))  # type: ignore[arg-type]
 
         assert len(interaction.response.sent_messages) == 1
         assert len(interaction.followup.messages) == 0
@@ -287,20 +196,21 @@ class TestCooldownErrorHandler:
     @pytest.mark.asyncio
     async def test_message_contains_retry_time(self) -> None:
         """The cooldown message must include the retry-after seconds
-        (rounded up by 1)."""
+        (rounded up by 1) and preserve the ⏳ emoji from production."""
         interaction = _FakeInteraction(deferred=True)
 
-        await _on_app_command_error(interaction, _cooldown_error(9.0))
+        await handle_app_command_error(interaction, _cooldown_error(9.0))  # type: ignore[arg-type]
 
         content = interaction.followup.messages[0]["content"]
         # retry_after = int(9.0) + 1 = 10
         assert "10s" in content
+        assert "⏳" in content
 
     @pytest.mark.asyncio
     async def test_cooldown_is_ephemeral(self) -> None:
         """Cooldown messages must always be ephemeral."""
         interaction = _FakeInteraction(deferred=True)
-        await _on_app_command_error(interaction, _cooldown_error(5.0))
+        await handle_app_command_error(interaction, _cooldown_error(5.0))  # type: ignore[arg-type]
         assert interaction.followup.messages[0]["ephemeral"] is True
 
 
@@ -317,7 +227,7 @@ class TestCheckFailureErrorHandler:
         """Permission denied message must use followup.send() when deferred."""
         interaction = _FakeInteraction(deferred=True)
 
-        await _on_app_command_error(interaction, _check_failure())
+        await handle_app_command_error(interaction, _check_failure())  # type: ignore[arg-type]
 
         assert len(interaction.followup.messages) == 1
         assert len(interaction.response.sent_messages) == 0
@@ -328,7 +238,7 @@ class TestCheckFailureErrorHandler:
         when not deferred."""
         interaction = _FakeInteraction(deferred=False)
 
-        await _on_app_command_error(interaction, _check_failure())
+        await handle_app_command_error(interaction, _check_failure())  # type: ignore[arg-type]
 
         assert len(interaction.response.sent_messages) == 1
         assert len(interaction.followup.messages) == 0
@@ -337,7 +247,7 @@ class TestCheckFailureErrorHandler:
     async def test_check_failure_is_ephemeral(self) -> None:
         """Permission denied messages must always be ephemeral."""
         interaction = _FakeInteraction(deferred=True)
-        await _on_app_command_error(interaction, _check_failure())
+        await handle_app_command_error(interaction, _check_failure())  # type: ignore[arg-type]
         assert interaction.followup.messages[0]["ephemeral"] is True
 
     @pytest.mark.asyncio
@@ -346,13 +256,9 @@ class TestCheckFailureErrorHandler:
         was deferred, the retry must use followup.send()."""
         interaction = _FakeInteraction(deferred=True)
 
-        # Make format_denied raise so we fall into the retry branch
-        def _bad_format(_config: Any, _cmd: str) -> str:
-            raise RuntimeError("format_denied exploded")
-
-        await _on_app_command_error(
-            interaction, _check_failure(), format_denied=_bad_format
-        )
+        # Patch format_slash_command_permission_denied to raise in bot.py
+        with patch("ghdcbot.bot.format_slash_command_permission_denied", side_effect=RuntimeError("boom")):
+            await handle_app_command_error(interaction, _check_failure(), config=MagicMock())  # type: ignore[arg-type]
 
         # The retry should have sent a simple fallback message via followup
         assert len(interaction.followup.messages) == 1
@@ -365,12 +271,8 @@ class TestCheckFailureErrorHandler:
         was NOT deferred, the retry must use response.send_message()."""
         interaction = _FakeInteraction(deferred=False)
 
-        def _bad_format(_config: Any, _cmd: str) -> str:
-            raise RuntimeError("format_denied exploded")
-
-        await _on_app_command_error(
-            interaction, _check_failure(), format_denied=_bad_format
-        )
+        with patch("ghdcbot.bot.format_slash_command_permission_denied", side_effect=RuntimeError("boom")):
+            await handle_app_command_error(interaction, _check_failure(), config=MagicMock())  # type: ignore[arg-type]
 
         # The retry should have sent via response.send_message
         assert len(interaction.response.sent_messages) == 1
@@ -379,18 +281,13 @@ class TestCheckFailureErrorHandler:
 
     @pytest.mark.asyncio
     async def test_uses_command_name(self) -> None:
-        """The handler must read interaction.command.name for logging."""
+        """The handler must pass interaction.command.name to format function."""
         interaction = _FakeInteraction(deferred=False)
         interaction.command.name = "sync"
 
-        called_with: list[str] = []
+        mock_format = MagicMock(return_value="Denied: sync")
+        with patch("ghdcbot.bot.format_slash_command_permission_denied", mock_format):
+            await handle_app_command_error(interaction, _check_failure(), config=MagicMock())  # type: ignore[arg-type]
 
-        def _tracking_format(_config: Any, cmd_name: str) -> str:
-            called_with.append(cmd_name)
-            return f"Denied: {cmd_name}"
-
-        await _on_app_command_error(
-            interaction, _check_failure(), format_denied=_tracking_format
-        )
-
-        assert called_with == ["sync"]
+        mock_format.assert_called_once()
+        assert mock_format.call_args[0][1] == "sync"

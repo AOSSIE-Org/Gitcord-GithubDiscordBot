@@ -316,6 +316,78 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+async def handle_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+    *,
+    config: Any = None,
+) -> None:
+    """Handle app command errors, including check failures and deferred responses."""
+    logger = logging.getLogger("ghdcbot.bot")
+    if isinstance(error, app_commands.CommandOnCooldown):
+        retry_after = int(error.retry_after) + 1
+        message = f"⏳ This command is on cooldown. Try again in {retry_after}s."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception:
+            logger.exception("Failed to send cooldown message")
+        return
+    if isinstance(error, app_commands.CheckFailure):
+        try:
+            cmd_name = interaction.command.name if interaction.command else "unknown"
+            error_message = (
+                format_slash_command_permission_denied(config, cmd_name)
+                if config is not None
+                else "You do not have permission to use this command."
+            )
+            logger.info(
+                "Check failure for user %s (%s) on command %s.",
+                interaction.user.name,
+                interaction.user.id,
+                cmd_name,
+            )
+
+            # Check if response is already sent (or deferred)
+            if interaction.response.is_done():
+                await interaction.followup.send(error_message, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
+        except Exception as e:
+            logger.exception("Failed to send permission denied message", exc_info=e)
+            # Try one more time with a simple message
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "You do not have permission to use this command.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "You do not have permission to use this command.",
+                        ephemeral=True,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.error("Could not send any error message to user")
+    else:
+        logger.exception("App command error", exc_info=error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "An unexpected error occurred. Please try again later.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "An unexpected error occurred. Please try again later.",
+                    ephemeral=True,
+                )
+        except Exception:  # noqa: BLE001
+            logger.error("Could not send error message to user")
+
+
 def run_bot(config_path: str) -> None:
     """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
@@ -1274,64 +1346,7 @@ def run_bot(config_path: str) -> None:
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
-        if isinstance(error, app_commands.CommandOnCooldown):
-            retry_after = int(error.retry_after) + 1
-            message = f"⏳ This command is on cooldown. Try again in {retry_after}s."
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(message, ephemeral=True)
-            except Exception:
-                logger.exception("Failed to send cooldown message")
-            return
-        if isinstance(error, app_commands.CheckFailure):
-            try:
-                cmd_name = interaction.command.name if interaction.command else "unknown"
-                error_message = format_slash_command_permission_denied(config, cmd_name)
-                logger.info(
-                    "Check failure for user %s (%s) on command %s.",
-                    interaction.user.name,
-                    interaction.user.id,
-                    cmd_name,
-                )
-                
-                # Check if response is already sent (shouldn't happen for check failures, but be safe)
-                if interaction.response.is_done():
-                    await interaction.followup.send(error_message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(error_message, ephemeral=True)
-            except Exception as e:
-                logger.exception("Failed to send permission denied message", exc_info=e)
-                # Try one more time with a simple message
-                try:
-                    if interaction.response.is_done():
-                        await interaction.followup.send(
-                            "You do not have permission to use this command.",
-                            ephemeral=True,
-                        )
-                    else:
-                        await interaction.response.send_message(
-                            "You do not have permission to use this command.",
-                            ephemeral=True,
-                        )
-                except Exception:  # noqa: BLE001
-                    logger.error("Could not send any error message to user")
-        else:
-            logger.exception("App command error", exc_info=error)
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "An unexpected error occurred. Please try again later.",
-                        ephemeral=True,
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "An unexpected error occurred. Please try again later.",
-                        ephemeral=True,
-                    )
-            except Exception:  # noqa: BLE001
-                logger.error("Could not send error message to user")
+        await handle_app_command_error(interaction, error, config=config)
 
     register_social_commands(tree, guild_id, social_service)
 
