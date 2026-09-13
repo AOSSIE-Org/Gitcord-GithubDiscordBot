@@ -13,7 +13,6 @@ import discord
 
 logger = logging.getLogger("ghdcbot.help_link")
 
-HELP_LINK_SESSION_TTL = timedelta(minutes=20)
 HELP_LINK_COMMAND_NAME = "help-link"
 # Synthetic initiator id for join-welcome sessions (not a real Discord snowflake).
 WELCOME_INITIATOR_ID = "welcome-on-join"
@@ -66,15 +65,17 @@ async def deliver_welcome_link_dm(
 
 @dataclass(frozen=True)
 class HelpLinkSession:
-    """Short-lived mentor→contributor help session."""
+    """Mentor→contributor help session (no time-based expiry by default)."""
 
     session_id: str
     mentor_discord_id: str
     target_discord_id: str
     created_at: datetime
-    expires_at: datetime
+    expires_at: datetime | None = None
 
     def is_expired(self, now: datetime | None = None) -> bool:
+        if self.expires_at is None:
+            return False
         now = now or datetime.now(timezone.utc)
         return now >= self.expires_at
 
@@ -82,7 +83,8 @@ class HelpLinkSession:
 class HelpLinkSessionStore:
     """In-memory sessions (one active help flow per target Discord user)."""
 
-    def __init__(self, *, ttl: timedelta = HELP_LINK_SESSION_TTL) -> None:
+    def __init__(self, *, ttl: timedelta | None = None) -> None:
+        # None = no time-based expiry (sessions last until used, replaced, or bot restart).
         self._ttl = ttl
         self._by_target: dict[str, HelpLinkSession] = {}
 
@@ -93,7 +95,7 @@ class HelpLinkSessionStore:
             mentor_discord_id=str(mentor_discord_id),
             target_discord_id=str(target_discord_id),
             created_at=now,
-            expires_at=now + self._ttl,
+            expires_at=(now + self._ttl) if self._ttl is not None else None,
         )
         self._by_target[session.target_discord_id] = session
         return session
@@ -189,7 +191,7 @@ class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
         )
         if session is None:
             await interaction.response.send_message(
-                "This help session expired. Ask someone to run `/help-link` again.",
+                "This help session is no longer active. Ask someone to run `/help-link` again.",
                 ephemeral=True,
             )
             return
@@ -244,8 +246,10 @@ class HelpLinkStartView(discord.ui.View):
         build_verification_embed: Callable[..., discord.Embed],
         session_store: HelpLinkSessionStore,
         max_age_days: int | None = None,
-        timeout: float = HELP_LINK_SESSION_TTL.total_seconds(),
+        timeout: float | None = None,
     ) -> None:
+        # timeout=None keeps the Start linking button until the session is used,
+        # replaced by a newer /help-link, or the bot restarts.
         super().__init__(timeout=timeout)
         self.service = service
         self.storage = storage
@@ -280,7 +284,7 @@ class HelpLinkStartView(discord.ui.View):
         )
         if session is None:
             await interaction.response.send_message(
-                "This help session expired. Ask someone to run `/help-link` again.",
+                "This help session is no longer active. Ask someone to run `/help-link` again.",
                 ephemeral=True,
             )
             return
