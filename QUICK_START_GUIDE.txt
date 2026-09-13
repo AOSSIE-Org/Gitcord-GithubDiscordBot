@@ -21,12 +21,14 @@ Tips:
 • Code is short-lived — if it expires, run /link again
 • You can remove the code from your bio/gist after you are verified
 • Need to switch accounts? /unlink, then /link again
+• New joins (if enabled): Gitcord may DM you Start linking automatically
 
 
 2. CONTRIBUTOR COMMANDS
 -----------------------
 /link                 Link Discord → GitHub (get verification code)
 /verify-link          Complete verification after placing the code
+/help-link @member    Help someone link: Start linking → username box → verify
 /profile              Your (or another member’s) Gitcord profile
 /who-is               Look up a GitHub username → Discord + link freshness
 /summary              Contribution metrics (7d / 30d); optional member
@@ -35,8 +37,6 @@ Tips:
 /connect-social       Attach X or LinkedIn username/URL to your profile
 /disconnect-social    Remove X or LinkedIn from your profile
 /unlink               Remove your GitHub link
-/help-link @member    Help someone link: they get Start linking →
-                      username box → same verify steps as /link
 
 
 3. MENTOR COMMANDS

@@ -19,6 +19,8 @@ The older `/verify-link github_username` command remains available and uses the 
 
 Anyone can also start the same flow for a stuck contributor with `/help-link @member`. That opens a **target-only** **Start linking** button (DM preferred; if DMs are closed, a channel message that others can see but only the tagged member can use), then a username modal, then the same verification embed/buttons as `/link`.
 
+When `discord.welcome_dm_on_join: true`, new guild members receive a private welcome DM with the same **Start linking** → username modal → verify path (different welcome copy). Requires the privileged **Server Members Intent** in the Discord Developer Portal. Already-verified members are skipped. If DMs are closed, Gitcord logs and does not spam a channel.
+
 ## Main Files
 
 | File | Purpose |
