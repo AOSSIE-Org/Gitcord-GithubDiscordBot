@@ -523,6 +523,7 @@ def send_issue_opened_channel_notification(
         status="open",
         closed_by_github=None,
         include_link_nudge=author_discord_id is None,
+        labels=event.payload.get("labels") or [],
     )
     if not message_built:
         return False
@@ -724,6 +725,7 @@ def update_issue_channel_announcement_for_event(
         status=status,
         closed_by_github=closed_by_github,
         include_link_nudge=False,
+        labels=event.payload.get("labels") or [],
     )
     if not message_built:
         return False
@@ -934,6 +936,7 @@ def _build_issue_channel_message(
     status: str,
     closed_by_github: str | None,
     include_link_nudge: bool,
+    labels: list[str] | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Build issue channel announcement content + embeds.
 
@@ -976,6 +979,21 @@ def _build_issue_channel_message(
         assigned_line = "**Assigned to:** None"
 
     lines = [header, "", opened_line, assigned_line]
+
+    label_names = [
+        str(label).strip()
+        for label in (labels or [])
+        if str(label or "").strip()
+    ]
+    if label_names:
+        safe_labels = [
+            _sanitize_discord_pr_title(label).replace("`", "\\`")
+            for label in label_names
+        ]
+        lines.append(
+            f"**Labels:** {', '.join(f'`{label}`' for label in safe_labels)}"
+        )
+
     if include_link_nudge:
         lines.extend(
             [
