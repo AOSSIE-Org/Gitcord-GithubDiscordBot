@@ -56,7 +56,11 @@ def _sanitize_windows_yaml_paths(content: str) -> str:
     def _fix_windows_path(match: re.Match[str]) -> str:
         inner = match.group(1)
         if "\\" in inner:
-            fixed = re.sub(r"\\+", r"\\\\", inner)
+            fixed = re.sub(
+                r"\\+",
+                lambda m: m.group(0) + ("\\" if len(m.group(0)) % 2 == 1 else ""),
+                inner,
+            )
             return f'"{fixed}"'
         return match.group(0)
 

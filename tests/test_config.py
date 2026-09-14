@@ -106,3 +106,17 @@ def test_sanitize_windows_yaml_paths_preserves_standard_escapes() -> None:
     sanitized = _sanitize_windows_yaml_paths(content)
     assert 'path: "C:\\\\test\\\\new\\\\folder"' in sanitized
     assert 'msg: "tab\\there"' in sanitized
+
+
+def test_sanitize_windows_yaml_paths_preserves_even_length_runs(tmp_path: Path) -> None:
+    from ghdcbot.config.loader import _load_yaml, _sanitize_windows_yaml_paths
+
+    # 4 backslashes in raw text should remain 4 backslashes (representing 2 escaped backslashes in YAML)
+    content = 'path: "C:\\\\\\\\server\\\\\\\\share"\n'
+    sanitized = _sanitize_windows_yaml_paths(content)
+    assert sanitized == content
+
+    cfg_file = tmp_path / "even_slashes.yaml"
+    cfg_file.write_text(content, encoding="utf-8")
+    loaded = _load_yaml(cfg_file)
+    assert loaded["path"] == "C:\\\\server\\\\share"
