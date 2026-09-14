@@ -13,6 +13,7 @@ from discord import app_commands
 from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
+from ghdcbot.config.access import cfg_get
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.discord_command_permissions import (
@@ -401,9 +402,21 @@ def get_issue_repo_choices(
     config: Any, current: str
 ) -> list[app_commands.Choice[str]]:
     """Generate autocomplete choices for the /issue repo option from config."""
-    configured_repos = get_configured_repo_names(config)
+    repo_filter = None
+    if config:
+        github_cfg = cfg_get(config, "github")
+        if github_cfg:
+            repo_filter = cfg_get(github_cfg, "repos")
+
+    configured_repos = [
+        r for r in get_configured_repo_names(config) if is_repo_allowed(repo_filter, r)
+    ]
     suggestions = filter_repo_suggestions(configured_repos, current)
-    return [app_commands.Choice(name=r, value=r) for r in suggestions]
+    return [
+        app_commands.Choice(name=r, value=r)
+        for r in suggestions
+        if is_repo_allowed(repo_filter, r)
+    ]
 
 
 def run_bot(config_path: str) -> None:

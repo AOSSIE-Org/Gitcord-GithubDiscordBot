@@ -388,6 +388,42 @@ def test_issue_repo_autocomplete_choice_creation() -> None:
     assert [c.name for c in all_choices] == ["Knowledge-Agent", "Devr.AI"]
 
 
+def test_issue_repo_autocomplete_filters_disallowed_repos() -> None:
+    """Autocomplete choices strictly adhere to github.repos allowlist, ignoring unallowed repos in pr_open_channels or contributor roles."""
+    from ghdcbot.bot import get_issue_repo_choices
+    from ghdcbot.config.models import (
+        BotConfig,
+        DiscordConfig,
+        GitHubConfig,
+        RepoFilterConfig,
+        RuntimeConfig,
+    )
+
+    cfg = BotConfig(
+        runtime=RuntimeConfig(
+            data_dir="./data",
+            github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        ),
+        github=GitHubConfig(
+            org="test-org",
+            repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+        ),
+        discord=DiscordConfig(
+            guild_id="123",
+            token="fake",
+            pr_open_channels={"Disallowed-Channel-Repo": "9999"},
+        ),
+        repo_contributor_roles={"Disallowed-Role-Repo": "Role"},
+    )
+
+    choices = get_issue_repo_choices(cfg, "")
+    assert len(choices) == 1
+    assert choices[0].name == "Knowledge-Agent"
+    assert choices[0].value == "Knowledge-Agent"
+
+
 def test_issue_repo_autocomplete_integration() -> None:
     """In run_bot, /issue command has repo param with autocomplete connected to config."""
     from typing import Any
