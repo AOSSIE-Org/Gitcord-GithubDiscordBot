@@ -1615,8 +1615,14 @@ def _issue_opened_event(
     title: str = "Fix docs",
     assignee: str | None = None,
     assignees: list[str] | None = None,
+    labels: list[str] | None = None,
 ) -> ContributionEvent:
-    payload: dict = {"issue_number": issue_number, "title": title, "state": "open", "labels": []}
+    payload: dict = {
+        "issue_number": issue_number,
+        "title": title,
+        "state": "open",
+        "labels": list(labels or []),
+    }
     logins = list(assignees or [])
     if assignee and assignee not in logins:
         logins.insert(0, assignee)
@@ -1656,10 +1662,40 @@ def test_issue_opened_channel_notification_posts_with_assigned_none() -> None:
     assert "New Issue: [Gitcord-GithubDiscordBot #7" in message
     assert "**Opened by:** alice - <@999>" in message
     assert "**Assigned to:** None" in message
+    assert "**Labels:**" not in message
     tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
     assert tracked is not None
     assert tracked["status"] == "open"
     assert tracked["assignee_github"] is None
+
+
+def test_issue_opened_channel_notification_includes_labels() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"}
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE,
+        github_write_allowed=True,
+        discord_write_allowed=True,
+    )
+
+    result = send_issue_opened_channel_notification(
+        _issue_opened_event(labels=["enhancement", "good first issue"]),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    message = discord_writer.messages_sent[0][1]
+    assert "**Labels:** `enhancement`, `good first issue`" in message
+
 
 
 def test_issue_opened_channel_notification_includes_existing_assignee() -> None:
@@ -1760,7 +1796,7 @@ def test_update_issue_channel_announcement_edits_on_assign() -> None:
         event_type="issue_assigned",
         repo="Gitcord-GithubDiscordBot",
         created_at=datetime.now(UTC),
-        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor"},
+        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor", "labels": ["enhancement"]},
     )
 
     assert (
@@ -1775,6 +1811,7 @@ def test_update_issue_channel_announcement_edits_on_assign() -> None:
     assert message_id == "m42"
     assert "**Opened by:** alice - <@999>" in content
     assert "**Assigned to:** bob - <@888>" in content
+    assert "**Labels:** `enhancement`" in content
     assert "Closed" not in content
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
 
