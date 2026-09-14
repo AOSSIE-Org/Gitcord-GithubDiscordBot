@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 from ghdcbot.engine.issue_list import (
     clamp_issue_limit,
     filter_open_issues,
-    format_issue_description,
     format_issue_list_messages,
     format_single_issue_entry,
     resolve_repo_for_issue,
@@ -36,21 +35,6 @@ def test_filter_open_issues_excludes_prs_and_closed():
     assert [i["number"] for i in filtered] == [1, 4]
 
 
-def test_format_issue_description():
-    assert format_issue_description(None) == "> _No description provided._"
-    assert format_issue_description("") == "> _No description provided._"
-    assert format_issue_description("   \n\n  ") == "> _No description provided._"
-
-    body_with_html_comment = "<!-- template header -->This is the actual issue content."
-    assert format_issue_description(body_with_html_comment) == "> This is the actual issue content."
-
-    long_body = "A" * 300
-    formatted = format_issue_description(long_body, max_length=50)
-    assert len(formatted) <= 55
-    assert formatted.endswith("...")
-    assert formatted.startswith("> ")
-
-
 def test_format_single_issue_entry_with_author_and_labels():
     issue = {
         "number": 42,
@@ -63,13 +47,12 @@ def test_format_single_issue_entry_with_author_and_labels():
         "body": "Please add dark mode.",
     }
     lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
-    assert len(lines) == 3
+    assert len(lines) == 2
     assert lines[0] == "• [#42](<https://github.com/org/repo/issues/42>) — **Add dark mode toggle**"
     assert "Status: `Open 🟢`" in lines[1]
     assert "Opened by: octocat" in lines[1]
     assert "💬 3 comments" in lines[1]
     assert "🏷️ enhancement, ui" in lines[1]
-    assert lines[2] == "  > Please add dark mode."
 
 
 def test_format_single_issue_entry_with_discord_link():
@@ -90,10 +73,10 @@ def test_format_single_issue_entry_with_discord_link():
         "body": None,
     }
     lines = format_single_issue_entry(issue, org="org", repo="repo", storage=storage)
+    assert len(lines) == 2
     assert "Opened by: <@123456789> (alice)" in lines[1]
     assert "💬 1 comment" in lines[1]
     assert "🏷️" not in lines[1]
-    assert lines[2] == "  > _No description provided._"
 
 
 def test_format_issue_list_messages_chunking():

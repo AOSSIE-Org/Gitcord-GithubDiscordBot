@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -42,29 +41,6 @@ def filter_open_issues(items: Iterable[dict], limit: int = 10) -> list[dict]:
     return filtered
 
 
-def format_issue_description(body: str | None, max_length: int = 180) -> str:
-    """Format issue description into a clean, compact blockquote snippet."""
-    if not body or not body.strip():
-        return "> _No description provided._"
-
-    text = body.strip()
-    # Strip HTML comments <!-- ... -->
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    # Strip image markdown ![...](...)
-    text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
-    # Collapse consecutive whitespace and newlines
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    cleaned = " ".join(lines).strip()
-
-    if not cleaned:
-        return "> _No description provided._"
-
-    if len(cleaned) > max_length:
-        cleaned = cleaned[: max_length - 3].rstrip() + "..."
-
-    return f"> {cleaned}"
-
-
 def _suppress_discord_embed(url: str) -> str:
     """Wrap URL in <> so Discord does not render a link preview embed."""
     text = (url or "").strip()
@@ -89,7 +65,6 @@ def format_single_issue_entry(
     - Who opened it (resolving Discord ID if linked)
     - Comments count
     - Labels (if any)
-    - Description snippet
     """
     number = issue.get("number", "?")
     title = (issue.get("title") or "No title").strip()
@@ -127,9 +102,8 @@ def format_single_issue_entry(
 
     title_line = f"• [#{number}]({suppressed_url}) — **{title}**"
     meta_line = "  " + " • ".join(meta_parts)
-    desc_line = f"  {format_issue_description(issue.get('body'))}"
 
-    return [title_line, meta_line, desc_line]
+    return [title_line, meta_line]
 
 
 def _chunk_message_lines(lines: Sequence[str], *, max_chars: int = _MAX_MESSAGE_CHARS) -> list[str]:
