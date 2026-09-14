@@ -442,7 +442,7 @@ def test_cli_identity_status_output_contains_correct_fields(
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -495,7 +495,7 @@ def test_cli_identity_status_not_linked(tmp_path: Path, capsys: pytest.CaptureFi
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage

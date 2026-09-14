@@ -81,3 +81,42 @@ def test_aussie_config_loads_shared_repo_allowlist(monkeypatch: pytest.MonkeyPat
     assert len(config.github.repos.names) == 19
     assert "EduAid" in config.github.repos.names
     assert "SkillBot" in config.github.repos.names
+
+
+def test_windows_double_quoted_path_in_yaml(tmp_path: Path) -> None:
+    from ghdcbot.config.loader import _load_yaml
+
+    cfg_file = tmp_path / "win_config.yaml"
+    cfg_file.write_text(
+        'data_dir: "C:\\Users\\username\\AppData\\Local\\Temp\\data"\n'
+        'rel_dir: ".\\data\\storage"\n'
+        'message: "hello\\nworld"\n',
+        encoding="utf-8",
+    )
+    loaded = _load_yaml(cfg_file)
+    assert loaded["data_dir"] == "C:\\Users\\username\\AppData\\Local\\Temp\\data"
+    assert loaded["rel_dir"] == ".\\data\\storage"
+    assert loaded["message"] == "hello\nworld"
+
+
+def test_sanitize_windows_yaml_paths_preserves_standard_escapes() -> None:
+    from ghdcbot.config.loader import _sanitize_windows_yaml_paths
+
+    content = 'path: "C:\\test\\new\\folder"\nmsg: "tab\\there"\n'
+    sanitized = _sanitize_windows_yaml_paths(content)
+    assert 'path: "C:\\\\test\\\\new\\\\folder"' in sanitized
+    assert 'msg: "tab\\there"' in sanitized
+
+
+def test_sanitize_windows_yaml_paths_preserves_even_length_runs(tmp_path: Path) -> None:
+    from ghdcbot.config.loader import _load_yaml, _sanitize_windows_yaml_paths
+
+    # 4 backslashes in raw text should remain 4 backslashes (representing 2 escaped backslashes in YAML)
+    content = 'path: "C:\\\\\\\\server\\\\\\\\share"\n'
+    sanitized = _sanitize_windows_yaml_paths(content)
+    assert sanitized == content
+
+    cfg_file = tmp_path / "even_slashes.yaml"
+    cfg_file.write_text(content, encoding="utf-8")
+    loaded = _load_yaml(cfg_file)
+    assert loaded["path"] == "C:\\\\server\\\\share"
