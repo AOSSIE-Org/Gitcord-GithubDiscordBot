@@ -942,6 +942,7 @@ def _build_issue_channel_message(
 
     Open posts: plain text (Opened by / Assigned to). Closed posts: red embed
     card matching PR close styling (empty content so Discord shows one box).
+    Closed status appears only in the embed description, not the title.
     """
     issue_title = _sanitize_discord_pr_title(title)
     raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
@@ -950,7 +951,8 @@ def _build_issue_channel_message(
         status_line = (
             f"**Status:** Closed by @{closer}" if closer else "**Status:** Closed"
         )
-        embed_title = f"Closed: {repo} #{issue_number} — {issue_title}"
+        # Status lives only in description (Bruno): do not prefix title with "Closed:".
+        embed_title = f"{repo} #{issue_number} — {issue_title}"
         if len(embed_title) > 256:
             embed_title = embed_title[:253] + "..."
         embeds = [
@@ -1055,15 +1057,14 @@ def _build_pr_lifecycle_channel_message(
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     actor = (actor_github or "").lstrip("@").strip()
     if status == "merged":
-        label = "Merged"
         status_line = f"**Status:** Merged by @{actor}" if actor else "**Status:** Merged"
         color = _GITHUB_MERGED_PURPLE
     else:
-        label = "Closed"
         status_line = f"**Status:** Closed by @{actor}" if actor else "**Status:** Closed"
         color = _GITHUB_CLOSED_RED
     # Discord embed titles are plain text (no markdown links); put the link in url.
-    title = f"{label}: {repo} #{pr_number} — {pr_title}"
+    # Status (Merged/Closed) lives only in description — do not duplicate in title (Bruno).
+    title = f"{repo} #{pr_number} — {pr_title}"
     if len(title) > 256:
         title = title[:253] + "..."
     embeds = [
