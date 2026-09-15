@@ -1341,7 +1341,9 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0x8250DF
-    assert "Merged:" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
+    assert not embeds[0]["title"].startswith("Merged:")
+    assert "Merged:" not in embeds[0]["title"]
     assert "Merged by @mentor1" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
@@ -1408,7 +1410,9 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "Closed:" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("MiniChain #7")
+    assert not embeds[0]["title"].startswith("Closed:")
+    assert "Closed:" not in embeds[0]["title"]
     assert "Closed by @bob" in embeds[0]["description"]
 
 
@@ -2212,7 +2216,9 @@ def test_update_issue_channel_announcement_edits_on_close() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "Closed: Gitcord-GithubDiscordBot #7" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #7")
+    assert not embeds[0]["title"].startswith("Closed:")
+    assert "Closed:" not in embeds[0]["title"]
     assert "**Opened by:**" not in embeds[0]["title"]
     assert "**Assigned to:**" not in (embeds[0].get("description") or "")
     assert "Closed by @mentor1" in embeds[0]["description"]
@@ -2924,4 +2930,77 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     assert len(discord_writer.messages_sent) == 2
     assert "#41" in discord_writer.messages_sent[0][1]
     assert "#42" in discord_writer.messages_sent[1][1]
+
+
+def test_closed_issue_embed_title_omits_closed_prefix() -> None:
+    """Bruno P0: status lives only in description, not duplicated in title."""
+    from ghdcbot.engine.notifications import _build_issue_channel_message
+
+    msg_built = _build_issue_channel_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=83,
+        title="SQLite leak & Windows file locking",
+        author_github="alice",
+        author_discord_id=None,
+        assignees=[],
+        status="closed",
+        closed_by_github="shubham5080",
+        include_link_nudge=False,
+    )
+    assert msg_built is not None
+    content, embeds = msg_built
+    assert content == ""
+    assert len(embeds) == 1
+    title = embeds[0]["title"]
+    assert title.startswith("Gitcord-GithubDiscordBot #83 —")
+    assert not title.startswith("Closed:")
+    assert "Closed:" not in title
+    assert embeds[0]["description"] == "**Status:** Closed by @shubham5080"
+    assert embeds[0]["color"] == 0xCF222E
+
+
+def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
+    """Bruno P0: Merged/Closed appear only under Status, not in the embed title."""
+    from ghdcbot.engine.notifications import _build_pr_lifecycle_channel_message
+
+    merged_event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": "Add filters", "merged_by": "mentor1"},
+    )
+    merged_built = _build_pr_lifecycle_channel_message(
+        merged_event,
+        "StabilityNexus",
+        status="merged",
+        actor_github="mentor1",
+        tracked={"pr_title": "Add filters"},
+    )
+    assert merged_built is not None
+    _, merged_embeds = merged_built
+    assert merged_embeds[0]["title"].startswith("MiniChain #10 —")
+    assert "Merged:" not in merged_embeds[0]["title"]
+    assert "**Status:** Merged by @mentor1" in merged_embeds[0]["description"]
+
+    closed_event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_closed",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 11, "title": "WIP", "closed_by": "bob"},
+    )
+    closed_built = _build_pr_lifecycle_channel_message(
+        closed_event,
+        "StabilityNexus",
+        status="closed",
+        actor_github="bob",
+        tracked={"pr_title": "WIP"},
+    )
+    assert closed_built is not None
+    _, closed_embeds = closed_built
+    assert closed_embeds[0]["title"].startswith("MiniChain #11 —")
+    assert "Closed:" not in closed_embeds[0]["title"]
+    assert "**Status:** Closed by @bob" in closed_embeds[0]["description"]
 
