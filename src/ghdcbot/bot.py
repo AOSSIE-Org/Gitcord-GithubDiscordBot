@@ -73,11 +73,11 @@ from ghdcbot.help_link import (
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
 
-# Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_PR_STATUS = "pr-status"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
 
+logger = logging.getLogger("ghdcbot.bot")
 
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
@@ -213,6 +213,7 @@ class IssueAssignmentView(discord.ui.View):
         repo: str,
         issue_number: int,
         assignees_to_add: list[str],
+        requester_id: int,
         timeout: float = 300.0,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -221,6 +222,7 @@ class IssueAssignmentView(discord.ui.View):
         self.repo = repo
         self.issue_number = issue_number
         self.assignees_to_add = assignees_to_add
+        self.requester_id = requester_id
         self._is_completed = False
 
         confirm_btn = discord.ui.Button(label="Confirm Assignment", style=discord.ButtonStyle.success)
@@ -230,6 +232,15 @@ class IssueAssignmentView(discord.ui.View):
         cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
         cancel_btn.callback = self.cancel
         self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "❌ Only the person who ran this command can confirm or cancel the assignment.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
     def _disable(self) -> None:
         for item in self.children:
@@ -242,11 +253,36 @@ class IssueAssignmentView(discord.ui.View):
         await interaction.response.defer(ephemeral=False)
         self._disable()
         
+        # Refetch issue to prevent TOCTOU race conditions
+        try:
+            issue_data = await asyncio.to_thread(
+                self.github_adapter.get_issue, self.owner, self.repo, self.issue_number
+            )
+        except Exception as e:
+            logger.error("Failed to refetch issue: %s", e)
+            await interaction.edit_original_response(content="❌ Error refetching issue status.", embed=None, view=self)
+            return
+
+        if not issue_data:
+            await interaction.edit_original_response(content="❌ Issue not found.", embed=None, view=self)
+            return
+        if issue_data.get("state") == "closed":
+            await interaction.edit_original_response(content="❌ Issue is already closed.", embed=None, view=self)
+            return
+        if "pull_request" in issue_data:
+            await interaction.edit_original_response(content="❌ Cannot assign a pull request.", embed=None, view=self)
+            return
+        if issue_data.get("assignees"):
+            await interaction.edit_original_response(content="❌ Issue is already assigned.", embed=None, view=self)
+            return
+        
         success_list = []
         fail_list = []
         for assignee in self.assignees_to_add:
             try:
-                res = self.github_adapter.assign_issue(self.owner, self.repo, self.issue_number, assignee)
+                res = await asyncio.to_thread(
+                    self.github_adapter.assign_issue, self.owner, self.repo, self.issue_number, assignee
+                )
                 if res:
                     success_list.append(assignee)
                 else:
@@ -1626,12 +1662,15 @@ def run_bot(config_path: str) -> None:
     async def assign_issue_repo_autocomplete(
         interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            return []
+
         nonlocal dynamic_repos_cache, dynamic_repos_last_fetched
         repos_config = getattr(config.github, "repos", None)
         repo_names = getattr(repos_config, "names", []) if repos_config else []
         
         if not repo_names:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if not dynamic_repos_cache or not dynamic_repos_last_fetched or (now - dynamic_repos_last_fetched).total_seconds() > 3600:
                 try:
                     def fetch_repos():
@@ -1654,6 +1693,8 @@ def run_bot(config_path: str) -> None:
     async def assign_issue_number_autocomplete(
         interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[int]]:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            return []
         repo = interaction.namespace.repo
         if not repo:
             return []
@@ -1662,7 +1703,7 @@ def run_bot(config_path: str) -> None:
         if not owner:
             return []
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         last_fetched = dynamic_issues_last_fetched.get(repo)
         
         if not last_fetched or (now - last_fetched).total_seconds() > 60:
@@ -1744,10 +1785,26 @@ def run_bot(config_path: str) -> None:
             await interaction.followup.send("❌ GitHub organization not configured.", ephemeral=True)
             return
 
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            await interaction.followup.send(
+                f"❌ Repository **{repo}** is not allowed by Gitcord configuration.",
+                ephemeral=True,
+            )
+            return
+
         from ghdcbot.engine.issue_assignment import fetch_issue_context, build_assignment_confirmation_embed
-        issue = fetch_issue_context(github_adapter, owner, repo, issue_number)
+        issue = await asyncio.to_thread(fetch_issue_context, github_adapter, owner, repo, issue_number)
         if not issue:
             await interaction.followup.send(f"❌ Could not find issue {owner}/{repo}#{issue_number}", ephemeral=True)
+            return
+
+        if issue.get("state") != "open":
+            await interaction.followup.send(f"❌ Issue #{issue_number} is not open.", ephemeral=True)
+            return
+
+        if "pull_request" in issue:
+            await interaction.followup.send(f"❌ #{issue_number} is a Pull Request, not an Issue.", ephemeral=True)
             return
 
         existing_assignees = issue.get("assignees", [])
@@ -1766,7 +1823,7 @@ def run_bot(config_path: str) -> None:
             new_assignee_github=", ".join(github_assignees),
             new_assignee_discord=None,
             assignee_activity="Unknown",
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
 
         view = IssueAssignmentView(
@@ -1775,6 +1832,7 @@ def run_bot(config_path: str) -> None:
             repo=repo,
             issue_number=issue_number,
             assignees_to_add=github_assignees,
+            requester_id=interaction.user.id,
         )
         await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view)
 
