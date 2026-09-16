@@ -202,6 +202,79 @@ def build_identity_verification_embed(claim: LinkClaim, *, profile_settings_url:
     embed.add_field(name="Expires At (UTC)", value=claim.expires_at.isoformat(), inline=False)
     return embed
 
+class IssueAssignmentView(discord.ui.View):
+    """View to confirm or cancel issue assignment."""
+
+    def __init__(
+        self,
+        *,
+        github_adapter: Any,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        assignees_to_add: list[str],
+        timeout: float = 300.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.github_adapter = github_adapter
+        self.owner = owner
+        self.repo = repo
+        self.issue_number = issue_number
+        self.assignees_to_add = assignees_to_add
+        self._is_completed = False
+
+        confirm_btn = discord.ui.Button(label="Confirm Assignment", style=discord.ButtonStyle.success)
+        confirm_btn.callback = self.confirm
+        self.add_item(confirm_btn)
+
+        cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_btn.callback = self.cancel
+        self.add_item(cancel_btn)
+
+    def _disable(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        self._is_completed = True
+
+    async def confirm(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        await interaction.response.defer(ephemeral=False)
+        self._disable()
+        
+        success_list = []
+        fail_list = []
+        for assignee in self.assignees_to_add:
+            try:
+                res = self.github_adapter.assign_issue(self.owner, self.repo, self.issue_number, assignee)
+                if res:
+                    success_list.append(assignee)
+                else:
+                    fail_list.append(assignee)
+            except Exception as e:
+                logger.error("Failed to assign %s to %s/%s#%d: %s", assignee, self.owner, self.repo, self.issue_number, e)
+                fail_list.append(assignee)
+        
+        msgs = []
+        if success_list:
+            msgs.append(f"✅ Assigned: {', '.join(success_list)}")
+        if fail_list:
+            msgs.append(f"❌ Failed to assign: {', '.join(fail_list)}")
+            
+        await interaction.edit_original_response(content="\n".join(msgs), embed=None, view=self)
+
+    async def cancel(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        self._disable()
+        await interaction.response.edit_message(content="❌ Issue assignment cancelled.", embed=None, view=self)
+
+    async def on_timeout(self) -> None:
+        self._is_completed = True
+        for item in self.children:
+            item.disabled = True
+
+
 
 class IdentityVerificationView(discord.ui.View):
     """Ephemeral /link buttons that reuse IdentityLinkService.verify_claim()."""
@@ -1546,6 +1619,164 @@ def run_bot(config_path: str) -> None:
                     await interaction.followup.send(err_text, ephemeral=True)
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
+
+    dynamic_repos_cache: list[str] = []
+    dynamic_repos_last_fetched: datetime | None = None
+
+    async def assign_issue_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        nonlocal dynamic_repos_cache, dynamic_repos_last_fetched
+        repos_config = getattr(config.github, "repos", None)
+        repo_names = getattr(repos_config, "names", []) if repos_config else []
+        
+        if not repo_names:
+            now = datetime.now(timezone.utc)
+            if not dynamic_repos_cache or not dynamic_repos_last_fetched or (now - dynamic_repos_last_fetched).total_seconds() > 3600:
+                try:
+                    def fetch_repos():
+                        return [r.get("name") for r in github_adapter._list_repos() if r.get("name")]
+                    dynamic_repos_cache = await asyncio.to_thread(fetch_repos)
+                    dynamic_repos_last_fetched = now
+                except Exception as e:
+                    logger.error("Failed to fetch repos for autocomplete: %s", e)
+            repo_names = dynamic_repos_cache
+
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in repo_names
+            if current.lower() in r.lower()
+        ][:25]
+
+    dynamic_issues_cache: dict[str, list[dict]] = {}
+    dynamic_issues_last_fetched: dict[str, datetime] = {}
+
+    async def assign_issue_number_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[int]]:
+        repo = interaction.namespace.repo
+        if not repo:
+            return []
+            
+        owner = getattr(config.github, "org", "")
+        if not owner:
+            return []
+
+        now = datetime.now(timezone.utc)
+        last_fetched = dynamic_issues_last_fetched.get(repo)
+        
+        if not last_fetched or (now - last_fetched).total_seconds() > 60:
+            try:
+                def fetch_issues():
+                    params = {"state": "open", "per_page": 100}
+                    open_issues = []
+                    for page in github_adapter._paginate(f"/repos/{owner}/{repo}/issues", params=params):
+                        for issue in page:
+                            if "pull_request" not in issue and not issue.get("assignees"):
+                                open_issues.append({"number": issue["number"], "title": issue.get("title", "Untitled")})
+                        if len(open_issues) >= 100:
+                            break
+                    return open_issues
+                dynamic_issues_cache[repo] = await asyncio.to_thread(fetch_issues)
+                dynamic_issues_last_fetched[repo] = now
+            except Exception as e:
+                logger.error("Failed to fetch open issues for autocomplete: %s", e)
+                if repo not in dynamic_issues_cache:
+                    dynamic_issues_cache[repo] = []
+
+        choices = []
+        for issue in dynamic_issues_cache.get(repo, []):
+            name_str = f"#{issue['number']}: {issue['title']}"
+            if len(name_str) > 100:
+                name_str = name_str[:97] + "..."
+                
+            num_str = str(issue["number"])
+            if current and current not in num_str and current.lower() not in name_str.lower():
+                continue
+                
+            choices.append(app_commands.Choice(name=name_str, value=issue["number"]))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    @tree.command(
+        name="assign-issue",
+        description="Assign a GitHub issue to up to 3 verified Discord users.",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to assign the issue in",
+        issue_number="The GitHub issue number",
+        assignee_1="First user to assign",
+        assignee_2="Second user to assign (optional)",
+        assignee_3="Third user to assign (optional)",
+    )
+    @app_commands.autocomplete(repo=assign_issue_repo_autocomplete, issue_number=assign_issue_number_autocomplete)
+    async def assign_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        issue_number: int,
+        assignee_1: discord.Member,
+        assignee_2: discord.Member | None = None,
+        assignee_3: discord.Member | None = None,
+    ) -> None:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            await interaction.response.send_message(
+                format_slash_command_permission_denied(config, "assign-issue"), ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        
+        assignees = [a for a in (assignee_1, assignee_2, assignee_3) if a is not None]
+        github_assignees = []
+        for assignee in assignees:
+            github_username = resolve_discord_to_github(storage, str(assignee.id))
+            if not github_username:
+                await interaction.followup.send(
+                    f"❌ User <@{assignee.id}> has not linked their GitHub account.", ephemeral=True
+                )
+                return
+            github_assignees.append(github_username)
+
+        owner = getattr(config.github, "org", "")
+        if not owner:
+            await interaction.followup.send("❌ GitHub organization not configured.", ephemeral=True)
+            return
+
+        from ghdcbot.engine.issue_assignment import fetch_issue_context, build_assignment_confirmation_embed
+        issue = fetch_issue_context(github_adapter, owner, repo, issue_number)
+        if not issue:
+            await interaction.followup.send(f"❌ Could not find issue {owner}/{repo}#{issue_number}", ephemeral=True)
+            return
+
+        existing_assignees = issue.get("assignees", [])
+        if existing_assignees:
+            await interaction.followup.send(
+                f"❌ Issue #{issue_number} is already assigned. Unassign first then assign again.", ephemeral=True
+            )
+            return
+
+        embed_dict = build_assignment_confirmation_embed(
+            issue=issue,
+            owner=owner,
+            repo=repo,
+            current_assignee_github=None,
+            current_assignee_discord=None,
+            new_assignee_github=", ".join(github_assignees),
+            new_assignee_discord=None,
+            assignee_activity="Unknown",
+            now=datetime.now(timezone.utc),
+        )
+
+        view = IssueAssignmentView(
+            github_adapter=github_adapter,
+            owner=owner,
+            repo=repo,
+            issue_number=issue_number,
+            assignees_to_add=github_assignees,
+        )
+        await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view)
 
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
