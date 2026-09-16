@@ -34,6 +34,7 @@ Tips:
 /summary              Contribution metrics (7d / 30d); optional member
 /open-prs             List currently open PRs for a contributor
 /pr                   Recent PRs by closed / merged / open (count, skip)
+/issue                Recent open issues in project channel or repo (limit, repo)
 /connect-social       Attach X or LinkedIn username/URL to your profile
 /disconnect-social    Remove X or LinkedIn from your profile
 /unlink               Remove your GitHub link
