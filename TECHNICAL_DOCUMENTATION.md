@@ -696,7 +696,7 @@ When `discord.pr_preview_channels` is configured, the bot monitors those channel
 
 ### 4.6 Legacy Storage (`issue_requests`)
 
-The `issue_requests` SQLite table remains for historical data and snapshots. Discord slash commands for issue requests and assignment (`/request-issue`, `/issue-requests`, `/assign-issue`) were removed; issue assignment is handled directly on GitHub.
+The `issue_requests` SQLite table remains for historical data and snapshots. Discord slash commands for issue requests (`/request-issue`, `/issue-requests`) were removed. The `/assign-issue` command allows authorized Discord members to directly assign issues on GitHub.
 
 ### 4.7 Audit Logs
 
