@@ -212,7 +212,9 @@ class IssueAssignmentView(discord.ui.View):
         owner: str,
         repo: str,
         issue_number: int,
-        assignees_to_add: list[str],
+        storage: Any,
+        discord_ids: list[str],
+        initial_github_assignees: list[str],
         requester_id: int,
         timeout: float = 300.0,
     ) -> None:
@@ -221,7 +223,9 @@ class IssueAssignmentView(discord.ui.View):
         self.owner = owner
         self.repo = repo
         self.issue_number = issue_number
-        self.assignees_to_add = assignees_to_add
+        self.storage = storage
+        self.discord_ids = discord_ids
+        self.initial_github_assignees = initial_github_assignees
         self.requester_id = requester_id
         self._is_completed = False
 
@@ -276,9 +280,18 @@ class IssueAssignmentView(discord.ui.View):
             await interaction.edit_original_response(content="❌ Issue is already assigned.", embed=None, view=self)
             return
         
+        from ghdcbot.engine.issue_assignment import resolve_discord_to_github
+        fresh_github_assignees = []
+        for d_id, initial_gh in zip(self.discord_ids, self.initial_github_assignees):
+            gh = resolve_discord_to_github(self.storage, d_id)
+            if not gh or gh != initial_gh:
+                await interaction.edit_original_response(content="❌ A selected user's GitHub mapping changed or was removed before confirmation.", embed=None, view=self)
+                return
+            fresh_github_assignees.append(gh)
+        
         success_list = []
         fail_list = []
-        for assignee in self.assignees_to_add:
+        for assignee in fresh_github_assignees:
             try:
                 res = await asyncio.to_thread(
                     self.github_adapter.assign_issue, self.owner, self.repo, self.issue_number, assignee
@@ -1675,7 +1688,8 @@ def run_bot(config_path: str) -> None:
                 try:
                     def fetch_repos():
                         return [r.get("name") for r in github_adapter._list_repos() if r.get("name")]
-                    dynamic_repos_cache = await asyncio.to_thread(fetch_repos)
+                    fetched = await asyncio.to_thread(fetch_repos)
+                    dynamic_repos_cache = [r for r in fetched if is_repo_allowed(repos_config, r)]
                     dynamic_repos_last_fetched = now
                 except Exception as e:
                     logger.error("Failed to fetch repos for autocomplete: %s", e)
@@ -1701,6 +1715,10 @@ def run_bot(config_path: str) -> None:
             
         owner = getattr(config.github, "org", "")
         if not owner:
+            return []
+
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
             return []
 
         now = datetime.now(UTC)
@@ -1831,7 +1849,9 @@ def run_bot(config_path: str) -> None:
             owner=owner,
             repo=repo,
             issue_number=issue_number,
-            assignees_to_add=github_assignees,
+            storage=storage,
+            discord_ids=[str(a.id) for a in assignees],
+            initial_github_assignees=github_assignees,
             requester_id=interaction.user.id,
         )
         await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view)
