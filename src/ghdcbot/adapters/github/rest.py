@@ -103,6 +103,10 @@ def _append_repo_search_qualifiers(
     return query
 
 
+class GitHubPaginationError(RuntimeError):
+    """Raised when GitHub pagination encounters an HTTP or network error."""
+
+
 class GitHubRestAdapter:
     def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -165,6 +169,29 @@ class GitHubRestAdapter:
     def list_open_issues(self) -> Iterable[dict]:
         for repo in self._list_repos():
             yield from self._list_repo_open_issues(repo)
+
+    def invalidate_repo_cache(self) -> None:
+        """Explicitly invalidate the repository cache (e.g. after config changes)."""
+        self._repo_names_cache = None
+
+    def list_org_repo_names(self) -> list[str]:
+        """Return a list of repo names in the org (for slash command autocomplete)."""
+        import time
+        now = time.monotonic()
+        
+        # Check cache
+        if hasattr(self, "_repo_names_cache") and self._repo_names_cache is not None:
+            cache_time, cached_names = self._repo_names_cache
+            if now - cache_time < getattr(self, "_repo_names_cache_ttl", 60.0):
+                return cached_names
+                
+        repos = list(self._list_repos())
+        names = [r["name"] for r in repos if isinstance(r, dict) and "name" in r]
+        
+        # Save to cache
+        self._repo_names_cache_ttl = 60.0
+        self._repo_names_cache = (now, names)
+        return names
 
     def list_open_pull_requests(self) -> Iterable[dict]:
         for repo in self._list_repos():
@@ -312,6 +339,74 @@ class GitHubRestAdapter:
                     break
                 page += 1
         return results
+
+    def create_issue(
+        self, owner: str, repo: str, title: str, body: str = "", labels: list[str] | None = None
+    ) -> dict | None:
+        """Create a new GitHub issue via REST API.
+
+        Returns the created issue dict (with number, html_url, etc.) on success, None on failure.
+        """
+        path = f"/repos/{owner}/{repo}/issues"
+        payload = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+            
+        try:
+            response = self._client.post(path, json=payload)
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "GitHub request failed",
+                extra={"path": path, "error": str(exc)},
+            )
+            return None
+
+        rate_limit = _parse_rate_limit(response.headers)
+        if rate_limit.remaining is not None and rate_limit.remaining <= 1:
+            self._logger.warning(
+                "GitHub rate limit nearly exhausted",
+                extra={
+                    "path": path,
+                    "remaining": rate_limit.remaining,
+                    "reset_at": rate_limit.reset_at.isoformat() if rate_limit.reset_at else None,
+                },
+            )
+
+        if response.status_code == 201:
+            try:
+                issue = response.json()
+                self._logger.info(
+                    "Issue created successfully",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue.get("number"),
+                    },
+                )
+                return issue
+            except Exception:
+                self._logger.warning(
+                    "Issue created successfully (could not parse response)",
+                    extra={"owner": owner, "repo": repo, "title": title},
+                )
+                return None
+        else:
+            error_body = ""
+            try:
+                error_body = (response.text or "")[:500]
+            except Exception:
+                pass
+            self._logger.warning(
+                "Issue creation failed (GitHub API non-201)",
+                extra={
+                    "owner": owner,
+                    "repo": repo,
+                    "title": title,
+                    "status_code": response.status_code,
+                    "error_response": error_body,
+                },
+            )
+            return None
 
     def assign_issue(self, owner: str, repo: str, issue_number: int, assignee: str) -> bool:
         """Assign a GitHub issue to a user.
@@ -621,6 +716,49 @@ class GitHubRestAdapter:
                 extra={"owner": owner, "repo": repo, "file_path": file_path, "error": str(exc)},
             )
             return False
+
+    def list_repo_open_issues(
+        self,
+        owner: str,
+        repo: str,
+        limit: int = 100,
+        per_page: int = 100,
+    ) -> list[dict] | None:
+        """Fetch open issues for a repository, excluding pull requests.
+
+        :param owner: Repository owner/org.
+        :param repo: Repository name.
+        :param limit: Maximum number of open issues to collect across pages.
+        :param per_page: Page size for each GitHub API request (clamped to 1..100).
+        :return: List of issue dicts, newest first, or None on fetch error.
+        """
+        if limit <= 0:
+            return []
+
+        issues: list[dict] = []
+        page_size = max(1, min(per_page, 100))
+        params = {"state": "open", "sort": "created", "direction": "desc", "per_page": page_size}
+        try:
+            pages = self._paginate(
+                f"/repos/{owner}/{repo}/issues",
+                params=params,
+                raise_on_error=True,
+            )
+            if pages is None:
+                return None
+            for page in pages:
+                if page is None:
+                    return None
+                for item in page:
+                    if "pull_request" in item:
+                        continue
+                    issues.append(item)
+                    if len(issues) >= limit:
+                        return issues
+        except GitHubPaginationError:
+            return None
+
+        return issues
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict | None:
         """Fetch a single pull request by number.
@@ -1774,13 +1912,25 @@ class GitHubRestAdapter:
                     "created_at": pr.get("created_at"),
                 }
 
-    def _paginate(self, path: str, params: dict) -> Iterator[list]:
+    def _paginate(
+        self,
+        path: str,
+        params: dict,
+        *,
+        raise_on_error: bool = False,
+    ) -> Iterator[list]:
         page = 1
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request failed: {path}")
                 return
             if response.status_code != 200:
+                if raise_on_error:
+                    raise GitHubPaginationError(
+                        f"GitHub request failed with status {response.status_code}: {path}"
+                    )
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
@@ -1810,13 +1960,26 @@ class GitHubRestAdapter:
                 repos.extend(page)
         return repos, response.status_code
 
-    def _paginate_from_page(self, path: str, params: dict, start_page: int) -> Iterator[list]:
+    def _paginate_from_page(
+        self,
+        path: str,
+        params: dict,
+        start_page: int,
+        *,
+        raise_on_error: bool = False,
+    ) -> Iterator[list]:
         page = start_page
         while True:
             response = self._request("GET", path, params={**params, "page": page})
             if response is None:
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request failed: {path}")
                 return
             if response.status_code != 200:
+                if raise_on_error:
+                    raise GitHubPaginationError(
+                        f"GitHub request failed with status {response.status_code}: {path}"
+                    )
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},

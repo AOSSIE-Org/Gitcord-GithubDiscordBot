@@ -84,7 +84,7 @@ def test_unrestricted_slash_commands_allows_any_guild_member() -> None:
         ),
     )
     assert slash_command_allowed(_interaction(_member((1, "Contributor"))), config, "sync") is True
-    assert slash_command_allowed(_interaction(_member((1, "Student"))), config, "assign-issue") is True
+    assert slash_command_allowed(_interaction(_member((1, "Student"))), config, "manage-assignees") is True
 
 
 def test_command_permissions_role_name_match() -> None:
@@ -106,15 +106,15 @@ def test_command_permissions_role_id_match() -> None:
     config = BotConfig.model_validate(
         _minimal_config_payload(
             command_permissions={
-                "assign-issue": SlashCommandPermissionRule(
+                "manage-assignees": SlashCommandPermissionRule(
                     role_ids=["999"],
                     role_names=[],
                 ),
             },
         ),
     )
-    assert slash_command_allowed(_interaction(_member((999, "X"))), config, "assign-issue") is True
-    assert slash_command_allowed(_interaction(_member((1, "Mentor"))), config, "assign-issue") is False
+    assert slash_command_allowed(_interaction(_member((999, "X"))), config, "manage-assignees") is True
+    assert slash_command_allowed(_interaction(_member((1, "Mentor"))), config, "manage-assignees") is False
 
 
 def test_command_permissions_administrator_bypass() -> None:
@@ -208,7 +208,7 @@ def test_config_accepts_command_permissions_in_yaml_shape() -> None:
     config = BotConfig.model_validate(
         _minimal_config_payload(
             command_permissions={
-                "assign-issue": {
+                "manage-assignees": {
                     "role_names": ["Mentor"],
                     "allow_discord_administrators": True,
                 },
@@ -216,6 +216,25 @@ def test_config_accepts_command_permissions_in_yaml_shape() -> None:
         ),
     )
     assert config.discord.command_permissions is not None
-    rule = config.discord.command_permissions["assign-issue"]
+    rule = config.discord.command_permissions["manage-assignees"]
     assert rule.role_names == ["Mentor"]
     assert rule.allow_discord_administrators is True
+
+
+def test_assign_issue_configured_rule_path() -> None:
+    """Ensure 'assign-issue' can be overridden via command_permissions."""
+    config = BotConfig.model_validate(
+        _minimal_config_payload(
+            command_permissions={
+                "assign-issue": SlashCommandPermissionRule(
+                    role_names=["AssignerRole"],
+                    role_ids=[],
+                ),
+            },
+        ),
+    )
+    assert slash_command_allowed(_interaction(_member((1, "AssignerRole"))), config, "assign-issue") is True
+    assert slash_command_allowed(_interaction(_member((1, "Mentor"))), config, "assign-issue") is False
+    
+    # Existing manage-assignees / legacy fallback behavior still applies when omitted
+    assert slash_command_allowed(_interaction(_member((1, "Mentor"))), config, "manage-assignees") is True

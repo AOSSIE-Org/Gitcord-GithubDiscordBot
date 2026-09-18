@@ -227,6 +227,9 @@ class DiscordApiAdapter:
             payload["flags"] = 4  # SUPPRESS_EMBEDS — link previews only
         if component_list:
             payload["components"] = component_list
+
+        payload["allowed_mentions"] = {"parse": ["users"]}
+
         try:
             response = self._client.request(
                 "POST",
@@ -273,7 +276,10 @@ class DiscordApiAdapter:
         if not channel_id or not message_id:
             return False
         text = (content or "")[:2000]
-        payload: dict = {"content": text}
+        payload: dict = {
+            "content": text,
+            "allowed_mentions": {"parse": ["users"]},
+        }
         if embeds is not None:
             payload["embeds"] = list(embeds)[:10]
             # Explicitly clear suppress-embeds if a prior edit set it.
@@ -344,7 +350,11 @@ class DiscordApiAdapter:
             msg_response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": text, "flags": 4},  # 4 = SUPPRESS_EMBEDS (no link previews)
+                json={
+                    "content": text,
+                    "flags": 4,  # 4 = SUPPRESS_EMBEDS (no link previews)
+                    "allowed_mentions": {"parse": ["users"]},
+                },
             )
             if msg_response.status_code not in (200, 201):
                 self._logger.warning(
