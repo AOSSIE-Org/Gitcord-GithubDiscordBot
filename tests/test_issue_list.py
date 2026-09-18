@@ -388,8 +388,8 @@ def test_issue_repo_autocomplete_choice_creation() -> None:
     assert [c.name for c in all_choices] == ["Knowledge-Agent", "Devr.AI"]
 
 
-def test_issue_repo_autocomplete_filters_disallowed_repos() -> None:
-    """Autocomplete choices strictly adhere to github.repos allowlist, ignoring unallowed repos in pr_open_channels or contributor roles."""
+def test_issue_repo_autocomplete_deny_mode_excludes_blocked_names() -> None:
+    """Deny-mode github.repos.names are blocked — never returned as autocomplete choices."""
     from ghdcbot.bot import get_issue_repo_choices
     from ghdcbot.config.models import (
         BotConfig,
@@ -408,20 +408,51 @@ def test_issue_repo_autocomplete_filters_disallowed_repos() -> None:
         ),
         github=GitHubConfig(
             org="test-org",
-            repos=RepoFilterConfig(mode="allow", names=["Knowledge-Agent"]),
+            repos=RepoFilterConfig(mode="deny", names=["blocked-repo"]),
         ),
         discord=DiscordConfig(
             guild_id="123",
             token="fake",
-            pr_open_channels={"Disallowed-Channel-Repo": "9999"},
+            pr_open_channels={"allowed-repo": "9999", "blocked-repo": "8888"},
         ),
-        repo_contributor_roles={"Disallowed-Role-Repo": "Role"},
     )
 
     choices = get_issue_repo_choices(cfg, "")
-    assert len(choices) == 1
-    assert choices[0].name == "Knowledge-Agent"
-    assert choices[0].value == "Knowledge-Agent"
+    assert [c.name for c in choices] == ["allowed-repo"]
+
+    # With no alternate configured repos, deny mode yields no static suggestions
+    # (assign-issue falls back to a dynamic org listing instead of suggesting blocked names).
+    cfg_deny_only = BotConfig(
+        runtime=RuntimeConfig(
+            data_dir="./data",
+            github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        ),
+        github=GitHubConfig(
+            org="test-org",
+            repos=RepoFilterConfig(mode="deny", names=["blocked-repo"]),
+        ),
+        discord=DiscordConfig(guild_id="123", token="fake"),
+    )
+    assert get_issue_repo_choices(cfg_deny_only, "") == []
+
+
+def test_unassigned_open_issue_autocomplete_entries() -> None:
+    """Assignment autocomplete keeps unassigned issues and drops assigned ones."""
+    from ghdcbot.bot import unassigned_open_issue_autocomplete_entries
+
+    raw = [
+        {"number": 1, "title": "Free", "assignees": []},
+        {"number": 2, "title": "Taken", "assignees": [{"login": "alice"}]},
+        {"number": 3, "title": "Also free"},
+    ]
+    assert unassigned_open_issue_autocomplete_entries(raw) == [
+        {"number": 1, "title": "Free"},
+        {"number": 3, "title": "Also free"},
+    ]
+    assert unassigned_open_issue_autocomplete_entries(None) == []
+
 
 
 def test_issue_repo_autocomplete_integration() -> None:
