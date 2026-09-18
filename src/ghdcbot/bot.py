@@ -13,6 +13,7 @@ from discord import app_commands
 from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
+from ghdcbot.config.access import cfg_get
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.discord_command_permissions import (
@@ -23,6 +24,12 @@ from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
+)
+from ghdcbot.engine.issue_list import (
+    clamp_issue_limit,
+    filter_open_issues,
+    format_issue_list_messages,
+    resolve_repo_for_issue,
 )
 from ghdcbot.engine.metrics import (
     build_contribution_summary_message,
@@ -389,6 +396,27 @@ async def handle_app_command_error(
                 )
         except Exception:  # noqa: BLE001
             logger.error("Could not send error message to user")
+
+
+def get_issue_repo_choices(
+    config: Any, current: str
+) -> list[app_commands.Choice[str]]:
+    """Generate autocomplete choices for the /issue repo option from config."""
+    repo_filter = None
+    if config:
+        github_cfg = cfg_get(config, "github")
+        if github_cfg:
+            repo_filter = cfg_get(github_cfg, "repos")
+
+    configured_repos = [
+        r for r in get_configured_repo_names(config) if is_repo_allowed(repo_filter, r)
+    ]
+    suggestions = filter_repo_suggestions(configured_repos, current)
+    return [
+        app_commands.Choice(name=r, value=r)
+        for r in suggestions
+        if is_repo_allowed(repo_filter, r)
+    ]
 
 
 def run_bot(config_path: str) -> None:
@@ -968,6 +996,109 @@ def run_bot(config_path: str) -> None:
         return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
+        name="issue",
+        description="List recent open issues in the project channel or specified repository (excluding PRs)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name (optional; auto-detected from channel or config if omitted)",
+        limit="How many recent open issues to show (optional, default 10, max 50)",
+    )
+    @app_commands.checks.cooldown(1, 15.0)
+    async def issue_cmd(
+        interaction: discord.Interaction,
+        repo: str | None = None,
+        limit: app_commands.Range[int, 1, 50] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = interaction.channel_id
+        channel_name = getattr(interaction.channel, "name", None)
+        resolved_repo, error_msg = resolve_repo_for_issue(
+            config=config,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            repo=repo,
+        )
+        if error_msg or not resolved_repo:
+            await interaction.followup.send(
+                error_msg or "❌ Unable to determine repository.",
+                ephemeral=True,
+            )
+            return
+
+        effective_limit = clamp_issue_limit(limit)
+        logger.info(
+            "/issue requested",
+            extra={
+                "repo": resolved_repo,
+                "requested_limit": limit,
+                "effective_limit": effective_limit,
+                "user_id": str(interaction.user.id),
+            },
+        )
+
+        try:
+            list_issues = getattr(github_adapter, "list_repo_open_issues", None)
+            if not callable(list_issues):
+                await interaction.followup.send(
+                    "❌ This GitHub adapter cannot list repository issues.",
+                    ephemeral=True,
+                )
+                return
+            raw_issues = await asyncio.to_thread(
+                list_issues,
+                config.github.org,
+                resolved_repo,
+                effective_limit,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to list issues for /issue",
+                extra={"repo": resolved_repo, "user_id": str(interaction.user.id)},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if raw_issues is None:
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        issues = filter_open_issues(raw_issues, limit=effective_limit)
+        messages = format_issue_list_messages(
+            issues=issues,
+            org=config.github.org,
+            repo=resolved_repo,
+            limit=effective_limit,
+            storage=storage,
+        )
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
+
+    @issue_cmd.autocomplete("repo")
+    async def issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        choices = get_issue_repo_choices(config, current)
+        logger.debug(
+            "Autocomplete for issue repo: current=%r, count=%d",
+            current,
+            len(choices),
+        )
+        return choices
+
+    @tree.command(
         name="who-is",
         description="Lookup a GitHub username to find their verified Discord account",
         guild=discord.Object(id=guild_id)
@@ -1415,6 +1546,138 @@ def run_bot(config_path: str) -> None:
                     await interaction.followup.send(err_text, ephemeral=True)
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
+
+    ISSUE_LABELS = [
+        app_commands.Choice(name="Bug", value="bug"),
+        app_commands.Choice(name="Feature", value="feature"),
+        app_commands.Choice(name="Enhancement", value="enhancement"),
+        app_commands.Choice(name="Documentation", value="documentation"),
+        app_commands.Choice(name="Question", value="question"),
+    ]
+    @tree.command(
+        name="create-issue",
+        description="Create a GitHub issue directly from Discord (verified users only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to create the issue in",
+        title="Issue title (1-256 characters)",
+        description="Optional issue description/body",
+        label="Optional issue label",
+    )
+
+    @app_commands.choices(label=ISSUE_LABELS)
+
+    async def create_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        title: str,
+        description: str = "",
+        label: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        
+        # 1. Verify user
+        from ghdcbot.engine.issue_creation import (
+            validate_issue_params,
+            build_issue_created_embed,
+            format_issue_creation_audit_context,
+        )
+        
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            await interaction.followup.send(
+                "❌ You must link your GitHub account first. Use `/link` and `/verify-link`.",
+                ephemeral=True,
+            )
+            return
+            
+        # 2. Check write permissions
+        if not getattr(config.github.permissions, "write", False):
+            await interaction.followup.send(
+                "❌ GitHub write permissions are not enabled. Ask an admin to set `github.permissions.write: true` in config.",
+                ephemeral=True,
+            )
+            return
+            
+        # 3. Validate inputs
+        repo = repo.strip()
+        title = title.strip()
+        ok, err_msg = validate_issue_params(title, repo, config.github.org)
+        if not ok:
+            await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
+            return
+            
+        # 4. Create issue
+        label_list = [label] if label else None
+        
+        issue_data = await asyncio.to_thread(
+            github_adapter.create_issue,
+            config.github.org,
+            repo,
+            title,
+            description,
+            label_list,
+        )
+        
+        if not issue_data:
+            await interaction.followup.send(
+                f"❌ Failed to create issue. Repository `{repo}` might not exist or bot lacks access.",
+                ephemeral=True,
+            )
+            return
+            
+        # 5. Build embed
+        embed_dict = build_issue_created_embed(
+            issue_data,
+            config.github.org,
+            repo,
+            github_username,
+            discord_user_id,
+        )
+        embed = discord.Embed.from_dict(embed_dict)
+        
+        # 6. Audit log
+        append_audit = getattr(storage, "append_audit_event", None)
+        if callable(append_audit):
+            ctx = format_issue_creation_audit_context(
+                config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
+            )
+            ctx["timestamp"] = datetime.now(UTC).isoformat()
+            try:
+                append_audit(ctx)
+            except Exception as e:
+                logger.error("Failed to append audit event for issue creation", exc_info=e)
+            
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @create_issue_cmd.autocomplete("repo")
+    async def create_issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        discord_user_id = str(interaction.user.id)
+        
+        # Check permissions
+        if not getattr(config.github.permissions, "write", False):
+            return []
+            
+        # Check identity
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            return []
+            
+        try:
+            repo_names = await asyncio.to_thread(github_adapter.list_org_repo_names)
+        except Exception:
+            repo_names = []
+            
+        matches = [r for r in repo_names if current.lower() in r.lower()]
+        return [
+            app_commands.Choice(name=match, value=match)
+            for match in matches[:25]
+        ]
 
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
