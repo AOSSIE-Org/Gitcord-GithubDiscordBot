@@ -1317,7 +1317,7 @@ def run_bot(config_path: str) -> None:
             ctx = format_issue_creation_audit_context(
                 config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
             )
-            ctx["timestamp"] = datetime.now(timezone.utc).isoformat()
+            ctx["timestamp"] = datetime.now(UTC).isoformat()
             try:
                 append_audit(ctx)
             except Exception as e:
