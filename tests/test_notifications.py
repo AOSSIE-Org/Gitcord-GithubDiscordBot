@@ -63,6 +63,9 @@ class MockStorage:
     def save_pr_channel_announcement(self, **kwargs: object) -> None:
         repo = str(kwargs["repo"])
         pr_number = int(kwargs["pr_number"])  # type: ignore[arg-type]
+        created_at = kwargs.get("created_at")
+        if isinstance(created_at, datetime):
+            created_at = created_at.astimezone(UTC).isoformat() if created_at.tzinfo else created_at.replace(tzinfo=UTC).isoformat()
         self.pr_channel_announcements[(repo, pr_number)] = {
             "repo": repo,
             "pr_number": pr_number,
@@ -71,6 +74,7 @@ class MockStorage:
             "status": str(kwargs.get("status") or "open"),
             "pr_title": kwargs.get("pr_title"),
             "author_github": kwargs.get("author_github"),
+            "created_at": created_at,
         }
 
     def get_pr_channel_announcement(self, repo: str, pr_number: int) -> dict | None:
@@ -86,6 +90,9 @@ class MockStorage:
     def save_issue_channel_announcement(self, **kwargs: object) -> None:
         repo = str(kwargs["repo"])
         issue_number = int(kwargs["issue_number"])  # type: ignore[arg-type]
+        created_at = kwargs.get("created_at")
+        if isinstance(created_at, datetime):
+            created_at = created_at.astimezone(UTC).isoformat() if created_at.tzinfo else created_at.replace(tzinfo=UTC).isoformat()
         self.issue_channel_announcements[(repo, issue_number)] = {
             "repo": repo,
             "issue_number": issue_number,
@@ -95,6 +102,7 @@ class MockStorage:
             "issue_title": kwargs.get("issue_title"),
             "author_github": kwargs.get("author_github"),
             "assignee_github": kwargs.get("assignee_github"),
+            "created_at": created_at,
         }
 
     def get_issue_channel_announcement(self, repo: str, issue_number: int) -> dict | None:
@@ -129,6 +137,7 @@ class MockDiscordWriter:
     def __init__(self) -> None:
         self.dms_sent: list[tuple[str, str]] = []
         self.messages_sent: list[tuple[str, str]] = []
+        self.message_embeds: list[list[dict] | None] = []
         self.messages_edited: list[tuple[str, str, str]] = []
         self._next_message_id = 1000
     
@@ -138,12 +147,20 @@ class MockDiscordWriter:
     
     def send_message(self, channel_id: str, content: str) -> bool:
         self.messages_sent.append((channel_id, content))
+        self.message_embeds.append(None)
         return True
 
-    def create_message(self, channel_id: str, content: str) -> str | None:
-        if not content:
+    def create_message(
+        self,
+        channel_id: str,
+        content: str,
+        *,
+        embeds: list[dict] | None = None,
+    ) -> str | None:
+        if not content and not embeds:
             return ""
         self.messages_sent.append((channel_id, content))
+        self.message_embeds.append(embeds)
         self._next_message_id += 1
         return str(self._next_message_id)
 
@@ -1129,9 +1146,14 @@ def test_pr_opened_channel_notification_posts_to_mapped_channel() -> None:
     assert len(discord_writer.messages_sent) == 1
     channel_id, message = discord_writer.messages_sent[0]
     assert channel_id == "1465995983791063140"
-    assert "New PR: [Gitcord-GithubDiscordBot #42" in message
-    assert "**Author:** alice - <@999>" in message
-    assert "pull/42" in message
+    assert message == ""
+    embeds = discord_writer.message_embeds[0]
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
+    desc = embeds[0]["description"]
+    assert "PR 42: [Gitcord-GithubDiscordBot](" in desc
+    assert "Created by @alice (<@999>)" in desc
+    assert "pull/42" in desc
     assert "/link" not in message
 
 
@@ -1234,10 +1256,13 @@ def test_pr_opened_channel_notification_posts_unverified_author() -> None:
     assert result is True
     assert len(discord_writer.messages_sent) == 1
     _, message = discord_writer.messages_sent[0]
-    assert "New PR: [Gitcord-GithubDiscordBot #42" in message
-    assert "**Author:** stranger - unknown" in message
     assert "If you are `stranger`, please use `/link stranger`" in message
-    assert "<@" not in message
+    embeds = discord_writer.message_embeds[0]
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "PR 42: [Gitcord-GithubDiscordBot](" in desc
+    assert "Created by @stranger" in desc
+    assert "<@" not in desc
 
 
 def test_pr_opened_channel_notification_skips_duplicate() -> None:
@@ -1340,11 +1365,12 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert message_id == "msg-9"
     assert content == ""
     assert embeds
-    assert embeds[0]["color"] == 0x8250DF
+    assert embeds[0]["color"] == 0x1A7F37
     assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
     assert not embeds[0]["title"].startswith("Merged:")
     assert "Merged:" not in embeds[0]["title"]
     assert "Merged by @mentor1" in embeds[0]["description"]
+    assert "PR 42: [Gitcord-GithubDiscordBot](" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
 
@@ -1376,9 +1402,11 @@ def test_update_pr_channel_announcement_merge_does_not_blame_author() -> None:
     )
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
-    assert embeds[0]["description"] == "**Status:** Merged"
-    assert "jikrana1" not in embeds[0]["description"]
-    assert "Merged by" not in embeds[0]["description"]
+    desc = embeds[0]["description"]
+    assert "Merged by" not in desc
+    assert "Merged by @jikrana1" not in desc
+    assert "Merged on " in desc or desc.splitlines()[1] == "Merged"
+    assert "Created by @jikrana1" in desc
 
 
 def test_update_pr_channel_announcement_edits_on_close() -> None:
@@ -1445,10 +1473,12 @@ def test_update_pr_channel_announcement_reopened() -> None:
     assert len(discord_writer.messages_edited) == 1
     edited_msg = discord_writer.messages_edited[0][2]
     embeds = discord_writer.messages_edited[0][3]
-    assert not embeds
-    assert "New PR:" in edited_msg
-    assert "WIP" in edited_msg
-    assert "<@d-bob>" in edited_msg
+    assert edited_msg == ""
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "PR 7: [MiniChain](" in desc
+    assert "WIP" in desc
+    assert "Created by @bob (<@d-bob>)" in desc
 
 
 def test_update_pr_channel_announcement_reopened_fallback() -> None:
@@ -1477,8 +1507,10 @@ def test_update_pr_channel_announcement_reopened_fallback() -> None:
         event, storage, discord_writer, policy, config, "StabilityNexus"
     )
     assert len(discord_writer.messages_edited) == 1
-    edited_msg = discord_writer.messages_edited[0][2]
-    assert "TrackedTitle" in edited_msg
+    embeds = discord_writer.messages_edited[0][3]
+    assert embeds
+    assert "TrackedTitle" in embeds[0]["description"]
+    assert "TrackedTitle" in embeds[0]["title"]
 
 
 def test_update_pr_channel_announcement_close_reopen_close() -> None:
@@ -1663,10 +1695,14 @@ def test_issue_opened_channel_notification_posts_with_assigned_none() -> None:
     assert len(discord_writer.messages_sent) == 1
     channel_id, message = discord_writer.messages_sent[0]
     assert channel_id == "1465995983791063140"
-    assert "New Issue: [Gitcord-GithubDiscordBot #7" in message
-    assert "**Opened by:** alice - <@999>" in message
-    assert "**Assigned to:** None" in message
-    assert "**Labels:**" not in message
+    assert message == ""
+    embeds = discord_writer.message_embeds[0]
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "Issue 7: [Gitcord-GithubDiscordBot](" in desc
+    assert "Created by @alice (<@999>)" in desc
+    assert "Assigned to: None" in desc
+    assert "Labels:" not in desc
     tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
     assert tracked is not None
     assert tracked["status"] == "open"
@@ -1697,8 +1733,8 @@ def test_issue_opened_channel_notification_includes_labels() -> None:
     )
 
     assert result is True
-    message = discord_writer.messages_sent[0][1]
-    assert "**Labels:** `enhancement`, `good first issue`" in message
+    desc = discord_writer.message_embeds[0][0]["description"]
+    assert "Labels: `enhancement`, `good first issue`" in desc
 
 
 
@@ -1723,8 +1759,8 @@ def test_issue_opened_channel_notification_includes_existing_assignee() -> None:
     )
 
     assert result is True
-    message = discord_writer.messages_sent[0][1]
-    assert "**Assigned to:** bob - <@888>" in message
+    desc = discord_writer.message_embeds[0][0]["description"]
+    assert "Assigned to: @bob (<@888>)" in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
 
 
@@ -1750,8 +1786,8 @@ def test_issue_opened_channel_notification_includes_multiple_assignees() -> None
     )
 
     assert result is True
-    message = discord_writer.messages_sent[0][1]
-    assert "**Assigned to:** bob - <@888>, carol - <@777>" in message
+    desc = discord_writer.message_embeds[0][0]["description"]
+    assert "Assigned to: @bob (<@888>), @carol (<@777>)" in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob,carol"
 
 
@@ -1810,13 +1846,16 @@ def test_update_issue_channel_announcement_edits_on_assign() -> None:
         is True
     )
     assert len(discord_writer.messages_edited) == 1
-    channel_id, message_id, content, _embeds = discord_writer.messages_edited[0]
+    channel_id, message_id, content, embeds = discord_writer.messages_edited[0]
     assert channel_id == "chan"
     assert message_id == "m42"
-    assert "**Opened by:** alice - <@999>" in content
-    assert "**Assigned to:** bob - <@888>" in content
-    assert "**Labels:** `enhancement`" in content
-    assert "Closed" not in content
+    assert content == ""
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "Created by @alice (<@999>)" in desc
+    assert "Assigned to: @bob (<@888>)" in desc
+    assert "Labels: `enhancement`" in desc
+    assert "Closed" not in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
 
 
@@ -1859,10 +1898,12 @@ def test_update_issue_channel_announcement_edits_on_unassign() -> None:
         is True
     )
     assert len(discord_writer.messages_edited) == 1
-    content = discord_writer.messages_edited[0][2]
-    assert "**Opened by:** alice - <@999>" in content
-    assert "**Assigned to:** None" in content
-    assert "Closed" not in content
+    content, embeds = discord_writer.messages_edited[0][2], discord_writer.messages_edited[0][3]
+    assert content == ""
+    desc = embeds[0]["description"]
+    assert "Created by @alice (<@999>)" in desc
+    assert "Assigned to: None" in desc
+    assert "Closed" not in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] is None
 
 
@@ -1900,8 +1941,8 @@ def test_update_issue_channel_announcement_adds_second_assignee() -> None:
         )
         is True
     )
-    content = discord_writer.messages_edited[0][2]
-    assert "**Assigned to:** bob - <@888>, carol - <@777>" in content
+    desc = discord_writer.messages_edited[0][3][0]["description"]
+    assert "Assigned to: @bob (<@888>), @carol (<@777>)" in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob,carol"
 
 
@@ -1945,7 +1986,7 @@ def test_update_issue_channel_announcement_reassigns_to_someone_else() -> None:
         config,
         "AOSSIE-Org",
     )
-    assert "**Assigned to:** None" in discord_writer.messages_edited[-1][2]
+    assert "Assigned to: None" in discord_writer.messages_edited[-1][3][0]["description"]
 
     assert update_issue_channel_announcement_for_event(
         ContributionEvent(
@@ -1961,7 +2002,7 @@ def test_update_issue_channel_announcement_reassigns_to_someone_else() -> None:
         config,
         "AOSSIE-Org",
     )
-    assert "**Assigned to:** carol - <@777>" in discord_writer.messages_edited[-1][2]
+    assert "Assigned to: @carol (<@777>)" in discord_writer.messages_edited[-1][3][0]["description"]
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "carol"
 
 
@@ -2015,18 +2056,18 @@ def test_update_issue_channel_announcement_assign_unassign_reassign_same_user() 
     assert update_issue_channel_announcement_for_event(
         assign, storage, discord_writer, policy, config, "AOSSIE-Org"
     )
-    assert "**Assigned to:** bob - <@888>" in discord_writer.messages_edited[-1][2]
+    assert "Assigned to: @bob (<@888>)" in discord_writer.messages_edited[-1][3][0]["description"]
     assert "issue_channel_assign:Gitcord-GithubDiscordBot:7:bob" not in storage.notifications_sent
 
     assert update_issue_channel_announcement_for_event(
         unassign, storage, discord_writer, policy, config, "AOSSIE-Org"
     )
-    assert "**Assigned to:** None" in discord_writer.messages_edited[-1][2]
+    assert "Assigned to: None" in discord_writer.messages_edited[-1][3][0]["description"]
 
     assert update_issue_channel_announcement_for_event(
         reassign, storage, discord_writer, policy, config, "AOSSIE-Org"
     )
-    assert "**Assigned to:** bob - <@888>" in discord_writer.messages_edited[-1][2]
+    assert "Assigned to: @bob (<@888>)" in discord_writer.messages_edited[-1][3][0]["description"]
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
     assert len(discord_writer.messages_edited) == 3
 
@@ -2069,9 +2110,10 @@ def test_update_issue_channel_announcement_unassign_keeps_remaining() -> None:
         )
         is True
     )
-    content = discord_writer.messages_edited[0][2]
-    assert "**Assigned to:** carol - <@777>" in content
-    assert "bob" not in content.split("**Assigned to:**", 1)[1]
+    desc = discord_writer.messages_edited[0][3][0]["description"]
+    assert "Assigned to: @carol (<@777>)" in desc
+    assigned = desc.split("Assigned to:", 1)[1]
+    assert "bob" not in assigned
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "carol"
 
 
@@ -2302,11 +2344,13 @@ def test_update_issue_channel_announcement_reopen_restores_opened_and_assigned()
         is True
     )
     content, embeds = discord_writer.messages_edited[0][2], discord_writer.messages_edited[0][3]
-    assert embeds == []
-    assert "New Issue: [Gitcord-GithubDiscordBot #7" in content
-    assert "**Opened by:** alice - <@999>" in content
-    assert "**Assigned to:** bob - <@888>" in content
-    assert "**Status:**" not in content
+    assert content == ""
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "Issue 7: [Gitcord-GithubDiscordBot](" in desc
+    assert "Created by @alice (<@999>)" in desc
+    assert "Assigned to: @bob (<@888>)" in desc
+    assert "Closed" not in desc
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "open"
 
 
@@ -2594,9 +2638,11 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
         None,
     )
     assert message is not None
-    assert "](https://evil.example)" not in message
-    assert "https://github.com/AOSSIE-Org/repo/pull/7" in message
-    assert "@everyone" not in message
+    content, embeds = message
+    blob = content + embeds[0]["description"] + embeds[0]["title"]
+    assert "](https://evil.example)" not in blob
+    assert "https://github.com/AOSSIE-Org/repo/pull/7" in blob
+    assert "@everyone" not in blob
 
     normal = _build_pr_opened_channel_message(
         ContributionEvent(
@@ -2611,8 +2657,10 @@ def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
         "123",
     )
     assert normal is not None
-    assert "Normal title" in normal
-    assert "**Author:** alice - <@123>" in normal
+    n_content, n_embeds = normal
+    assert n_content == ""
+    assert "Normal title" in n_embeds[0]["description"]
+    assert "Created by @alice (<@123>)" in n_embeds[0]["description"]
 
 
 def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -> None:
@@ -2632,11 +2680,13 @@ def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -
     )
     assert msg_built is not None
     msg, embeds = msg_built
-    assert embeds == []
-    assert "<@" not in msg.split("**Opened by:**")[0]  # title/header has no live mentions
-    assert "Ping <\u200b@999>" in msg
-    assert "**Opened by:** alice - <@222>" in msg
-    assert "**Assigned to:** bob - <@333>" in msg
+    assert embeds and embeds[0]["color"] == 0xE3B341
+    desc = embeds[0]["description"]
+    assert "<@" not in embeds[0]["title"]
+    assert "Ping <\u200b@999>" in embeds[0]["title"]
+    assert "Created by @alice (<@222>)" in desc
+    assert "Assigned to: @bob (<@333>)" in desc
+    assert msg == ""
 
 
 def test_update_issue_channel_announcement_skips_assign_when_closed() -> None:
@@ -2928,8 +2978,8 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     assert events == [newer, older]
 
     assert len(discord_writer.messages_sent) == 2
-    assert "#41" in discord_writer.messages_sent[0][1]
-    assert "#42" in discord_writer.messages_sent[1][1]
+    assert "#41" in discord_writer.message_embeds[0][0]["title"]
+    assert "#42" in discord_writer.message_embeds[1][0]["title"]
 
 
 def test_closed_issue_embed_title_omits_closed_prefix() -> None:
@@ -2956,7 +3006,8 @@ def test_closed_issue_embed_title_omits_closed_prefix() -> None:
     assert title.startswith("Gitcord-GithubDiscordBot #83 —")
     assert not title.startswith("Closed:")
     assert "Closed:" not in title
-    assert embeds[0]["description"] == "**Status:** Closed by @shubham5080"
+    assert "Closed by @shubham5080" in embeds[0]["description"]
+    assert "Issue 83: [Gitcord-GithubDiscordBot](" in embeds[0]["description"]
     assert embeds[0]["color"] == 0xCF222E
 
 
@@ -2982,7 +3033,9 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     _, merged_embeds = merged_built
     assert merged_embeds[0]["title"].startswith("MiniChain #10 —")
     assert "Merged:" not in merged_embeds[0]["title"]
-    assert "**Status:** Merged by @mentor1" in merged_embeds[0]["description"]
+    assert "Merged by @mentor1" in merged_embeds[0]["description"]
+    assert merged_embeds[0]["color"] == 0x1A7F37
+    assert "PR 10: [MiniChain](" in merged_embeds[0]["description"]
 
     closed_event = ContributionEvent(
         github_user="bob",
@@ -3002,5 +3055,145 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     _, closed_embeds = closed_built
     assert closed_embeds[0]["title"].startswith("MiniChain #11 —")
     assert "Closed:" not in closed_embeds[0]["title"]
-    assert "**Status:** Closed by @bob" in closed_embeds[0]["description"]
+    assert "Closed by @bob" in closed_embeds[0]["description"]
+    assert closed_embeds[0]["color"] == 0xCF222E
+
+
+def test_announcement_date_normalizes_offset_datetimes_to_utc() -> None:
+    """Offset-aware ISO strings must use the UTC calendar date, not the local date."""
+    from ghdcbot.engine.notifications import _announcement_date
+
+    assert _announcement_date("2026-09-10") == "2026-09-10"
+    assert _announcement_date("2026-09-10T00:30:00+05:30") == "2026-09-09"
+    assert _announcement_date("2026-09-10T22:00:00Z") == "2026-09-10"
+    assert _announcement_date(datetime(2026, 9, 10, 0, 30, tzinfo=UTC)) == "2026-09-10"
+
+
+def test_pr_open_to_merge_preserves_source_created_at() -> None:
+    """Lifecycle merge embed must show the PR open date stored at announcement time."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    merged_at = datetime(2026, 9, 13, 15, 0, tzinfo=UTC)
+
+    assert send_pr_opened_channel_notification(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=opened_at,
+            payload={"pr_number": 42, "title": "P1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    tracked = storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)
+    assert tracked is not None
+    assert "2026-08-10" in str(tracked["created_at"])
+
+    assert update_pr_channel_announcement_for_event(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=merged_at,
+            payload={"pr_number": 42, "title": "P1", "merged_by": "mentor1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+    )
+    desc = discord_writer.messages_edited[-1][3][0]["description"]
+    assert "Created by @alice on 2026-08-10" in desc
+    assert "Merged by @mentor1 on 2026-09-13" in desc
+
+
+def test_issue_open_to_close_preserves_source_created_at() -> None:
+    """Lifecycle close embed must use tracked issue creation time (payload lacks it)."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(
+        enabled=True, issue_opened=True, update_issue_channel_on_lifecycle=True
+    )
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    closed_at = datetime(2026, 9, 13, 15, 0, tzinfo=UTC)
+
+    assert send_issue_opened_channel_notification(
+        ContributionEvent(
+            github_user="alice",
+            event_type="issue_opened",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=opened_at,
+            payload={"issue_number": 7, "title": "Bug", "labels": []},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
+    assert tracked is not None
+    assert "2026-08-10" in str(tracked["created_at"])
+
+    assert update_issue_channel_announcement_for_event(
+        ContributionEvent(
+            github_user="mentor1",
+            event_type="issue_closed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=closed_at,
+            payload={"issue_number": 7, "title": "Bug", "closed_by": "mentor1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+    )
+    desc = discord_writer.messages_edited[-1][3][0]["description"]
+    assert "Created by @alice (<@999>) on 2026-08-10" in desc
+    assert "Closed by @mentor1 on 2026-09-13" in desc
+
+
+def test_sqlite_save_channel_announcement_persists_source_created_at(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    storage.save_pr_channel_announcement(
+        repo="RepoA",
+        pr_number=1,
+        channel_id="c1",
+        message_id="m1",
+        pr_title="Hello",
+        author_github="alice",
+        created_at=opened_at,
+    )
+    row = storage.get_pr_channel_announcement("RepoA", 1)
+    assert row is not None
+    assert row["created_at"].startswith("2026-08-10T12:00:00")
+
+    storage.save_issue_channel_announcement(
+        repo="RepoA",
+        issue_number=2,
+        channel_id="c1",
+        message_id="m2",
+        issue_title="Issue",
+        author_github="bob",
+        created_at="2026-07-01T09:00:00Z",
+    )
+    issue_row = storage.get_issue_channel_announcement("RepoA", 2)
+    assert issue_row is not None
+    assert issue_row["created_at"].startswith("2026-07-01T09:00:00")
 

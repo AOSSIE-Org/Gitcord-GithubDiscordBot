@@ -219,10 +219,13 @@ def send_pr_opened_channel_notification(
 
     dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
 
-    message = _build_pr_opened_channel_message(
+    message_built = _build_pr_opened_channel_message(
         event, github_org, author_github, discord_user_id
     )
-    if not message:
+    if not message_built:
+        return False
+    message, embeds = message_built
+    if not message and not embeds:
         return False
 
     if not policy.allow_discord_mutations:
@@ -251,13 +254,27 @@ def send_pr_opened_channel_notification(
     message_id: str | None = None
     try:
         if callable(create_msg):
-            message_id = create_msg(channel_id, message)
+            try:
+                message_id = create_msg(channel_id, message, embeds=embeds or None)
+            except TypeError:
+                # Older DiscordWriter mocks/adapters without embeds kwarg.
+                fallback = message
+                if embeds:
+                    emb = embeds[0]
+                    card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+                    fallback = f"{message}\n\n{card}".strip() if message else card
+                message_id = create_msg(channel_id, fallback)
             sent = message_id is not None
             # Empty-string sentinel from create_message means no-op success without an ID.
             if message_id == "":
                 message_id = None
         else:
-            sent = bool(send_msg(channel_id, message))
+            fallback = message
+            if embeds:
+                emb = embeds[0]
+                card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+                fallback = f"{message}\n\n{card}".strip() if message else card
+            sent = bool(send_msg(channel_id, fallback))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
@@ -280,6 +297,7 @@ def send_pr_opened_channel_notification(
                         pr_title=event.payload.get("title"),
                         author_github=author_github,
                         status="open",
+                        created_at=event.payload.get("created_at") or event.created_at,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -355,13 +373,16 @@ def update_pr_channel_announcement_for_event(
         # event payload might not have 'title' for pr_reopened depending on adapter, so fallback to tracked
         if not event.payload.get("title") and tracked.get("pr_title"):
             event.payload["title"] = tracked["pr_title"]
+        # Prefer original PR open time from tracking (reopen event.created_at is reopen time).
+        if not event.payload.get("created_at") and tracked.get("created_at"):
+            event.payload["created_at"] = tracked["created_at"]
             
-        message = _build_pr_opened_channel_message(
+        message_built = _build_pr_opened_channel_message(
             event, github_org, author_github, discord_user_id
         )
-        if not message:
+        if not message_built:
             return False
-        embeds = []
+        message, embeds = message_built
     else:
         actor = _pr_lifecycle_actor(event)
         built = _build_pr_lifecycle_channel_message(
@@ -524,11 +545,12 @@ def send_issue_opened_channel_notification(
         closed_by_github=None,
         include_link_nudge=author_discord_id is None,
         labels=event.payload.get("labels") or [],
+        created_at=event.payload.get("created_at") or event.created_at,
     )
     if not message_built:
         return False
-    message, _embeds = message_built
-    if not message:
+    message, embeds = message_built
+    if not message and not embeds:
         return False
 
     if not policy.allow_discord_mutations:
@@ -557,12 +579,25 @@ def send_issue_opened_channel_notification(
     message_id: str | None = None
     try:
         if callable(create_msg):
-            message_id = create_msg(channel_id, message)
+            try:
+                message_id = create_msg(channel_id, message, embeds=embeds or None)
+            except TypeError:
+                fallback = message
+                if embeds:
+                    emb = embeds[0]
+                    card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+                    fallback = f"{message}\n\n{card}".strip() if message else card
+                message_id = create_msg(channel_id, fallback)
             sent = message_id is not None
             if message_id == "":
                 message_id = None
         else:
-            sent = bool(send_msg(channel_id, message))
+            fallback = message
+            if embeds:
+                emb = embeds[0]
+                card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+                fallback = f"{message}\n\n{card}".strip() if message else card
+            sent = bool(send_msg(channel_id, fallback))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
@@ -586,6 +621,7 @@ def send_issue_opened_channel_notification(
                         author_github=author_github,
                         assignee_github=assignee_stored,
                         status="open",
+                        created_at=event.payload.get("created_at") or event.created_at,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -726,6 +762,12 @@ def update_issue_channel_announcement_for_event(
         closed_by_github=closed_by_github,
         include_link_nudge=False,
         labels=event.payload.get("labels") or [],
+        created_at=event.payload.get("created_at") or tracked.get("created_at"),
+        closed_at=(
+            (event.payload.get("closed_at") or event.created_at)
+            if status == "closed"
+            else None
+        ),
     )
     if not message_built:
         return False
@@ -912,16 +954,67 @@ def _assignees_from_issue_payload(payload: dict) -> list[str]:
     return _parse_assignees(payload.get("assignee"))
 
 
-def _format_github_discord_person(github_user: str, discord_user_id: str | None) -> str:
-    gh = (github_user or "").strip() or "unknown"
+# Bruno channel-announcement colors (GitHub Primer-ish hues).
+_GITHUB_OPEN_YELLOW = 0xE3B341  # New PR / New Issue
+_GITHUB_MERGED_GREEN = 0x1A7F37  # Merged PR
+_GITHUB_CLOSED_RED = 0xCF222E  # Closed PR / Closed Issue
+
+
+def _announcement_date(value: object) -> str | None:
+    """Return YYYY-MM-DD (UTC) for Discord timeline lines, or None if unknown."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).date().isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    # Date-only values have no timezone; keep as-is. Datetimes must be parsed
+    # and converted to UTC (e.g. 2026-09-10T00:30:00+05:30 → 2026-09-09).
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        try:
+            datetime.fromisoformat(text)  # date-only; no tz to normalize
+            return text
+        except ValueError:
+            return None
+    try:
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _format_github_at_person(github_user: str, discord_user_id: str | None = None) -> str:
+    """Bruno-style @github handle, with Discord mention when verified."""
+    gh = (github_user or "").strip().lstrip("@") or "unknown"
     if discord_user_id:
-        return f"{gh} - <@{discord_user_id}>"
-    return f"{gh} - unknown"
+        return f"@{gh} (<@{discord_user_id}>)"
+    return f"@{gh}"
 
 
-# GitHub Primer status colors (match PR badge hues in the GitHub UI).
-_GITHUB_MERGED_PURPLE = 0x8250DF  # Primer done/merged
-_GITHUB_CLOSED_RED = 0xCF222E  # Primer danger/closed
+def _bruno_item_header(
+    *,
+    kind: str,
+    number: int,
+    repo: str,
+    title: str,
+    repo_url: str,
+    item_url: str,
+) -> str:
+    """Description header: ``PR|Issue N: [Repo](url) - [Title](url)``."""
+    return f"{kind} {number}: [{repo}]({repo_url}) - [{title}]({item_url})"
+
+
+def _timeline_line(action: str, person: str, when: str | None) -> str:
+    if when:
+        return f"{action} {person} on {when}"
+    return f"{action} {person}"
 
 
 def _build_issue_channel_message(
@@ -937,50 +1030,67 @@ def _build_issue_channel_message(
     closed_by_github: str | None,
     include_link_nudge: bool,
     labels: list[str] | None = None,
+    created_at: object | None = None,
+    closed_at: object | None = None,
 ) -> tuple[str, list[dict]] | None:
-    """Build issue channel announcement content + embeds.
+    """Build issue channel announcement as a colored Bruno-format embed.
 
-    Open posts: plain text (Opened by / Assigned to). Closed posts: red embed
-    card matching PR close styling (empty content so Discord shows one box).
-    Closed status appears only in the embed description, not the title.
+    Open → yellow; closed → red. Header links live in the description (Discord
+    embed titles are plain text). /link nudge stays in message content.
     """
     issue_title = _sanitize_discord_pr_title(title)
     raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
+    repo_url = f"https://github.com/{github_org}/{repo}"
+    embed_title = f"{repo} #{issue_number} — {issue_title}"
+    if len(embed_title) > 256:
+        embed_title = embed_title[:253] + "..."
+
+    header = _bruno_item_header(
+        kind="Issue",
+        number=issue_number,
+        repo=repo,
+        title=issue_title,
+        repo_url=repo_url,
+        item_url=raw_url,
+    )
+    created_day = _announcement_date(created_at)
+    created_line = _timeline_line(
+        "Created by",
+        _format_github_at_person(author_github, author_discord_id),
+        created_day,
+    )
+
     if status == "closed":
         closer = (closed_by_github or "").lstrip("@").strip()
-        status_line = (
-            f"**Status:** Closed by @{closer}" if closer else "**Status:** Closed"
-        )
-        # Status lives only in description (Bruno): do not prefix title with "Closed:".
-        embed_title = f"{repo} #{issue_number} — {issue_title}"
-        if len(embed_title) > 256:
-            embed_title = embed_title[:253] + "..."
+        closed_day = _announcement_date(closed_at)
+        if closer:
+            closed_line = _timeline_line(
+                "Closed by", _format_github_at_person(closer), closed_day
+            )
+        else:
+            closed_line = f"Closed on {closed_day}" if closed_day else "Closed"
+        description = "\n".join([header, closed_line, created_line])
         embeds = [
             {
                 "title": embed_title,
                 "url": raw_url,
-                "description": status_line,
+                "description": description,
                 "color": _GITHUB_CLOSED_RED,
             }
         ]
         return "", embeds
 
-    url = _suppress_discord_embed(raw_url)
-    header = f"🆕 **New Issue: [{repo} #{issue_number} — {issue_title}]({url})**"
-    opened_line = (
-        f"**Opened by:** {_format_github_discord_person(author_github, author_discord_id)}"
-    )
     people = [
-        _format_github_discord_person(gh, did)
+        _format_github_at_person(gh, did)
         for gh, did in assignees
         if (gh or "").strip()
     ]
     if people:
-        assigned_line = f"**Assigned to:** {', '.join(people)}"
+        assigned_line = f"Assigned to: {', '.join(people)}"
     else:
-        assigned_line = "**Assigned to:** None"
+        assigned_line = "Assigned to: None"
 
-    lines = [header, "", opened_line, assigned_line]
+    desc_lines = [header, created_line, assigned_line]
 
     label_names = [
         str(label).strip()
@@ -992,21 +1102,25 @@ def _build_issue_channel_message(
             _sanitize_discord_pr_title(label).replace("`", "\\`")
             for label in label_names
         ]
-        lines.append(
-            f"**Labels:** {', '.join(f'`{label}`' for label in safe_labels)}"
+        desc_lines.append(
+            f"Labels: {', '.join(f'`{label}`' for label in safe_labels)}"
         )
 
+    embeds = [
+        {
+            "title": embed_title,
+            "url": raw_url,
+            "description": "\n".join(desc_lines),
+            "color": _GITHUB_OPEN_YELLOW,
+        }
+    ]
+    content = ""
     if include_link_nudge:
-        lines.extend(
-            [
-                "",
-                (
-                    f"If you are `{author_github}`, please use `/link {author_github}` "
-                    "to link your github account to your Discord account."
-                ),
-            ]
+        content = (
+            f"If you are `{author_github}`, please use `/link {author_github}` "
+            "to link your github account to your Discord account."
         )
-    return "\n".join(lines), []
+    return content, embeds
 
 
 def _pr_lifecycle_actor(event: ContributionEvent) -> str | None:
@@ -1038,10 +1152,9 @@ def _build_pr_lifecycle_channel_message(
     actor_github: str,
     tracked: dict,
 ) -> tuple[str, list[dict]] | None:
-    """Build a Discord embed for a PR merge/close channel edit.
+    """Build a Discord embed for a PR merge/close channel edit (Bruno format).
 
-    Text + GitHub Primer purple/red live in one embed (no empty color-only box).
-    Plain content is left empty so Discord shows a single card.
+    Merged → green; closed → red. Plain content is empty so Discord shows one card.
     """
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
@@ -1055,15 +1168,56 @@ def _build_pr_lifecycle_channel_message(
     pr_title = _sanitize_discord_pr_title(title_raw)
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
+    repo_url = f"https://github.com/{github_org}/{repo}"
     actor = (actor_github or "").lstrip("@").strip()
+    action_day = _announcement_date(
+        event.payload.get("merged_at")
+        if status == "merged"
+        else event.payload.get("closed_at")
+    ) or _announcement_date(event.created_at)
     if status == "merged":
-        status_line = f"**Status:** Merged by @{actor}" if actor else "**Status:** Merged"
-        color = _GITHUB_MERGED_PURPLE
+        if actor:
+            action_line = _timeline_line(
+                "Merged by", _format_github_at_person(actor), action_day
+            )
+        else:
+            action_line = f"Merged on {action_day}" if action_day else "Merged"
+        color = _GITHUB_MERGED_GREEN
     else:
-        status_line = f"**Status:** Closed by @{actor}" if actor else "**Status:** Closed"
+        if actor:
+            action_line = _timeline_line(
+                "Closed by", _format_github_at_person(actor), action_day
+            )
+        else:
+            action_line = f"Closed on {action_day}" if action_day else "Closed"
         color = _GITHUB_CLOSED_RED
-    # Discord embed titles are plain text (no markdown links); put the link in url.
-    # Status (Merged/Closed) lives only in description — do not duplicate in title (Bruno).
+
+    author_github = (
+        (tracked.get("author_github") or "").strip()
+        or (event.payload.get("pr_author") or "").strip()
+        or (event.github_user or "").strip()
+    )
+    created_day = _announcement_date(
+        event.payload.get("created_at") or tracked.get("created_at")
+    )
+    desc_lines = [
+        _bruno_item_header(
+            kind="PR",
+            number=int(pr_number),
+            repo=repo,
+            title=pr_title,
+            repo_url=repo_url,
+            item_url=raw_url,
+        ),
+        action_line,
+    ]
+    if author_github:
+        desc_lines.append(
+            _timeline_line(
+                "Created by", _format_github_at_person(author_github), created_day
+            )
+        )
+
     title = f"{repo} #{pr_number} — {pr_title}"
     if len(title) > 256:
         title = title[:253] + "..."
@@ -1071,11 +1225,12 @@ def _build_pr_lifecycle_channel_message(
         {
             "title": title,
             "url": raw_url,
-            "description": status_line,
+            "description": "\n".join(desc_lines),
             "color": color,
         }
     ]
     return "", embeds
+
 
 def send_pr_opened_github_link_comment(
     event: ContributionEvent,
@@ -1295,28 +1450,54 @@ def _build_pr_opened_channel_message(
     github_org: str,
     author_github: str,
     discord_user_id: str | None,
-) -> str | None:
+) -> tuple[str, list[dict]] | None:
+    """Build PR-opened channel announcement as a yellow Bruno-format embed."""
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
     pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
     repo = event.repo
-    url = _suppress_discord_embed(
-        f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
-    )
-    # Compact header: linked title so we don't need a separate Link line (Bruno).
-    # Author line: "GITHUB - @Discord" when verified, "GITHUB - unknown" otherwise.
-    header = f"🆕 **New PR: [{repo} #{pr_number} — {pr_title}]({url})**"
-    if discord_user_id:
-        author_line = f"**Author:** {author_github} - <@{discord_user_id}>"
-        return f"{header}\n\n{author_line}"
+    raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
+    repo_url = f"https://github.com/{github_org}/{repo}"
+    embed_title = f"{repo} #{pr_number} — {pr_title}"
+    if len(embed_title) > 256:
+        embed_title = embed_title[:253] + "..."
 
-    author_line = f"**Author:** {author_github} - unknown"
-    link_nudge = (
-        f"If you are `{author_github}`, please use `/link {author_github}` "
-        "to link your github account to your Discord account."
+    created_day = _announcement_date(
+        event.payload.get("created_at") or event.created_at
     )
-    return f"{header}\n\n{author_line}\n\n{link_nudge}"
+    description = "\n".join(
+        [
+            _bruno_item_header(
+                kind="PR",
+                number=int(pr_number),
+                repo=repo,
+                title=pr_title,
+                repo_url=repo_url,
+                item_url=raw_url,
+            ),
+            _timeline_line(
+                "Created by",
+                _format_github_at_person(author_github, discord_user_id),
+                created_day,
+            ),
+        ]
+    )
+    embeds = [
+        {
+            "title": embed_title,
+            "url": raw_url,
+            "description": description,
+            "color": _GITHUB_OPEN_YELLOW,
+        }
+    ]
+    content = ""
+    if not discord_user_id:
+        content = (
+            f"If you are `{author_github}`, please use `/link {author_github}` "
+            "to link your github account to your Discord account."
+        )
+    return content, embeds
 
 
 def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None:
