@@ -542,6 +542,25 @@ def get_issue_repo_choices(
     ]
 
 
+def unassigned_open_issue_autocomplete_entries(
+    issues: list[dict] | None,
+) -> list[dict]:
+    """Map open issues to assign-issue autocomplete entries (unassigned only)."""
+    if not issues:
+        return []
+    entries: list[dict] = []
+    for issue in issues:
+        if issue.get("assignees"):
+            continue
+        entries.append(
+            {
+                "number": issue["number"],
+                "title": issue.get("title", "Untitled"),
+            }
+        )
+    return entries
+
+
 def run_bot(config_path: str) -> None:
     """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
@@ -1672,6 +1691,22 @@ def run_bot(config_path: str) -> None:
 
     dynamic_repos_cache: list[str] = []
     dynamic_repos_last_fetched: datetime | None = None
+    dynamic_issues_cache: dict[str, list[dict]] = {}
+    dynamic_issues_last_fetched: dict[str, datetime] = {}
+    _MAX_DYNAMIC_ISSUES_CACHE = 64
+
+    def _evict_dynamic_issues_cache(limit: int = _MAX_DYNAMIC_ISSUES_CACHE) -> None:
+        """Drop oldest issue-autocomplete cache entries when the map grows too large."""
+        while len(dynamic_issues_cache) > limit:
+            if not dynamic_issues_last_fetched:
+                orphan = next(iter(dynamic_issues_cache), None)
+                if orphan is None:
+                    return
+                dynamic_issues_cache.pop(orphan, None)
+                continue
+            oldest_repo = min(dynamic_issues_last_fetched, key=dynamic_issues_last_fetched.__getitem__)
+            dynamic_issues_cache.pop(oldest_repo, None)
+            dynamic_issues_last_fetched.pop(oldest_repo, None)
 
     async def assign_issue_repo_autocomplete(
         interaction: discord.Interaction, current: str
@@ -1679,31 +1714,38 @@ def run_bot(config_path: str) -> None:
         if not slash_command_allowed(interaction, config, "assign-issue"):
             return []
 
+        # Prefer configured allow-list / channel / role repos (already filtered).
+        # In deny mode, repos.names are blocked repos — never suggest them directly.
+        choices = get_issue_repo_choices(config, current)
+        if choices:
+            return choices
+
         nonlocal dynamic_repos_cache, dynamic_repos_last_fetched
         repos_config = getattr(config.github, "repos", None)
-        repo_names = getattr(repos_config, "names", []) if repos_config else []
-        
-        if not repo_names:
-            now = datetime.now(UTC)
-            if not dynamic_repos_cache or not dynamic_repos_last_fetched or (now - dynamic_repos_last_fetched).total_seconds() > 3600:
-                try:
-                    def fetch_repos():
-                        return [r.get("name") for r in github_adapter._list_repos() if r.get("name")]
-                    fetched = await asyncio.to_thread(fetch_repos)
-                    dynamic_repos_cache = [r for r in fetched if is_repo_allowed(repos_config, r)]
-                    dynamic_repos_last_fetched = now
-                except Exception as e:
-                    logger.error("Failed to fetch repos for autocomplete: %s", e)
-            repo_names = dynamic_repos_cache
+        now = datetime.now(UTC)
+        if (
+            not dynamic_repos_cache
+            or not dynamic_repos_last_fetched
+            or (now - dynamic_repos_last_fetched).total_seconds() > 3600
+        ):
+            try:
+                list_repos = getattr(github_adapter, "list_org_repo_names", None)
+                if not callable(list_repos):
+                    return []
+                fetched = await asyncio.to_thread(list_repos)
+                dynamic_repos_cache = [
+                    r for r in fetched if isinstance(r, str) and is_repo_allowed(repos_config, r)
+                ]
+                dynamic_repos_last_fetched = now
+            except Exception as e:
+                logger.error("Failed to fetch repos for autocomplete: %s", e)
+                dynamic_repos_last_fetched = now
 
         return [
             app_commands.Choice(name=r, value=r)
-            for r in repo_names
+            for r in dynamic_repos_cache
             if current.lower() in r.lower()
         ][:25]
-
-    dynamic_issues_cache: dict[str, list[dict]] = {}
-    dynamic_issues_last_fetched: dict[str, datetime] = {}
 
     async def assign_issue_number_autocomplete(
         interaction: discord.Interaction, current: str
@@ -1713,7 +1755,7 @@ def run_bot(config_path: str) -> None:
         repo = interaction.namespace.repo
         if not repo:
             return []
-            
+
         owner = getattr(config.github, "org", "")
         if not owner:
             return []
@@ -1724,36 +1766,37 @@ def run_bot(config_path: str) -> None:
 
         now = datetime.now(UTC)
         last_fetched = dynamic_issues_last_fetched.get(repo)
-        
+
         if not last_fetched or (now - last_fetched).total_seconds() > 60:
             try:
-                def fetch_issues():
-                    params = {"state": "open", "per_page": 100}
-                    open_issues = []
-                    for page in github_adapter._paginate(f"/repos/{owner}/{repo}/issues", params=params):
-                        for issue in page:
-                            if "pull_request" not in issue and not issue.get("assignees"):
-                                open_issues.append({"number": issue["number"], "title": issue.get("title", "Untitled")})
-                        if len(open_issues) >= 100:
-                            break
-                    return open_issues
+                def fetch_issues() -> list[dict]:
+                    list_issues = getattr(github_adapter, "list_repo_open_issues", None)
+                    if not callable(list_issues):
+                        return []
+                    raw = list_issues(owner, repo, limit=100)
+                    if raw is None:
+                        raise RuntimeError(f"Failed to fetch open issues for {owner}/{repo}")
+                    return unassigned_open_issue_autocomplete_entries(raw)
+
                 dynamic_issues_cache[repo] = await asyncio.to_thread(fetch_issues)
                 dynamic_issues_last_fetched[repo] = now
             except Exception as e:
                 logger.error("Failed to fetch open issues for autocomplete: %s", e)
                 if repo not in dynamic_issues_cache:
                     dynamic_issues_cache[repo] = []
+                dynamic_issues_last_fetched[repo] = now
+            _evict_dynamic_issues_cache()
 
         choices = []
         for issue in dynamic_issues_cache.get(repo, []):
             name_str = f"#{issue['number']}: {issue['title']}"
             if len(name_str) > 100:
                 name_str = name_str[:97] + "..."
-                
+
             num_str = str(issue["number"])
             if current and current not in num_str and current.lower() not in name_str.lower():
                 continue
-                
+
             choices.append(app_commands.Choice(name=name_str, value=issue["number"]))
             if len(choices) >= 25:
                 break
