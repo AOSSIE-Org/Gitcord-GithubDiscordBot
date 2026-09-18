@@ -767,9 +767,15 @@ class SqliteStorage:
         pr_title: str | None = None,
         author_github: str | None = None,
         status: str = "open",
+        created_at: datetime | str | None = None,
     ) -> None:
-        """Track a newly posted PR-opened channel message (future lifecycle edits only)."""
+        """Track a newly posted PR-opened channel message (future lifecycle edits only).
+
+        ``created_at`` should be the GitHub PR creation time so lifecycle embeds
+        can show ``Created by … on YYYY-MM-DD``. Defaults to now when omitted.
+        """
         now = datetime.now(timezone.utc).isoformat()
+        created = _normalize_announcement_created_at(created_at) or now
         with self._connect() as conn:
             conn.execute(
                 """
@@ -792,7 +798,7 @@ class SqliteStorage:
                     status,
                     pr_title,
                     author_github,
-                    now,
+                    created,
                     now,
                 ),
             )
@@ -849,9 +855,15 @@ class SqliteStorage:
         author_github: str | None = None,
         assignee_github: str | None = None,
         status: str = "open",
+        created_at: datetime | str | None = None,
     ) -> None:
-        """Track a newly posted issue-opened channel message (future lifecycle edits)."""
+        """Track a newly posted issue-opened channel message (future lifecycle edits).
+
+        ``created_at`` should be the GitHub issue creation time so lifecycle embeds
+        can show ``Created by … on YYYY-MM-DD``. Defaults to now when omitted.
+        """
         now = datetime.now(timezone.utc).isoformat()
+        created = _normalize_announcement_created_at(created_at) or now
         with self._connect() as conn:
             conn.execute(
                 """
@@ -879,7 +891,7 @@ class SqliteStorage:
                     issue_title,
                     author_github,
                     assignee_github,
-                    now,
+                    created,
                     now,
                 ),
             )
@@ -1175,6 +1187,22 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _normalize_announcement_created_at(value: datetime | str | None) -> str | None:
+    """Serialize a GitHub creation timestamp for channel-announcement rows."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _ensure_utc(value).isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        return _ensure_utc(datetime.fromisoformat(normalized)).isoformat()
+    except ValueError:
+        return text
 
 
 def _parse_utc(value: str) -> datetime:

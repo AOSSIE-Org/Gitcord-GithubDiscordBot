@@ -63,6 +63,9 @@ class MockStorage:
     def save_pr_channel_announcement(self, **kwargs: object) -> None:
         repo = str(kwargs["repo"])
         pr_number = int(kwargs["pr_number"])  # type: ignore[arg-type]
+        created_at = kwargs.get("created_at")
+        if isinstance(created_at, datetime):
+            created_at = created_at.astimezone(UTC).isoformat() if created_at.tzinfo else created_at.replace(tzinfo=UTC).isoformat()
         self.pr_channel_announcements[(repo, pr_number)] = {
             "repo": repo,
             "pr_number": pr_number,
@@ -71,6 +74,7 @@ class MockStorage:
             "status": str(kwargs.get("status") or "open"),
             "pr_title": kwargs.get("pr_title"),
             "author_github": kwargs.get("author_github"),
+            "created_at": created_at,
         }
 
     def get_pr_channel_announcement(self, repo: str, pr_number: int) -> dict | None:
@@ -86,6 +90,9 @@ class MockStorage:
     def save_issue_channel_announcement(self, **kwargs: object) -> None:
         repo = str(kwargs["repo"])
         issue_number = int(kwargs["issue_number"])  # type: ignore[arg-type]
+        created_at = kwargs.get("created_at")
+        if isinstance(created_at, datetime):
+            created_at = created_at.astimezone(UTC).isoformat() if created_at.tzinfo else created_at.replace(tzinfo=UTC).isoformat()
         self.issue_channel_announcements[(repo, issue_number)] = {
             "repo": repo,
             "issue_number": issue_number,
@@ -95,6 +102,7 @@ class MockStorage:
             "issue_title": kwargs.get("issue_title"),
             "author_github": kwargs.get("author_github"),
             "assignee_github": kwargs.get("assignee_github"),
+            "created_at": created_at,
         }
 
     def get_issue_channel_announcement(self, repo: str, issue_number: int) -> dict | None:
@@ -3049,4 +3057,143 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     assert "Closed:" not in closed_embeds[0]["title"]
     assert "Closed by @bob" in closed_embeds[0]["description"]
     assert closed_embeds[0]["color"] == 0xCF222E
+
+
+def test_announcement_date_normalizes_offset_datetimes_to_utc() -> None:
+    """Offset-aware ISO strings must use the UTC calendar date, not the local date."""
+    from ghdcbot.engine.notifications import _announcement_date
+
+    assert _announcement_date("2026-09-10") == "2026-09-10"
+    assert _announcement_date("2026-09-10T00:30:00+05:30") == "2026-09-09"
+    assert _announcement_date("2026-09-10T22:00:00Z") == "2026-09-10"
+    assert _announcement_date(datetime(2026, 9, 10, 0, 30, tzinfo=UTC)) == "2026-09-10"
+
+
+def test_pr_open_to_merge_preserves_source_created_at() -> None:
+    """Lifecycle merge embed must show the PR open date stored at announcement time."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True, update_pr_channel_on_lifecycle=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    merged_at = datetime(2026, 9, 13, 15, 0, tzinfo=UTC)
+
+    assert send_pr_opened_channel_notification(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_opened",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=opened_at,
+            payload={"pr_number": 42, "title": "P1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    tracked = storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)
+    assert tracked is not None
+    assert "2026-08-10" in str(tracked["created_at"])
+
+    assert update_pr_channel_announcement_for_event(
+        ContributionEvent(
+            github_user="alice",
+            event_type="pr_merged",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=merged_at,
+            payload={"pr_number": 42, "title": "P1", "merged_by": "mentor1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+    )
+    desc = discord_writer.messages_edited[-1][3][0]["description"]
+    assert "Created by @alice on 2026-08-10" in desc
+    assert "Merged by @mentor1 on 2026-09-13" in desc
+
+
+def test_issue_open_to_close_preserves_source_created_at() -> None:
+    """Lifecycle close embed must use tracked issue creation time (payload lacks it)."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(
+        enabled=True, issue_opened=True, update_issue_channel_on_lifecycle=True
+    )
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    closed_at = datetime(2026, 9, 13, 15, 0, tzinfo=UTC)
+
+    assert send_issue_opened_channel_notification(
+        ContributionEvent(
+            github_user="alice",
+            event_type="issue_opened",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=opened_at,
+            payload={"issue_number": 7, "title": "Bug", "labels": []},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
+    assert tracked is not None
+    assert "2026-08-10" in str(tracked["created_at"])
+
+    assert update_issue_channel_announcement_for_event(
+        ContributionEvent(
+            github_user="mentor1",
+            event_type="issue_closed",
+            repo="Gitcord-GithubDiscordBot",
+            created_at=closed_at,
+            payload={"issue_number": 7, "title": "Bug", "closed_by": "mentor1"},
+        ),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+    )
+    desc = discord_writer.messages_edited[-1][3][0]["description"]
+    assert "Created by @alice (<@999>) on 2026-08-10" in desc
+    assert "Closed by @mentor1 on 2026-09-13" in desc
+
+
+def test_sqlite_save_channel_announcement_persists_source_created_at(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    opened_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    storage.save_pr_channel_announcement(
+        repo="RepoA",
+        pr_number=1,
+        channel_id="c1",
+        message_id="m1",
+        pr_title="Hello",
+        author_github="alice",
+        created_at=opened_at,
+    )
+    row = storage.get_pr_channel_announcement("RepoA", 1)
+    assert row is not None
+    assert row["created_at"].startswith("2026-08-10T12:00:00")
+
+    storage.save_issue_channel_announcement(
+        repo="RepoA",
+        issue_number=2,
+        channel_id="c1",
+        message_id="m2",
+        issue_title="Issue",
+        author_github="bob",
+        created_at="2026-07-01T09:00:00Z",
+    )
+    issue_row = storage.get_issue_channel_announcement("RepoA", 2)
+    assert issue_row is not None
+    assert issue_row["created_at"].startswith("2026-07-01T09:00:00")
 

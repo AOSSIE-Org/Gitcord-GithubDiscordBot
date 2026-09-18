@@ -297,6 +297,7 @@ def send_pr_opened_channel_notification(
                         pr_title=event.payload.get("title"),
                         author_github=author_github,
                         status="open",
+                        created_at=event.payload.get("created_at") or event.created_at,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -372,6 +373,9 @@ def update_pr_channel_announcement_for_event(
         # event payload might not have 'title' for pr_reopened depending on adapter, so fallback to tracked
         if not event.payload.get("title") and tracked.get("pr_title"):
             event.payload["title"] = tracked["pr_title"]
+        # Prefer original PR open time from tracking (reopen event.created_at is reopen time).
+        if not event.payload.get("created_at") and tracked.get("created_at"):
+            event.payload["created_at"] = tracked["created_at"]
             
         message_built = _build_pr_opened_channel_message(
             event, github_org, author_github, discord_user_id
@@ -617,6 +621,7 @@ def send_issue_opened_channel_notification(
                         author_github=author_github,
                         assignee_github=assignee_stored,
                         status="open",
+                        created_at=event.payload.get("created_at") or event.created_at,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -757,7 +762,7 @@ def update_issue_channel_announcement_for_event(
         closed_by_github=closed_by_github,
         include_link_nudge=False,
         labels=event.payload.get("labels") or [],
-        created_at=event.payload.get("created_at"),
+        created_at=event.payload.get("created_at") or tracked.get("created_at"),
         closed_at=(
             (event.payload.get("closed_at") or event.created_at)
             if status == "closed"
@@ -956,7 +961,7 @@ _GITHUB_CLOSED_RED = 0xCF222E  # Closed PR / Closed Issue
 
 
 def _announcement_date(value: object) -> str | None:
-    """Return YYYY-MM-DD for Discord timeline lines, or None if unknown."""
+    """Return YYYY-MM-DD (UTC) for Discord timeline lines, or None if unknown."""
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -967,14 +972,14 @@ def _announcement_date(value: object) -> str | None:
     text = str(value).strip()
     if not text:
         return None
-    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
-        # Fast path for ISO dates / datetimes.
-        candidate = text[:10]
+    # Date-only values have no timezone; keep as-is. Datetimes must be parsed
+    # and converted to UTC (e.g. 2026-09-10T00:30:00+05:30 → 2026-09-09).
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
         try:
-            datetime.strptime(candidate, "%Y-%m-%d")
-            return candidate
+            datetime.fromisoformat(text)  # date-only; no tz to normalize
+            return text
         except ValueError:
-            pass
+            return None
     try:
         normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
         dt = datetime.fromisoformat(normalized)
