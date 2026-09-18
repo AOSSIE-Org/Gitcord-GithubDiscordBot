@@ -8,8 +8,9 @@ from typing import Any
 
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.interfaces import DiscordWriter, Storage
-from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent
+from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.engine.claim_issue import build_issue_announcement_components
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +557,15 @@ def send_issue_opened_channel_notification(
     message_id: str | None = None
     try:
         if callable(create_msg):
-            message_id = create_msg(channel_id, message)
+            components = build_issue_announcement_components(
+                github_org=github_org,
+                repo=event.repo,
+                issue_number=int(issue_number),
+            )
+            try:
+                message_id = create_msg(channel_id, message, components=components)
+            except TypeError:
+                message_id = create_msg(channel_id, message)
             sent = message_id is not None
             if message_id == "":
                 message_id = None

@@ -15,12 +15,22 @@ from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
+from ghdcbot.core.modes import MutationPolicy
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
     slash_command_allowed,
 )
+from ghdcbot.engine.claim_issue import (
+    build_mentor_claim_card,
+    check_existing_user_request,
+    create_claim_request,
+    process_claim_approval,
+    process_claim_decline,
+)
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
+    fetch_issue_context,
+    parse_issue_url,
     resolve_discord_to_github,
     resolve_github_to_discord,
 )
@@ -161,6 +171,40 @@ async def _format_roles_line(discord_reader: Any, discord_user_id: str) -> str:
     if target_roles:
         return f"**Roles:** {', '.join(target_roles)}."
     return "**Roles:** (none or unable to read)."
+
+
+async def _fetch_member_roles_list(discord_reader: Any, discord_user_id: str) -> list[str]:
+    try:
+        fetch_one = getattr(discord_reader, "list_roles_for_member", None)
+        if callable(fetch_one):
+            return await asyncio.to_thread(fetch_one, discord_user_id)
+        member_roles = await asyncio.to_thread(discord_reader.list_member_roles)
+        return member_roles.get(discord_user_id, [])
+    except Exception as e:
+        logging.getLogger("ghdcbot.bot").debug("Error fetching member roles list: %s", e)
+        return []
+
+
+class MentorClaimPromptView(discord.ui.View):
+    """View with Approve & Decline buttons for a mentor issue claim prompt."""
+
+    def __init__(self, request_id: str, timeout: float | None = None) -> None:
+        super().__init__(timeout=timeout)
+        self.request_id = request_id
+        approve_btn = discord.ui.Button(
+            label="Approve & Assign",
+            style=discord.ButtonStyle.success,
+            custom_id=f"claim_approve:{request_id}",
+            emoji="✅",
+        )
+        decline_btn = discord.ui.Button(
+            label="Decline",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"claim_decline:{request_id}",
+            emoji="❌",
+        )
+        self.add_item(approve_btn)
+        self.add_item(decline_btn)
 
 
 def github_profile_settings_url(api_base: str) -> str:
@@ -1191,6 +1235,358 @@ def run_bot(config_path: str) -> None:
             current,
             suggestions,
         )
+        return [app_commands.Choice(name=r, value=r) for r in suggestions]
+
+    async def handle_claim_issue(
+        interaction: discord.Interaction,
+        repo: str,
+        issue_number: int,
+    ) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        discord_user_id = str(interaction.user.id)
+        github_user = resolve_discord_to_github(storage, discord_user_id)
+        if not github_user:
+            await interaction.followup.send(
+                "❌ You must link and verify your GitHub account before claiming an issue. "
+                "Please use `/link` and `/verify-link` first.",
+                ephemeral=True,
+            )
+            return
+
+        owner = config.github.org
+        try:
+            issue = await asyncio.to_thread(fetch_issue_context, github_adapter, owner, repo, issue_number)
+        except Exception as e:
+            logger.exception("Failed to fetch issue context for claim: %s", e)
+            await interaction.followup.send(
+                f"❌ Error fetching issue **{repo}#{issue_number}**. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if not issue:
+            await interaction.followup.send(
+                f"❌ Issue **{repo}#{issue_number}** was not found or is inaccessible.",
+                ephemeral=True,
+            )
+            return
+
+        if str(issue.get("state", "")).lower() == "closed":
+            await interaction.followup.send(
+                f"❌ Cannot claim closed issue **{repo}#{issue_number}**.",
+                ephemeral=True,
+            )
+            return
+
+        assignees = [a.get("login") for a in issue.get("assignees", []) if isinstance(a, dict) and a.get("login")]
+        if github_user in assignees:
+            await interaction.followup.send(
+                f"ℹ️ You are already assigned to **{repo}#{issue_number}**.",
+                ephemeral=True,
+            )
+            return
+        if assignees:
+            await interaction.followup.send(
+                f"❌ Issue **{repo}#{issue_number}** is already assigned to @{', @'.join(assignees)}.",
+                ephemeral=True,
+            )
+            return
+
+        if check_existing_user_request(storage, discord_user_id, repo, issue_number):
+            await interaction.followup.send(
+                f"ℹ️ You have already requested to claim **{repo}#{issue_number}**. Awaiting mentor review.",
+                ephemeral=True,
+            )
+            return
+
+        issue_url = issue.get("html_url") or f"https://github.com/{owner}/{repo}/issues/{issue_number}"
+        request_id = create_claim_request(
+            storage=storage,
+            discord_user_id=discord_user_id,
+            github_user=github_user,
+            owner=owner,
+            repo=repo,
+            issue_number=issue_number,
+            issue_url=issue_url,
+        )
+
+        await interaction.followup.send(
+            f"✅ Claim request for **{repo}#{issue_number}** submitted! Mentors have been notified for approval.",
+            ephemeral=True,
+        )
+
+        # Post mentor approval prompt to mentor activity channel or repo channel
+        mentor_chan_id = (
+            getattr(config.discord, "activity_channel_id", None)
+            or config.discord.pr_open_channels.get(repo)
+        )
+        if not mentor_chan_id and interaction.channel_id:
+            mentor_chan_id = str(interaction.channel_id)
+
+        if mentor_chan_id:
+            try:
+                target_channel = client.get_channel(int(mentor_chan_id))
+                if target_channel is None:
+                    target_channel = await client.fetch_channel(int(mentor_chan_id))
+                if target_channel and hasattr(target_channel, "send"):
+                    contributor_roles = await _fetch_member_roles_list(discord_reader, discord_user_id)
+                    req_dict = {
+                        "request_id": request_id,
+                        "discord_user_id": discord_user_id,
+                        "github_user": github_user,
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "issue_url": issue_url,
+                    }
+                    eligible_roles = []
+                    assignments_cfg = getattr(config, "assignments", None)
+                    if assignments_cfg:
+                        eligible_roles = getattr(assignments_cfg, "issue_assignees", []) or []
+
+                    header, embed_dict = build_mentor_claim_card(
+                        request=req_dict,
+                        issue=issue,
+                        contributor_roles=contributor_roles,
+                        storage=storage,
+                        eligible_roles_config=eligible_roles,
+                    )
+                    prompt_view = MentorClaimPromptView(request_id)
+                    prompt_embed = discord.Embed.from_dict(embed_dict)
+                    await target_channel.send(content=header, embed=prompt_embed, view=prompt_view)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to post mentor claim prompt to channel %s: %s",
+                    mentor_chan_id,
+                    exc,
+                    exc_info=True,
+                )
+
+    async def handle_claim_approve(
+        interaction: discord.Interaction,
+        request_id: str,
+    ) -> None:
+        is_mentor = slash_command_allowed(
+            interaction, config, "assign-issue", allow_all_by_default=False
+        ) or slash_command_allowed(
+            interaction, config, "issue-requests", allow_all_by_default=False
+        ) or (
+            hasattr(interaction.user, "guild_permissions")
+            and interaction.user.guild_permissions.administrator
+        )
+        if not is_mentor:
+            await interaction.response.send_message(
+                "❌ Only mentors can approve issue claim requests.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        mentor_discord_id = str(interaction.user.id)
+        mentor_github = resolve_discord_to_github(storage, mentor_discord_id)
+        policy = MutationPolicy(
+            mode=config.runtime.mode,
+            github_write_allowed=config.github.permissions.write,
+            discord_write_allowed=config.discord.permissions.write,
+        )
+
+        ok, msg, req = await asyncio.to_thread(
+            process_claim_approval,
+            storage,
+            github_adapter,
+            policy,
+            request_id,
+            mentor_discord_id,
+            mentor_github,
+        )
+
+        if not ok or not req:
+            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+            return
+
+        # Notify contributor via DM
+        try:
+            target_user = client.get_user(int(req["discord_user_id"]))
+            if target_user is None:
+                target_user = await client.fetch_user(int(req["discord_user_id"]))
+            if target_user:
+                await target_user.send(
+                    f"🎉 **Issue Claim Approved!**\n\n"
+                    f"Great news! Your claim request for **#{req['issue_number']}** in `{req['owner']}/{req['repo']}` "
+                    f"has been **approved** by a mentor, and you are now officially *assigned* on GitHub!\n\n"
+                    f"🔗 **Issue Link:** {req.get('issue_url')}\n\n"
+                    f"💡 *You're all set to begin work. If you have any questions or need guidance, feel free to reach out in the channel. Good luck!*"
+                )
+        except Exception as exc:
+            logger.warning("Could not send DM to contributor on claim approval: %s", exc)
+
+        # Update prompt message in channel
+        if interaction.message:
+            try:
+                content = (
+                    f"🔔 **Issue Request: #{req['issue_number']}** in `{req['owner']}/{req['repo']}`\n"
+                    f"**Requester:** `{req['github_user']}` (<@{req['discord_user_id']}>)\n\n"
+                    f"✅ **Approved & Assigned** by <@{mentor_discord_id}>"
+                )
+                await interaction.message.edit(content=content, view=None)
+            except Exception:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Approved and assigned @{req['github_user']} to #{req['issue_number']}.",
+            ephemeral=True,
+        )
+
+    async def handle_claim_decline(
+        interaction: discord.Interaction,
+        request_id: str,
+    ) -> None:
+        is_mentor = slash_command_allowed(
+            interaction, config, "assign-issue", allow_all_by_default=False
+        ) or slash_command_allowed(
+            interaction, config, "issue-requests", allow_all_by_default=False
+        ) or (
+            hasattr(interaction.user, "guild_permissions")
+            and interaction.user.guild_permissions.administrator
+        )
+        if not is_mentor:
+            await interaction.response.send_message(
+                "❌ Only mentors can decline issue claim requests.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        mentor_discord_id = str(interaction.user.id)
+        mentor_github = resolve_discord_to_github(storage, mentor_discord_id)
+
+        ok, msg, req = await asyncio.to_thread(
+            process_claim_decline,
+            storage,
+            request_id,
+            mentor_discord_id,
+            mentor_github,
+        )
+
+        if not ok or not req:
+            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+            return
+
+        # Notify contributor via DM
+        try:
+            target_user = client.get_user(int(req["discord_user_id"]))
+            if target_user is None:
+                target_user = await client.fetch_user(int(req["discord_user_id"]))
+            if target_user:
+                await target_user.send(
+                    f"📋 **Issue Claim Update**\n\n"
+                    f"Hello! Regarding your request to claim **#{req['issue_number']}** in `{req['owner']}/{req['repo']}`:\n\n"
+                    f"Your request was *declined by a mentor* (this usually happens if another contributor was assigned first or if the issue requires specific experience).\n\n"
+                    f"💡 *Don't be discouraged!* You can:\n"
+                    f"• *Ask a mentor* in the community chat for guidance or feedback\n"
+                    f"• *Check out another open issue* in the announcement channel\n\n"
+                    f"🚀 *Thank you for your enthusiasm, and keep contributing!*"
+                )
+        except Exception as exc:
+            logger.warning("Could not send DM to contributor on claim decline: %s", exc)
+
+        # Update prompt message in channel
+        if interaction.message:
+            try:
+                content = (
+                    f"🔔 **Issue Request: #{req['issue_number']}** in `{req['owner']}/{req['repo']}`\n"
+                    f"**Requester:** `{req['github_user']}` (<@{req['discord_user_id']}>)\n\n"
+                    f"❌ **Declined** by <@{mentor_discord_id}>"
+                )
+                await interaction.message.edit(content=content, view=None)
+            except Exception:
+                pass
+
+        await interaction.followup.send(
+            f"❌ Claim request for #{req['issue_number']} was declined.",
+            ephemeral=True,
+        )
+
+    @client.event
+    async def on_interaction(interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.component:
+            return
+        custom_id = interaction.data.get("custom_id", "") if interaction.data else ""
+        if custom_id.startswith("claim_issue:"):
+            parts = custom_id.split(":")
+            if len(parts) >= 3:
+                repo_target = parts[1]
+                try:
+                    issue_num = int(parts[2])
+                    await handle_claim_issue(interaction, repo_target, issue_num)
+                except ValueError:
+                    pass
+        elif custom_id.startswith("claim_approve:"):
+            req_id = custom_id.split(":", 1)[1]
+            await handle_claim_approve(interaction, req_id)
+        elif custom_id.startswith("claim_decline:"):
+            req_id = custom_id.split(":", 1)[1]
+            await handle_claim_decline(interaction, req_id)
+
+    @tree.command(
+        name="claim-issue",
+        description="Claim or request assignment to an open GitHub issue",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        issue_url="GitHub issue URL (e.g. https://github.com/org/repo/issues/105)",
+        repo="Repository name (optional if issue_url is provided)",
+        issue_number="Issue number (optional if issue_url is provided)",
+    )
+    async def claim_issue_cmd(
+        interaction: discord.Interaction,
+        issue_url: str | None = None,
+        repo: str | None = None,
+        issue_number: app_commands.Range[int, 1] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        target_repo = (repo or "").strip() or None
+        target_number = int(issue_number) if issue_number is not None else None
+
+        if issue_url:
+            parsed = parse_issue_url(issue_url.strip())
+            if not parsed:
+                await interaction.followup.send(
+                    "❌ Invalid GitHub issue URL. Format: https://github.com/owner/repo/issues/123",
+                    ephemeral=True,
+                )
+                return
+            parsed_owner, parsed_repo, parsed_num = parsed
+            if parsed_owner.lower() != config.github.org.lower():
+                await interaction.followup.send(
+                    f"❌ Issue must be in the configured organization (`{config.github.org}`).",
+                    ephemeral=True,
+                )
+                return
+            target_repo = parsed_repo
+            target_number = parsed_num
+
+        if not target_repo or target_number is None:
+            await interaction.followup.send(
+                "❌ Please specify either `issue_url` or both `repo` and `issue_number`.",
+                ephemeral=True,
+            )
+            return
+
+        await handle_claim_issue(interaction, target_repo, target_number)
+
+    @claim_issue_cmd.autocomplete("repo")
+    async def claim_issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        configured_repos = get_configured_repo_names(config)
+        suggestions = filter_repo_suggestions(configured_repos, current)
         return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
