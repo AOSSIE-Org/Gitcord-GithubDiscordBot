@@ -46,6 +46,9 @@ discord:
     read: true
     write: true
   invite_url: https://discord.gg/hjUhu33uAn
+  # DM new members a Start linking button (requires Server Members Intent in Developer Portal).
+  welcome_dm_on_join: true
+  welcome_org_label: AOSSIE
   unrestricted_slash_commands: false
   command_permissions:
     assign-issue:

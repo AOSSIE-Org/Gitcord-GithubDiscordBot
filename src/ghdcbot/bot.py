@@ -13,6 +13,7 @@ from discord import app_commands
 from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
 from ghdcbot.adapters.github.identity import GitHubIdentityReader
+from ghdcbot.config.access import cfg_get
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.discord_command_permissions import (
@@ -23,6 +24,12 @@ from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
+)
+from ghdcbot.engine.issue_list import (
+    clamp_issue_limit,
+    filter_open_issues,
+    format_issue_list_messages,
+    resolve_repo_for_issue,
 )
 from ghdcbot.engine.metrics import (
     build_contribution_summary_message,
@@ -56,18 +63,21 @@ from ghdcbot.engine.pr_status import (
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
+    WELCOME_INITIATOR_ID,
     HelpLinkSessionStore,
     HelpLinkStartView,
     deliver_help_link_prompt,
+    deliver_welcome_link_dm,
+    should_skip_welcome_for_identity,
 )
 from ghdcbot.logging.setup import configure_logging
 from ghdcbot.plugins.registry import build_adapter
 
-# Slash command names used for permission checks (must match @tree.command name=...)
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_PR_STATUS = "pr-status"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
 
+logger = logging.getLogger("ghdcbot.bot")
 
 VERIFICATION_CODE_REMOVAL_NOTE = (
     "You may now safely remove the verification code from your GitHub bio. "
@@ -191,6 +201,129 @@ def build_identity_verification_embed(claim: LinkClaim, *, profile_settings_url:
     embed.add_field(name="Verification Code", value=f"`{claim.verification_code}`", inline=False)
     embed.add_field(name="Expires At (UTC)", value=claim.expires_at.isoformat(), inline=False)
     return embed
+
+class IssueAssignmentView(discord.ui.View):
+    """View to confirm or cancel issue assignment."""
+
+    def __init__(
+        self,
+        *,
+        github_adapter: Any,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        storage: Any,
+        discord_ids: list[str],
+        initial_github_assignees: list[str],
+        requester_id: int,
+        timeout: float = 300.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.github_adapter = github_adapter
+        self.owner = owner
+        self.repo = repo
+        self.issue_number = issue_number
+        self.storage = storage
+        self.discord_ids = discord_ids
+        self.initial_github_assignees = initial_github_assignees
+        self.requester_id = requester_id
+        self._is_completed = False
+
+        confirm_btn = discord.ui.Button(label="Confirm Assignment", style=discord.ButtonStyle.success)
+        confirm_btn.callback = self.confirm
+        self.add_item(confirm_btn)
+
+        cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_btn.callback = self.cancel
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "❌ Only the person who ran this command can confirm or cancel the assignment.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _disable(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        self._is_completed = True
+
+    async def confirm(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        self._is_completed = True
+        await interaction.response.defer(ephemeral=False)
+        self._disable()
+        
+        # Refetch issue to prevent TOCTOU race conditions
+        try:
+            issue_data = await asyncio.to_thread(
+                self.github_adapter.get_issue, self.owner, self.repo, self.issue_number
+            )
+        except Exception as e:
+            logger.error("Failed to refetch issue: %s", e)
+            await interaction.edit_original_response(content="❌ Error refetching issue status.", embed=None, view=self)
+            return
+
+        if not issue_data:
+            await interaction.edit_original_response(content="❌ Issue not found.", embed=None, view=self)
+            return
+        if issue_data.get("state") == "closed":
+            await interaction.edit_original_response(content="❌ Issue is already closed.", embed=None, view=self)
+            return
+        if "pull_request" in issue_data:
+            await interaction.edit_original_response(content="❌ Cannot assign a pull request.", embed=None, view=self)
+            return
+        if issue_data.get("assignees"):
+            await interaction.edit_original_response(content="❌ Issue is already assigned.", embed=None, view=self)
+            return
+        
+        from ghdcbot.engine.issue_assignment import resolve_discord_to_github
+        fresh_github_assignees = []
+        for d_id, initial_gh in zip(self.discord_ids, self.initial_github_assignees):
+            gh = resolve_discord_to_github(self.storage, d_id)
+            if not gh or gh != initial_gh:
+                await interaction.edit_original_response(content="❌ A selected user's GitHub mapping changed or was removed before confirmation.", embed=None, view=self)
+                return
+            fresh_github_assignees.append(gh)
+        
+        success_list = []
+        fail_list = []
+        for assignee in fresh_github_assignees:
+            try:
+                res = await asyncio.to_thread(
+                    self.github_adapter.assign_issue, self.owner, self.repo, self.issue_number, assignee
+                )
+                if res:
+                    success_list.append(assignee)
+                else:
+                    fail_list.append(assignee)
+            except Exception as e:
+                logger.error("Failed to assign %s to %s/%s#%d: %s", assignee, self.owner, self.repo, self.issue_number, e)
+                fail_list.append(assignee)
+        
+        msgs = []
+        if success_list:
+            msgs.append(f"✅ Assigned: {', '.join(success_list)}")
+        if fail_list:
+            msgs.append(f"❌ Failed to assign: {', '.join(fail_list)}")
+            
+        await interaction.edit_original_response(content="\n".join(msgs), embed=None, view=self)
+
+    async def cancel(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        self._disable()
+        await interaction.response.edit_message(content="❌ Issue assignment cancelled.", embed=None, view=self)
+
+    async def on_timeout(self) -> None:
+        self._is_completed = True
+        for item in self.children:
+            item.disabled = True
+
 
 
 class IdentityVerificationView(discord.ui.View):
@@ -316,6 +449,118 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+async def handle_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+    *,
+    config: Any = None,
+) -> None:
+    """Handle app command errors, including check failures and deferred responses."""
+    logger = logging.getLogger("ghdcbot.bot")
+    if isinstance(error, app_commands.CommandOnCooldown):
+        retry_after = int(error.retry_after) + 1
+        message = f"⏳ This command is on cooldown. Try again in {retry_after}s."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception:
+            logger.exception("Failed to send cooldown message")
+        return
+    if isinstance(error, app_commands.CheckFailure):
+        try:
+            cmd_name = interaction.command.name if interaction.command else "unknown"
+            error_message = (
+                format_slash_command_permission_denied(config, cmd_name)
+                if config is not None
+                else "You do not have permission to use this command."
+            )
+            logger.info(
+                "Check failure for user %s (%s) on command %s.",
+                interaction.user.name,
+                interaction.user.id,
+                cmd_name,
+            )
+
+            # Check if response is already sent (or deferred)
+            if interaction.response.is_done():
+                await interaction.followup.send(error_message, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
+        except Exception as e:
+            logger.exception("Failed to send permission denied message", exc_info=e)
+            # Try one more time with a simple message
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "You do not have permission to use this command.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "You do not have permission to use this command.",
+                        ephemeral=True,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.error("Could not send any error message to user")
+    else:
+        logger.exception("App command error", exc_info=error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "An unexpected error occurred. Please try again later.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "An unexpected error occurred. Please try again later.",
+                    ephemeral=True,
+                )
+        except Exception:  # noqa: BLE001
+            logger.error("Could not send error message to user")
+
+
+def get_issue_repo_choices(
+    config: Any, current: str
+) -> list[app_commands.Choice[str]]:
+    """Generate autocomplete choices for the /issue repo option from config."""
+    repo_filter = None
+    if config:
+        github_cfg = cfg_get(config, "github")
+        if github_cfg:
+            repo_filter = cfg_get(github_cfg, "repos")
+
+    configured_repos = [
+        r for r in get_configured_repo_names(config) if is_repo_allowed(repo_filter, r)
+    ]
+    suggestions = filter_repo_suggestions(configured_repos, current)
+    return [
+        app_commands.Choice(name=r, value=r)
+        for r in suggestions
+        if is_repo_allowed(repo_filter, r)
+    ]
+
+
+def unassigned_open_issue_autocomplete_entries(
+    issues: list[dict] | None,
+) -> list[dict]:
+    """Map open issues to assign-issue autocomplete entries (unassigned only)."""
+    if not issues:
+        return []
+    entries: list[dict] = []
+    for issue in issues:
+        if issue.get("assignees"):
+            continue
+        entries.append(
+            {
+                "number": issue["number"],
+                "title": issue.get("title", "Untitled"),
+            }
+        )
+    return entries
+
+
 def run_bot(config_path: str) -> None:
     """Run the Discord bot with /link, /verify-link, /help-link, /profile, and /summary."""
     config = load_config(config_path)
@@ -366,6 +611,14 @@ def run_bot(config_path: str) -> None:
     # Enable message content intent if passive PR preview is enabled
     if getattr(config.discord, "pr_preview_channels", None):
         intents.message_content = True
+    welcome_dm_on_join = bool(getattr(config.discord, "welcome_dm_on_join", False))
+    if welcome_dm_on_join:
+        # Privileged intent — must also be enabled in the Discord Developer Portal.
+        intents.members = True
+        logger.info(
+            "welcome_dm_on_join enabled: Server Members Intent required "
+            "(Discord Developer Portal → Bot → Privileged Gateway Intents)"
+        )
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
@@ -885,6 +1138,109 @@ def run_bot(config_path: str) -> None:
         return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
+        name="issue",
+        description="List recent open issues in the project channel or specified repository (excluding PRs)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name (optional; auto-detected from channel or config if omitted)",
+        limit="How many recent open issues to show (optional, default 10, max 50)",
+    )
+    @app_commands.checks.cooldown(1, 15.0)
+    async def issue_cmd(
+        interaction: discord.Interaction,
+        repo: str | None = None,
+        limit: app_commands.Range[int, 1, 50] = 10,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = interaction.channel_id
+        channel_name = getattr(interaction.channel, "name", None)
+        resolved_repo, error_msg = resolve_repo_for_issue(
+            config=config,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            repo=repo,
+        )
+        if error_msg or not resolved_repo:
+            await interaction.followup.send(
+                error_msg or "❌ Unable to determine repository.",
+                ephemeral=True,
+            )
+            return
+
+        effective_limit = clamp_issue_limit(limit)
+        logger.info(
+            "/issue requested",
+            extra={
+                "repo": resolved_repo,
+                "requested_limit": limit,
+                "effective_limit": effective_limit,
+                "user_id": str(interaction.user.id),
+            },
+        )
+
+        try:
+            list_issues = getattr(github_adapter, "list_repo_open_issues", None)
+            if not callable(list_issues):
+                await interaction.followup.send(
+                    "❌ This GitHub adapter cannot list repository issues.",
+                    ephemeral=True,
+                )
+                return
+            raw_issues = await asyncio.to_thread(
+                list_issues,
+                config.github.org,
+                resolved_repo,
+                effective_limit,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to list issues for /issue",
+                extra={"repo": resolved_repo, "user_id": str(interaction.user.id)},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if raw_issues is None:
+            await interaction.followup.send(
+                "❌ Error fetching issues. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        issues = filter_open_issues(raw_issues, limit=effective_limit)
+        messages = format_issue_list_messages(
+            issues=issues,
+            org=config.github.org,
+            repo=resolved_repo,
+            limit=effective_limit,
+            storage=storage,
+        )
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
+
+    @issue_cmd.autocomplete("repo")
+    async def issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        choices = get_issue_repo_choices(config, current)
+        logger.debug(
+            "Autocomplete for issue repo: current=%r, count=%d",
+            current,
+            len(choices),
+        )
+        return choices
+
+    @tree.command(
         name="who-is",
         description="Lookup a GitHub username to find their verified Discord account",
         guild=discord.Object(id=guild_id)
@@ -988,6 +1344,68 @@ def run_bot(config_path: str) -> None:
             return
 
         await interaction.followup.send(status, ephemeral=True)
+
+    @client.event
+    async def on_member_join(member: discord.Member) -> None:
+        """Welcome DM with Start linking for new guild members (opt-in via config)."""
+        if not welcome_dm_on_join:
+            return
+        if member.bot:
+            return
+        if member.guild is None or member.guild.id != guild_id:
+            return
+
+        max_age_days = None
+        if getattr(config, "identity", None) is not None:
+            max_age_days = getattr(config.identity, "verified_max_age_days", None)
+        get_status = getattr(storage, "get_identity_status", None)
+        if callable(get_status):
+            try:
+                status_info = await asyncio.to_thread(
+                    get_status, str(member.id), max_age_days=max_age_days
+                )
+            except Exception:
+                logger.exception(
+                    "welcome-on-join: identity status lookup failed for %s", member.id
+                )
+                status_info = None
+            skip = should_skip_welcome_for_identity(status_info)
+            if skip:
+                logger.info(
+                    "welcome-on-join skipped for %s (%s)", member.id, skip
+                )
+                return
+
+        org_label = getattr(config.discord, "welcome_org_label", None) or config.github.org
+        session = help_link_sessions.create(
+            mentor_discord_id=WELCOME_INITIATOR_ID,
+            target_discord_id=str(member.id),
+        )
+        view = HelpLinkStartView(
+            service=service,
+            storage=storage,
+            target_discord_id=str(member.id),
+            mentor_discord_id=WELCOME_INITIATOR_ID,
+            session_id=session.session_id,
+            profile_settings_url=profile_settings_url,
+            verification_view_factory=IdentityVerificationView,
+            build_verification_embed=build_identity_verification_embed,
+            session_store=help_link_sessions,
+            max_age_days=max_age_days,
+        )
+        sent = await deliver_welcome_link_dm(
+            member=member,
+            view=view,
+            org_label=str(org_label),
+        )
+        if not sent:
+            help_link_sessions.clear_if_match(str(member.id), session.session_id)
+            return
+        logger.info(
+            "welcome-on-join DM sent to %s (%s)",
+            member.id,
+            getattr(member, "name", "?"),
+        )
 
     @client.event
     async def on_message(message: discord.Message) -> None:
@@ -1271,57 +1689,362 @@ def run_bot(config_path: str) -> None:
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
 
+    dynamic_repos_cache: list[str] = []
+    dynamic_repos_last_fetched: datetime | None = None
+    dynamic_issues_cache: dict[str, list[dict]] = {}
+    dynamic_issues_last_fetched: dict[str, datetime] = {}
+    _MAX_DYNAMIC_ISSUES_CACHE = 64
+
+    def _evict_dynamic_issues_cache(limit: int = _MAX_DYNAMIC_ISSUES_CACHE) -> None:
+        """Drop oldest issue-autocomplete cache entries when the map grows too large."""
+        while len(dynamic_issues_cache) > limit:
+            if not dynamic_issues_last_fetched:
+                orphan = next(iter(dynamic_issues_cache), None)
+                if orphan is None:
+                    return
+                dynamic_issues_cache.pop(orphan, None)
+                continue
+            oldest_repo = min(dynamic_issues_last_fetched, key=dynamic_issues_last_fetched.__getitem__)
+            dynamic_issues_cache.pop(oldest_repo, None)
+            dynamic_issues_last_fetched.pop(oldest_repo, None)
+
+    async def assign_issue_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            return []
+
+        # Prefer configured allow-list / channel / role repos (already filtered).
+        # In deny mode, repos.names are blocked repos — never suggest them directly.
+        choices = get_issue_repo_choices(config, current)
+        if choices:
+            return choices
+
+        nonlocal dynamic_repos_cache, dynamic_repos_last_fetched
+        repos_config = getattr(config.github, "repos", None)
+        now = datetime.now(UTC)
+        if (
+            not dynamic_repos_cache
+            or not dynamic_repos_last_fetched
+            or (now - dynamic_repos_last_fetched).total_seconds() > 3600
+        ):
+            try:
+                list_repos = getattr(github_adapter, "list_org_repo_names", None)
+                if not callable(list_repos):
+                    return []
+                fetched = await asyncio.to_thread(list_repos)
+                dynamic_repos_cache = [
+                    r for r in fetched if isinstance(r, str) and is_repo_allowed(repos_config, r)
+                ]
+                dynamic_repos_last_fetched = now
+            except Exception as e:
+                logger.error("Failed to fetch repos for autocomplete: %s", e)
+                dynamic_repos_last_fetched = now
+
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in dynamic_repos_cache
+            if current.lower() in r.lower()
+        ][:25]
+
+    async def assign_issue_number_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[int]]:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            return []
+        repo = interaction.namespace.repo
+        if not repo:
+            return []
+
+        owner = getattr(config.github, "org", "")
+        if not owner:
+            return []
+
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            return []
+
+        now = datetime.now(UTC)
+        last_fetched = dynamic_issues_last_fetched.get(repo)
+
+        if not last_fetched or (now - last_fetched).total_seconds() > 60:
+            try:
+                def fetch_issues() -> list[dict]:
+                    list_issues = getattr(github_adapter, "list_repo_open_issues", None)
+                    if not callable(list_issues):
+                        return []
+                    raw = list_issues(owner, repo, limit=100)
+                    if raw is None:
+                        raise RuntimeError(f"Failed to fetch open issues for {owner}/{repo}")
+                    return unassigned_open_issue_autocomplete_entries(raw)
+
+                dynamic_issues_cache[repo] = await asyncio.to_thread(fetch_issues)
+                dynamic_issues_last_fetched[repo] = now
+            except Exception as e:
+                logger.error("Failed to fetch open issues for autocomplete: %s", e)
+                if repo not in dynamic_issues_cache:
+                    dynamic_issues_cache[repo] = []
+                dynamic_issues_last_fetched[repo] = now
+            _evict_dynamic_issues_cache()
+
+        choices = []
+        for issue in dynamic_issues_cache.get(repo, []):
+            name_str = f"#{issue['number']}: {issue['title']}"
+            if len(name_str) > 100:
+                name_str = name_str[:97] + "..."
+
+            num_str = str(issue["number"])
+            if current and current not in num_str and current.lower() not in name_str.lower():
+                continue
+
+            choices.append(app_commands.Choice(name=name_str, value=issue["number"]))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    @tree.command(
+        name="assign-issue",
+        description="Assign a GitHub issue to up to 3 verified Discord users.",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to assign the issue in",
+        issue_number="The GitHub issue number",
+        assignee_1="First user to assign",
+        assignee_2="Second user to assign (optional)",
+        assignee_3="Third user to assign (optional)",
+    )
+    @app_commands.autocomplete(repo=assign_issue_repo_autocomplete, issue_number=assign_issue_number_autocomplete)
+    async def assign_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        issue_number: int,
+        assignee_1: discord.Member,
+        assignee_2: discord.Member | None = None,
+        assignee_3: discord.Member | None = None,
+    ) -> None:
+        if not slash_command_allowed(interaction, config, "assign-issue"):
+            await interaction.response.send_message(
+                format_slash_command_permission_denied(config, "assign-issue"), ephemeral=True
+            )
+            return
+
+        if not getattr(config.github.permissions, "write", False):
+            await interaction.response.send_message(
+                "❌ GitHub write permissions are not enabled. Ask an admin to set "
+                "`github.permissions.write: true` in config.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        
+        assignees = [a for a in (assignee_1, assignee_2, assignee_3) if a is not None]
+        github_assignees = []
+        for assignee in assignees:
+            github_username = resolve_discord_to_github(storage, str(assignee.id))
+            if not github_username:
+                await interaction.followup.send(
+                    f"❌ User <@{assignee.id}> has not linked their GitHub account.", ephemeral=True
+                )
+                return
+            github_assignees.append(github_username)
+
+        owner = getattr(config.github, "org", "")
+        if not owner:
+            await interaction.followup.send("❌ GitHub organization not configured.", ephemeral=True)
+            return
+
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            await interaction.followup.send(
+                f"❌ Repository **{repo}** is not allowed by Gitcord configuration.",
+                ephemeral=True,
+            )
+            return
+
+        from ghdcbot.engine.issue_assignment import fetch_issue_context, build_assignment_confirmation_embed
+        issue = await asyncio.to_thread(fetch_issue_context, github_adapter, owner, repo, issue_number)
+        if not issue:
+            await interaction.followup.send(f"❌ Could not find issue {owner}/{repo}#{issue_number}", ephemeral=True)
+            return
+
+        if issue.get("state") != "open":
+            await interaction.followup.send(f"❌ Issue #{issue_number} is not open.", ephemeral=True)
+            return
+
+        if "pull_request" in issue:
+            await interaction.followup.send(f"❌ #{issue_number} is a Pull Request, not an Issue.", ephemeral=True)
+            return
+
+        existing_assignees = issue.get("assignees", [])
+        if existing_assignees:
+            await interaction.followup.send(
+                f"❌ Issue #{issue_number} is already assigned. Unassign first then assign again.", ephemeral=True
+            )
+            return
+
+        embed_dict = build_assignment_confirmation_embed(
+            issue=issue,
+            owner=owner,
+            repo=repo,
+            current_assignee_github=None,
+            current_assignee_discord=None,
+            new_assignee_github=", ".join(github_assignees),
+            new_assignee_discord=None,
+            assignee_activity="Unknown",
+            now=datetime.now(UTC),
+        )
+
+        view = IssueAssignmentView(
+            github_adapter=github_adapter,
+            owner=owner,
+            repo=repo,
+            issue_number=issue_number,
+            storage=storage,
+            discord_ids=[str(a.id) for a in assignees],
+            initial_github_assignees=github_assignees,
+            requester_id=interaction.user.id,
+        )
+        await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view)
+
+    ISSUE_LABELS = [
+        app_commands.Choice(name="Bug", value="bug"),
+        app_commands.Choice(name="Feature", value="feature"),
+        app_commands.Choice(name="Enhancement", value="enhancement"),
+        app_commands.Choice(name="Documentation", value="documentation"),
+        app_commands.Choice(name="Question", value="question"),
+    ]
+    @tree.command(
+        name="create-issue",
+        description="Create a GitHub issue directly from Discord (verified users only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to create the issue in",
+        title="Issue title (1-256 characters)",
+        description="Optional issue description/body",
+        label="Optional issue label",
+    )
+
+    @app_commands.choices(label=ISSUE_LABELS)
+
+    async def create_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        title: str,
+        description: str = "",
+        label: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_user_id = str(interaction.user.id)
+        
+        # 1. Verify user
+        from ghdcbot.engine.issue_creation import (
+            validate_issue_params,
+            build_issue_created_embed,
+            format_issue_creation_audit_context,
+        )
+        
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            await interaction.followup.send(
+                "❌ You must link your GitHub account first. Use `/link` and `/verify-link`.",
+                ephemeral=True,
+            )
+            return
+            
+        # 2. Check write permissions
+        if not getattr(config.github.permissions, "write", False):
+            await interaction.followup.send(
+                "❌ GitHub write permissions are not enabled. Ask an admin to set `github.permissions.write: true` in config.",
+                ephemeral=True,
+            )
+            return
+            
+        # 3. Validate inputs
+        repo = repo.strip()
+        title = title.strip()
+        ok, err_msg = validate_issue_params(title, repo, config.github.org)
+        if not ok:
+            await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
+            return
+            
+        # 4. Create issue
+        label_list = [label] if label else None
+        
+        issue_data = await asyncio.to_thread(
+            github_adapter.create_issue,
+            config.github.org,
+            repo,
+            title,
+            description,
+            label_list,
+        )
+        
+        if not issue_data:
+            await interaction.followup.send(
+                f"❌ Failed to create issue. Repository `{repo}` might not exist or bot lacks access.",
+                ephemeral=True,
+            )
+            return
+            
+        # 5. Build embed
+        embed_dict = build_issue_created_embed(
+            issue_data,
+            config.github.org,
+            repo,
+            github_username,
+            discord_user_id,
+        )
+        embed = discord.Embed.from_dict(embed_dict)
+        
+        # 6. Audit log
+        append_audit = getattr(storage, "append_audit_event", None)
+        if callable(append_audit):
+            ctx = format_issue_creation_audit_context(
+                config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
+            )
+            ctx["timestamp"] = datetime.now(UTC).isoformat()
+            try:
+                append_audit(ctx)
+            except Exception as e:
+                logger.error("Failed to append audit event for issue creation", exc_info=e)
+            
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @create_issue_cmd.autocomplete("repo")
+    async def create_issue_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        discord_user_id = str(interaction.user.id)
+        
+        # Check permissions
+        if not getattr(config.github.permissions, "write", False):
+            return []
+            
+        # Check identity
+        github_username = resolve_discord_to_github(storage, discord_user_id)
+        if not github_username:
+            return []
+            
+        try:
+            repo_names = await asyncio.to_thread(github_adapter.list_org_repo_names)
+        except Exception:
+            repo_names = []
+            
+        matches = [r for r in repo_names if current.lower() in r.lower()]
+        return [
+            app_commands.Choice(name=match, value=match)
+            for match in matches[:25]
+        ]
+
+
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle app command errors, including check failures."""
-        if isinstance(error, app_commands.CommandOnCooldown):
-            retry_after = int(error.retry_after) + 1
-            message = f"⏳ This command is on cooldown. Try again in {retry_after}s."
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(message, ephemeral=True)
-            except Exception:
-                logger.exception("Failed to send cooldown message")
-            return
-        if isinstance(error, app_commands.CheckFailure):
-            try:
-                cmd_name = interaction.command.name if interaction.command else "unknown"
-                error_message = format_slash_command_permission_denied(config, cmd_name)
-                logger.info(
-                    "Check failure for user %s (%s) on command %s.",
-                    interaction.user.name,
-                    interaction.user.id,
-                    cmd_name,
-                )
-                
-                # Check if response is already sent (shouldn't happen for check failures, but be safe)
-                if interaction.response.is_done():
-                    await interaction.followup.send(error_message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(error_message, ephemeral=True)
-            except Exception as e:
-                logger.exception("Failed to send permission denied message", exc_info=e)
-                # Try one more time with a simple message
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(
-                            "❌ Permission denied. Only mentors can use this command.",
-                            ephemeral=True,
-                        )
-                except Exception:
-                    logger.error("Could not send any error message to user")
-        else:
-            logger.exception("App command error", exc_info=error)
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "❌ An error occurred while processing your command.",
-                        ephemeral=True,
-                    )
-            except Exception:
-                logger.error("Could not send error message to user")
+        await handle_app_command_error(interaction, error, config=config)
 
     register_social_commands(tree, guild_id, social_service)
 
