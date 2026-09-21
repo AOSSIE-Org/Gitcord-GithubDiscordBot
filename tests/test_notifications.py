@@ -1149,7 +1149,7 @@ def test_pr_opened_channel_notification_posts_to_mapped_channel() -> None:
     assert message == ""
     embeds = discord_writer.message_embeds[0]
     assert embeds and embeds[0]["color"] == 0xE3B341
-    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
+    assert "title" not in embeds[0]
     desc = embeds[0]["description"]
     assert "PR 42: [Gitcord-GithubDiscordBot](" in desc
     assert "Created by @alice (<@999>)" in desc
@@ -1366,9 +1366,8 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0x1A7F37
-    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
-    assert not embeds[0]["title"].startswith("Merged:")
-    assert "Merged:" not in embeds[0]["title"]
+    assert "title" not in embeds[0]
+    assert "Merged:" not in embeds[0]["description"]
     assert "Merged by @mentor1" in embeds[0]["description"]
     assert "PR 42: [Gitcord-GithubDiscordBot](" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
@@ -1438,9 +1437,8 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert embeds[0]["title"].startswith("MiniChain #7")
-    assert not embeds[0]["title"].startswith("Closed:")
-    assert "Closed:" not in embeds[0]["title"]
+    assert "title" not in embeds[0]
+    assert "Closed:" not in embeds[0]["description"]
     assert "Closed by @bob" in embeds[0]["description"]
 
 
@@ -1510,7 +1508,7 @@ def test_update_pr_channel_announcement_reopened_fallback() -> None:
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
     assert "TrackedTitle" in embeds[0]["description"]
-    assert "TrackedTitle" in embeds[0]["title"]
+    assert "title" not in embeds[0]
 
 
 def test_update_pr_channel_announcement_close_reopen_close() -> None:
@@ -1664,11 +1662,11 @@ def test_update_pr_channel_announcement_releases_claim_when_audit_fails() -> Non
     # Discord was edited and DB was marked closed, but dedupe was released.
     assert len(discord_writer.messages_edited) == 1
     assert discord_writer.messages_edited[0][2] == ""
-    assert discord_writer.messages_edited[0][3][0]["title"].startswith(
-        "Gitcord-GithubDiscordBot #42"
-    )
-    assert "Closed:" not in discord_writer.messages_edited[0][3][0]["title"]
-    assert "Closed 🔴" not in discord_writer.messages_edited[0][3][0]["title"]
+    closed_embed = discord_writer.messages_edited[0][3][0]
+    assert "title" not in closed_embed
+    assert "PR 42: [Gitcord-GithubDiscordBot](" in closed_embed["description"]
+    assert "Closed:" not in closed_embed["description"]
+    assert "Closed 🔴" not in closed_embed["description"]
     assert (
         "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:closed"
         not in storage.notifications_sent
@@ -1690,8 +1688,16 @@ def test_update_pr_channel_announcement_releases_claim_when_audit_fails() -> Non
         )
 
     assert len(discord_writer.messages_edited) == 2
-    assert "New PR:" in discord_writer.messages_edited[1][2]
-    assert "Test PR" in discord_writer.messages_edited[1][2]
+    reopen_content, reopen_embeds = (
+        discord_writer.messages_edited[1][2],
+        discord_writer.messages_edited[1][3],
+    )
+    assert reopen_embeds and "title" not in reopen_embeds[0]
+    assert "PR 42: [Gitcord-GithubDiscordBot](" in reopen_embeds[0]["description"]
+    assert "Test PR" in reopen_embeds[0]["description"]
+    assert reopen_embeds[0]["color"] == 0xE3B341
+    # Unverified author → /link nudge stays in plain content.
+    assert "/link" in reopen_content
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
     assert (
         "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:open"
@@ -2333,10 +2339,9 @@ def test_update_issue_channel_announcement_edits_on_close() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #7")
-    assert not embeds[0]["title"].startswith("Closed:")
-    assert "Closed:" not in embeds[0]["title"]
-    assert "**Opened by:**" not in embeds[0]["title"]
+    assert "title" not in embeds[0]
+    assert "Closed:" not in embeds[0]["description"]
+    assert "**Opened by:**" not in embeds[0]["description"]
     assert "**Assigned to:**" not in (embeds[0].get("description") or "")
     assert "Closed by @mentor1" in embeds[0]["description"]
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["status"] == "closed"
@@ -2375,7 +2380,8 @@ def test_update_issue_channel_announcement_close_omits_opened_and_assigned() -> 
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "**Opened by:**" not in embeds[0]["title"]
+    assert "title" not in embeds[0]
+    assert "**Opened by:**" not in embeds[0]["description"]
     assert "**Assigned to:**" not in (embeds[0].get("description") or "")
     assert "Closed by @alice" in embeds[0]["description"]
 
@@ -2714,7 +2720,7 @@ def test_sanitize_discord_title_neutralizes_injection() -> None:
     )
     assert message is not None
     content, embeds = message
-    blob = content + embeds[0]["description"] + embeds[0]["title"]
+    blob = content + embeds[0]["description"]
     assert "](https://evil.example)" not in blob
     assert "https://github.com/AOSSIE-Org/repo/pull/7" in blob
     assert "@everyone" not in blob
@@ -2757,8 +2763,9 @@ def test_issue_channel_title_neutralizes_mentions_but_keeps_trusted_assignee() -
     msg, embeds = msg_built
     assert embeds and embeds[0]["color"] == 0xE3B341
     desc = embeds[0]["description"]
-    assert "<@" not in embeds[0]["title"]
-    assert "Ping <\u200b@999>" in embeds[0]["title"]
+    assert "title" not in embeds[0]
+    assert "<@" not in desc.split("Created by")[0]  # header must not raw-ping
+    assert "Ping <\u200b@999>" in desc
     assert "Created by @alice (<@222>)" in desc
     assert "Assigned to: @bob (<@333>)" in desc
     assert msg == ""
@@ -3053,12 +3060,14 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     assert events == [newer, older]
 
     assert len(discord_writer.messages_sent) == 2
-    assert "#41" in discord_writer.message_embeds[0][0]["title"]
-    assert "#42" in discord_writer.message_embeds[1][0]["title"]
+    assert "PR 41:" in discord_writer.message_embeds[0][0]["description"]
+    assert "PR 42:" in discord_writer.message_embeds[1][0]["description"]
+    assert "title" not in discord_writer.message_embeds[0][0]
+    assert "title" not in discord_writer.message_embeds[1][0]
 
 
 def test_closed_issue_embed_title_omits_closed_prefix() -> None:
-    """Bruno P0: status lives only in description, not duplicated in title."""
+    """Bruno: one linked header in description; no Discord embed title."""
     from ghdcbot.engine.notifications import _build_issue_channel_message
 
     msg_built = _build_issue_channel_message(
@@ -3077,17 +3086,16 @@ def test_closed_issue_embed_title_omits_closed_prefix() -> None:
     content, embeds = msg_built
     assert content == ""
     assert len(embeds) == 1
-    title = embeds[0]["title"]
-    assert title.startswith("Gitcord-GithubDiscordBot #83 —")
-    assert not title.startswith("Closed:")
-    assert "Closed:" not in title
-    assert "Closed by @shubham5080" in embeds[0]["description"]
-    assert "Issue 83: [Gitcord-GithubDiscordBot](" in embeds[0]["description"]
+    assert "title" not in embeds[0]
+    desc = embeds[0]["description"]
+    assert "Closed:" not in desc
+    assert "Closed by @shubham5080" in desc
+    assert "Issue 83: [Gitcord-GithubDiscordBot](" in desc
     assert embeds[0]["color"] == 0xCF222E
 
 
 def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
-    """Bruno P0: Merged/Closed appear only under Status, not in the embed title."""
+    """Bruno: Merged/Closed appear only as timeline lines, not as a second title."""
     from ghdcbot.engine.notifications import _build_pr_lifecycle_channel_message
 
     merged_event = ContributionEvent(
@@ -3106,8 +3114,8 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     )
     assert merged_built is not None
     _, merged_embeds = merged_built
-    assert merged_embeds[0]["title"].startswith("MiniChain #10 —")
-    assert "Merged:" not in merged_embeds[0]["title"]
+    assert "title" not in merged_embeds[0]
+    assert "Merged:" not in merged_embeds[0]["description"]
     assert "Merged by @mentor1" in merged_embeds[0]["description"]
     assert merged_embeds[0]["color"] == 0x1A7F37
     assert "PR 10: [MiniChain](" in merged_embeds[0]["description"]
@@ -3128,10 +3136,11 @@ def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
     )
     assert closed_built is not None
     _, closed_embeds = closed_built
-    assert closed_embeds[0]["title"].startswith("MiniChain #11 —")
-    assert "Closed:" not in closed_embeds[0]["title"]
+    assert "title" not in closed_embeds[0]
+    assert "Closed:" not in closed_embeds[0]["description"]
     assert "Closed by @bob" in closed_embeds[0]["description"]
     assert closed_embeds[0]["color"] == 0xCF222E
+    assert "PR 11: [MiniChain](" in closed_embeds[0]["description"]
 
 
 def test_announcement_date_normalizes_offset_datetimes_to_utc() -> None:
