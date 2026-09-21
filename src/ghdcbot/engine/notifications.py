@@ -1038,7 +1038,7 @@ def _build_issue_channel_message(
     Open → yellow; closed → red. Header links live in the description (Discord
     embed titles are plain text). /link nudge stays in message content.
     """
-    issue_title = _sanitize_discord_pr_title(title)
+    issue_title = _sanitize_discord_title(title)
     raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
     repo_url = f"https://github.com/{github_org}/{repo}"
     embed_title = f"{repo} #{issue_number} — {issue_title}"
@@ -1099,7 +1099,7 @@ def _build_issue_channel_message(
     ]
     if label_names:
         safe_labels = [
-            _sanitize_discord_pr_title(label).replace("`", "\\`")
+            _sanitize_discord_title(label).replace("`", "\\`")
             for label in label_names
         ]
         desc_lines.append(
@@ -1165,7 +1165,7 @@ def _build_pr_lifecycle_channel_message(
         or tracked.get("pr_title")
         or "Untitled"
     )
-    pr_title = _sanitize_discord_pr_title(title_raw)
+    pr_title = _sanitize_discord_title(title_raw)
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     repo_url = f"https://github.com/{github_org}/{repo}"
@@ -1425,7 +1425,7 @@ def _suppress_discord_embed(url: str) -> str:
     return f"<{text}>"
 
 
-def _sanitize_discord_pr_title(title: str) -> str:
+def _sanitize_discord_title(title: str) -> str:
     """Escape markdown link delimiters and neutralize mention tokens in titles.
 
     Used for PR and issue channel titles. Neutralizes ``@everyone`` / ``@here`` and
@@ -1455,7 +1455,7 @@ def _build_pr_opened_channel_message(
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
-    pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
+    pr_title = _sanitize_discord_title(event.payload.get("title") or "Untitled")
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     repo_url = f"https://github.com/{github_org}/{repo}"
@@ -1638,7 +1638,7 @@ def _build_notification_message(
     
     if event_type_key == "issue_assigned":
         issue_number = payload.get("issue_number")
-        issue_title = payload.get("title", "Untitled")[:100]
+        issue_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         assigned_by = payload.get("assigned_by")
         assigned_by_str = f" by **{assigned_by}**" if assigned_by else ""
         return (
@@ -1653,7 +1653,7 @@ def _build_notification_message(
     
     elif event_type_key == "pr_review_requested":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         return (
             f"👀 **PR Review Requested**\n\n"
             f"**PR:** #{pr_number} – {pr_title}\n"
@@ -1690,7 +1690,7 @@ def _build_notification_message(
 
     elif event_type_key == "pr_review_comment":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         reviewer = event.github_user
         return (
             f"💬 **New Review Comments**\n\n"
@@ -1723,7 +1723,8 @@ def _build_notification_message(
 
     elif event_type_key == "pr_closed":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("pr_title") or payload.get("title", "Untitled")[:100]
+        raw_title = payload.get("pr_title") or payload.get("title", "Untitled")
+        pr_title = _sanitize_discord_title(raw_title)
         closed_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔒 **PR Closed**\n\n"
@@ -1735,7 +1736,7 @@ def _build_notification_message(
 
     elif event_type_key == "issue_reopened":
         issue_number = payload.get("issue_number")
-        issue_title = payload.get("title", "Untitled")[:100]
+        issue_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         issue_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
         return (
             f"📌 **Issue Reopened**\n\n"
@@ -1748,7 +1749,7 @@ def _build_notification_message(
 
     elif event_type_key == "pr_reopened":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         reopen_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔄 **PR Reopened**\n\n"
