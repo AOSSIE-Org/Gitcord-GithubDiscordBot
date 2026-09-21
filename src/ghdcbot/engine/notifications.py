@@ -1036,15 +1036,13 @@ def _build_issue_channel_message(
 ) -> tuple[str, list[dict]] | None:
     """Build issue channel announcement as a colored Bruno-format embed.
 
-    Open → yellow; closed → red. Header links live in the description (Discord
-    embed titles are plain text). /link nudge stays in message content.
+    Open → yellow; closed → red. One linked header in the description only
+    (no Discord embed title — that duplicated the header). /link nudge stays
+    in message content.
     """
     issue_title = _sanitize_discord_title(title)
     raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
     repo_url = f"https://github.com/{github_org}/{repo}"
-    embed_title = f"{repo} #{issue_number} — {issue_title}"
-    if len(embed_title) > 256:
-        embed_title = embed_title[:253] + "..."
 
     header = _bruno_item_header(
         kind="Issue",
@@ -1073,8 +1071,6 @@ def _build_issue_channel_message(
         description = "\n".join([header, closed_line, created_line])
         embeds = [
             {
-                "title": embed_title,
-                "url": raw_url,
                 "description": description,
                 "color": _GITHUB_CLOSED_RED,
             }
@@ -1109,8 +1105,6 @@ def _build_issue_channel_message(
 
     embeds = [
         {
-            "title": embed_title,
-            "url": raw_url,
             "description": "\n".join(desc_lines),
             "color": _GITHUB_OPEN_YELLOW,
         }
@@ -1219,13 +1213,9 @@ def _build_pr_lifecycle_channel_message(
             )
         )
 
-    title = f"{repo} #{pr_number} — {pr_title}"
-    if len(title) > 256:
-        title = title[:253] + "..."
+    # No embed title — Discord would show it above the Bruno header (double title).
     embeds = [
         {
-            "title": title,
-            "url": raw_url,
             "description": "\n".join(desc_lines),
             "color": color,
         }
@@ -1460,9 +1450,6 @@ def _build_pr_opened_channel_message(
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     repo_url = f"https://github.com/{github_org}/{repo}"
-    embed_title = f"{repo} #{pr_number} — {pr_title}"
-    if len(embed_title) > 256:
-        embed_title = embed_title[:253] + "..."
 
     created_day = _announcement_date(
         event.payload.get("created_at") or event.created_at
@@ -1484,10 +1471,9 @@ def _build_pr_opened_channel_message(
             ),
         ]
     )
+    # Linked Bruno header only — skip Discord embed title to avoid duplication.
     embeds = [
         {
-            "title": embed_title,
-            "url": raw_url,
             "description": description,
             "color": _GITHUB_OPEN_YELLOW,
         }
