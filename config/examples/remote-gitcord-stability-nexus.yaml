@@ -51,9 +51,13 @@ github:
     - IdentityTokens-EVM-Frontend
 discord:
   guild_id: '995968619034984528'
+  invite_url: https://discord.gg/YzDKeEfWtS
   permissions:
     read: true
     write: true
+  # DM new members a Start linking button (requires Server Members Intent in Developer Portal).
+  welcome_dm_on_join: true
+  welcome_org_label: Stability Nexus
   unrestricted_slash_commands: false
   command_permissions:
     sync:
@@ -104,6 +108,7 @@ discord:
     pr_opened: true
     issue_opened: true
     pr_opened_github_comment: true
+    issue_opened_github_comment: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
     channel_id: null

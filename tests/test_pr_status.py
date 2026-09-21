@@ -1027,7 +1027,9 @@ class TestFormatAllPRStatus:
         combined = "\n".join(msgs)
 
         assert "29 more" in combined
-        assert "skip:1" in combined
+        assert "Next page" in combined
+        assert "show_all:True" not in combined
+        assert "skip:" not in combined
 
     def test_no_pagination_footer_when_all_shown(self) -> None:
         statuses = [_make_health(repo="a", number=1)]
@@ -1207,19 +1209,25 @@ class TestPRStatusCommandPermissions:
 
 class TestRepoRecommendationAndAutocomplete:
     def test_cfg_get_helper_behavior(self) -> None:
-        """_cfg_get handles dicts, objects, None, missing keys, and defaults."""
+        """cfg_get handles dicts, objects, None, missing keys, and defaults."""
+        from ghdcbot.config import cfg_get as cfg_get_pkg
+        from ghdcbot.config.access import cfg_get
         from ghdcbot.engine.pr_status import _cfg_get
 
+        assert _cfg_get is cfg_get
+        assert cfg_get_pkg is cfg_get
+
         # None target returns default
-        assert _cfg_get(None, "key") is None
+        assert cfg_get(None, "key") is None
+        assert cfg_get(None, "key", "default_val") == "default_val"
         assert _cfg_get(None, "key", "default_val") == "default_val"
 
         # Dict lookups
         d = {"existing": "val", "nullable": None, "empty_str": ""}
-        assert _cfg_get(d, "existing") == "val"
-        assert _cfg_get(d, "missing", "fallback") == "fallback"
-        assert _cfg_get(d, "nullable", "fallback") == "fallback"
-        assert _cfg_get(d, "empty_str", "fallback") == ""
+        assert cfg_get(d, "existing") == "val"
+        assert cfg_get(d, "missing", "fallback") == "fallback"
+        assert cfg_get(d, "nullable", "fallback") == "fallback"
+        assert cfg_get(d, "empty_str", "fallback") == ""
 
         # Object attribute lookups
         class Dummy:
@@ -1228,10 +1236,10 @@ class TestRepoRecommendationAndAutocomplete:
             empty_str = ""
 
         obj = Dummy()
-        assert _cfg_get(obj, "existing") == "attr_val"
-        assert _cfg_get(obj, "missing", "fallback") == "fallback"
-        assert _cfg_get(obj, "nullable", "fallback") == "fallback"
-        assert _cfg_get(obj, "empty_str", "fallback") == ""
+        assert cfg_get(obj, "existing") == "attr_val"
+        assert cfg_get(obj, "missing", "fallback") == "fallback"
+        assert cfg_get(obj, "nullable", "fallback") == "fallback"
+        assert cfg_get(obj, "empty_str", "fallback") == ""
 
     def test_get_configured_repo_names_allow_mode(self) -> None:
         """Configured repos with mode='allow' are returned in order."""

@@ -22,6 +22,18 @@ class GitHubReader(Protocol):
     def list_open_pull_requests(self) -> Iterable[dict]:
         """Yield open PRs with metadata needed for review assignment."""
 
+    def list_org_repo_names(self) -> list[str]:
+        """Return repository names available for slash-command autocomplete."""
+
+    def list_repo_open_issues(
+        self,
+        owner: str,
+        repo: str,
+        limit: int = 100,
+        per_page: int = 100,
+    ) -> list[dict] | None:
+        """Return open issues for one repository (excluding PRs), or None on error."""
+
 
 class GitHubWriter(Protocol):
     def assign_issue(self, repo: str, issue_number: int, assignee: str) -> None:

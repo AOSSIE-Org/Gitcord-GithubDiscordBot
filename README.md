@@ -286,6 +286,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/link` - Link your Discord account to GitHub (creates verification code)
 - `/verify-link` - Verify your GitHub link after adding code to bio/gist
 - `/help-link` - Help a tagged Discord member start the linking flow (anyone; DM preferred; channel fallback is visible but target-only)
+- Join welcome (optional) - When `discord.welcome_dm_on_join: true`, new members get a DM with **Start linking** → username box → same verify UI (requires Server Members Intent)
 - `/profile` - Show contributor profile (GitHub, verification, socials, roles); optional Discord member
 - `/who-is` - Look up a GitHub username, find the verified Discord account, and see whether verification is current or stale
 - `/unlink` - Unlink your GitHub identity
@@ -297,7 +298,9 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/summary` - Show contribution metrics (7 and 30 days); optional Discord member for another verified contributor
 - `/open-prs` - List a contributor's currently open PRs in configured repos
 - `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
-- `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) for a single PR or multi-PR org dashboard (`show_all:True`, optional `skip` M). Accessible to all server members by default (cooldown: one invocation per user every 5 seconds); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page. Each PR uses a small number of REST calls (pull request, reviews, check runs) plus paginated GraphQL queries for review threads, so a full dashboard page costs roughly 100 or more API requests. When querying a single PR, omitting `repo:` probes each configured repository with one additional REST call to auto-detect the repository (capped at 25 candidate repositories, resulting in a maximum of 25 probe calls).
+- `/issue` - List recent open issues in the project channel or specified repository (excluding PRs) with optional `repo` (with autocomplete) and `limit` (default 10, max 50)
+- `/assign-issue` - Assign a GitHub issue to up to 3 verified Discord users (requires permissions configured via `discord.command_permissions.assign-issue`).
+- `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) via an interactive menu: **Show All Open PRs**, **Next page**, or **Check Specific PR** (modal). Optional `repo:` scopes auto-detect / modal lookup. Accessible to all server members by default (cooldown: one invocation per user every 5 seconds); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page. Each PR uses a small number of REST calls (pull request, reviews, check runs) plus paginated GraphQL queries for review threads, so a full dashboard page costs roughly 100 or more API requests. When checking a specific PR without `repo:`, Gitcord probes each configured repository with one additional REST call to auto-detect the repository (capped at 25 candidate repositories, resulting in a maximum of 25 probe calls).
 
 ### Sync (mentor-only)
 

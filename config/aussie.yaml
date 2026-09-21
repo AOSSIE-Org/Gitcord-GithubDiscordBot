@@ -83,6 +83,7 @@ discord:
     pr_opened: true
     issue_opened: true
     pr_opened_github_comment: true
+    issue_opened_github_comment: true
     coderabbit_reminders: false
     coderabbit_reminder_after_hours: 48
     channel_id: null

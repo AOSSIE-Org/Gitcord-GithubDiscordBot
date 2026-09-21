@@ -115,7 +115,14 @@ def _make_view(
     )
 
 
-def test_help_link_session_store_expires() -> None:
+def test_help_link_session_store_has_no_default_ttl() -> None:
+    store = HelpLinkSessionStore()
+    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    assert session.expires_at is None
+    assert store.get_active("t1") is session
+
+
+def test_help_link_session_store_optional_ttl_still_expires() -> None:
     store = HelpLinkSessionStore(ttl=timedelta(minutes=20))
     now = datetime.now(timezone.utc)
     store._by_target["t1"] = HelpLinkSession(
@@ -176,7 +183,7 @@ def test_start_view_rejects_other_users(tmp_path: Path) -> None:
     assert "only for the tagged" in interaction.response.messages[0]["content"]
 
 
-def test_start_view_rejects_expired_session(tmp_path: Path) -> None:
+def test_start_view_rejects_inactive_session(tmp_path: Path) -> None:
     storage = SqliteStorage(data_dir=str(tmp_path))
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
@@ -186,13 +193,13 @@ def test_start_view_rejects_expired_session(tmp_path: Path) -> None:
         mentor_discord_id="m1",
         target_discord_id="t1",
         created_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=20),
+        expires_at=None,
     )
     view = _make_view(store=store, session=orphan, service=svc, storage=storage)
     interaction = _FakeButtonInteraction("t1")
     asyncio.run(view.start_linking(interaction))
     assert interaction.response.modals == []
-    assert "expired" in interaction.response.messages[0]["content"].lower()
+    assert "no longer active" in interaction.response.messages[0]["content"].lower()
 
 
 def test_start_view_opens_modal_for_target(tmp_path: Path) -> None:
@@ -202,6 +209,7 @@ def test_start_view_opens_modal_for_target(tmp_path: Path) -> None:
     store = HelpLinkSessionStore()
     session = store.create(mentor_discord_id="m1", target_discord_id="t1")
     view = _make_view(store=store, session=session, service=svc, storage=storage)
+    assert view.timeout is None
     interaction = _FakeButtonInteraction("t1")
     asyncio.run(view.start_linking(interaction))
     assert len(interaction.response.modals) == 1

@@ -524,6 +524,7 @@ def send_issue_opened_channel_notification(
         status="open",
         closed_by_github=None,
         include_link_nudge=author_discord_id is None,
+        labels=event.payload.get("labels") or [],
     )
     if not message_built:
         return False
@@ -725,6 +726,7 @@ def update_issue_channel_announcement_for_event(
         status=status,
         closed_by_github=closed_by_github,
         include_link_nudge=False,
+        labels=event.payload.get("labels") or [],
     )
     if not message_built:
         return False
@@ -935,20 +937,23 @@ def _build_issue_channel_message(
     status: str,
     closed_by_github: str | None,
     include_link_nudge: bool,
+    labels: list[str] | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Build issue channel announcement content + embeds.
 
     Open posts: plain text (Opened by / Assigned to). Closed posts: red embed
     card matching PR close styling (empty content so Discord shows one box).
+    Closed status appears only in the embed description, not the title.
     """
-    issue_title = _sanitize_discord_pr_title(title)
+    issue_title = _sanitize_discord_title(title)
     raw_url = f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
     if status == "closed":
         closer = (closed_by_github or "").lstrip("@").strip()
         status_line = (
             f"**Status:** Closed by @{closer}" if closer else "**Status:** Closed"
         )
-        embed_title = f"Closed: {repo} #{issue_number} — {issue_title}"
+        # Status lives only in description (Bruno): do not prefix title with "Closed:".
+        embed_title = f"{repo} #{issue_number} — {issue_title}"
         if len(embed_title) > 256:
             embed_title = embed_title[:253] + "..."
         embeds = [
@@ -977,6 +982,21 @@ def _build_issue_channel_message(
         assigned_line = "**Assigned to:** None"
 
     lines = [header, "", opened_line, assigned_line]
+
+    label_names = [
+        str(label).strip()
+        for label in (labels or [])
+        if str(label or "").strip()
+    ]
+    if label_names:
+        safe_labels = [
+            _sanitize_discord_title(label).replace("`", "\\`")
+            for label in label_names
+        ]
+        lines.append(
+            f"**Labels:** {', '.join(f'`{label}`' for label in safe_labels)}"
+        )
+
     if include_link_nudge:
         lines.extend(
             [
@@ -1033,20 +1053,19 @@ def _build_pr_lifecycle_channel_message(
         or tracked.get("pr_title")
         or "Untitled"
     )
-    pr_title = _sanitize_discord_pr_title(title_raw)
+    pr_title = _sanitize_discord_title(title_raw)
     repo = event.repo
     raw_url = f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
     actor = (actor_github or "").lstrip("@").strip()
     if status == "merged":
-        label = "Merged 🟣"
         status_line = f"**Status:** Merged by @{actor}" if actor else "**Status:** Merged"
         color = _GITHUB_MERGED_PURPLE
     else:
-        label = "Closed 🔴"
         status_line = f"**Status:** Closed by @{actor}" if actor else "**Status:** Closed"
         color = _GITHUB_CLOSED_RED
     # Discord embed titles are plain text (no markdown links); put the link in url.
-    title = f"{label} {repo} #{pr_number} — {pr_title}"
+    # Status (Merged/Closed) lives only in description — do not duplicate in title (Bruno).
+    title = f"{repo} #{pr_number} — {pr_title}"
     if len(title) > 256:
         title = title[:253] + "..."
     embeds = [
@@ -1073,9 +1092,72 @@ def send_pr_opened_github_link_comment(
     Independent of github.permissions.write (assignments) so orgs that disable
     auto-assign can still nudge contributors. Skipped in dry-run/observer.
     """
-    if not config.enabled or not config.pr_opened_github_comment:
+    return _send_opened_github_link_comment(
+        event,
+        storage,
+        github_writer,
+        policy,
+        config,
+        github_org,
+        invite_url,
+        enabled=bool(config.enabled and config.pr_opened_github_comment),
+        expected_event_type="pr_opened",
+        number_payload_key="pr_number",
+        dedupe_prefix="pr_opened_github_link",
+        kind="PR",
+        log_label="PR",
+    )
+
+
+def send_issue_opened_github_link_comment(
+    event: ContributionEvent,
+    storage: Storage,
+    github_writer: Any,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+    invite_url: str | None,
+) -> bool:
+    """Comment on a newly opened issue asking an unverified author to /link in Discord.
+
+    Same behavior as ``send_pr_opened_github_link_comment``, for issues.
+    """
+    return _send_opened_github_link_comment(
+        event,
+        storage,
+        github_writer,
+        policy,
+        config,
+        github_org,
+        invite_url,
+        enabled=bool(config.enabled and config.issue_opened_github_comment),
+        expected_event_type="issue_opened",
+        number_payload_key="issue_number",
+        dedupe_prefix="issue_opened_github_link",
+        kind="issue",
+        log_label="issue",
+    )
+
+
+def _send_opened_github_link_comment(
+    event: ContributionEvent,
+    storage: Storage,
+    github_writer: Any,
+    policy: MutationPolicy,
+    config: NotificationConfig,
+    github_org: str,
+    invite_url: str | None,
+    *,
+    enabled: bool,
+    expected_event_type: str,
+    number_payload_key: str,
+    dedupe_prefix: str,
+    kind: str,
+    log_label: str,
+) -> bool:
+    if not enabled:
         return False
-    if event.event_type != "pr_opened":
+    if event.event_type != expected_event_type:
         return False
     if policy.mode != RunMode.ACTIVE:
         return False
@@ -1088,27 +1170,27 @@ def send_pr_opened_github_link_comment(
         return False
 
     invite = (invite_url or "").strip()
+    number = event.payload.get(number_payload_key)
     if not invite:
         logger.warning(
-            "Skipping PR GitHub link comment: discord.invite_url is not set",
-            extra={"repo": event.repo, "pr_number": event.payload.get("pr_number")},
+            f"Skipping {log_label} GitHub link comment: discord.invite_url is not set",
+            extra={"repo": event.repo, number_payload_key: number},
         )
         return False
 
-    pr_number = event.payload.get("pr_number")
-    if pr_number is None:
+    if number is None:
         return False
 
-    dedupe_key = f"pr_opened_github_link:{event.repo}:{pr_number}"
+    dedupe_key = f"{dedupe_prefix}:{event.repo}:{number}"
     try:
         claimed = _claim_notification_sent(
             storage, dedupe_key, event, "", None, author_github
         )
     except Exception as exc:
         logger.warning(
-            "Failed to claim PR GitHub link comment notification",
+            f"Failed to claim {log_label} GitHub link comment notification",
             exc_info=True,
-            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+            extra={"error": str(exc), "repo": event.repo, number_payload_key: number},
         )
         return False
     if not claimed:
@@ -1118,20 +1200,20 @@ def send_pr_opened_github_link_comment(
     if not callable(create_comment):
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
-            "Skipping PR GitHub link comment: github writer has no create_issue_comment",
-            extra={"repo": event.repo, "pr_number": pr_number},
+            f"Skipping {log_label} GitHub link comment: github writer has no create_issue_comment",
+            extra={"repo": event.repo, number_payload_key: number},
         )
         return False
 
-    body = _build_pr_opened_github_link_comment(author_github, invite)
+    body = _build_opened_github_link_comment(author_github, invite, kind=kind)
     try:
-        sent = bool(create_comment(github_org, event.repo, int(pr_number), body))
+        sent = bool(create_comment(github_org, event.repo, int(number), body))
     except Exception as exc:
         _release_notification_claim(storage, dedupe_key)
         logger.warning(
-            "Failed to post PR GitHub link comment",
+            f"Failed to post {log_label} GitHub link comment",
             exc_info=True,
-            extra={"error": str(exc), "repo": event.repo, "pr_number": pr_number},
+            extra={"error": str(exc), "repo": event.repo, number_payload_key: number},
         )
         return False
 
@@ -1148,10 +1230,23 @@ def _is_github_bot_login(login: str) -> bool:
 
 def _build_pr_opened_github_link_comment(author_github: str, invite_url: str) -> str:
     """Polished GitHub markdown asking an unverified PR author to link via Discord."""
+    return _build_opened_github_link_comment(author_github, invite_url, kind="PR")
+
+
+def _build_opened_github_link_comment(
+    author_github: str, invite_url: str, *, kind: str
+) -> str:
+    """Polished GitHub markdown asking an unverified author to link via Discord."""
+    opened_label = "PR" if kind == "PR" else "issue"
+    after_link = (
+        "reviews, merges, and more"
+        if kind == "PR"
+        else "assignments, mentions, and more"
+    )
     return (
         "### Link your account with Gitcord\n"
         "\n"
-        f"Thanks for opening this PR, **@{author_github}**!\n"
+        f"Thanks for opening this {opened_label}, **@{author_github}**!\n"
         "\n"
         "To receive Discord notifications and contributor tracking for this organization:\n"
         "\n"
@@ -1160,7 +1255,7 @@ def _build_pr_opened_github_link_comment(author_github: str, invite_url: str) ->
         "3. Paste the verification code into your GitHub **bio** (or a public gist)\n"
         f"4. Click **Verify** in Discord (or run `/verify-link {author_github}`)\n"
         "\n"
-        "Once linked, Gitcord can notify you about reviews, merges, and more.\n"
+        f"Once linked, Gitcord can notify you about {after_link}.\n"
         "\n"
         "— *Posted by Gitcord*"
     )
@@ -1176,7 +1271,7 @@ def _suppress_discord_embed(url: str) -> str:
     return f"<{text}>"
 
 
-def _sanitize_discord_pr_title(title: str) -> str:
+def _sanitize_discord_title(title: str) -> str:
     """Escape markdown link delimiters and neutralize mention tokens in titles.
 
     Used for PR and issue channel titles. Neutralizes ``@everyone`` / ``@here`` and
@@ -1205,7 +1300,7 @@ def _build_pr_opened_channel_message(
     pr_number = event.payload.get("pr_number")
     if pr_number is None:
         return None
-    pr_title = _sanitize_discord_pr_title(event.payload.get("title") or "Untitled")
+    pr_title = _sanitize_discord_title(event.payload.get("title") or "Untitled")
     repo = event.repo
     url = _suppress_discord_embed(
         f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
@@ -1363,7 +1458,7 @@ def _build_notification_message(
     
     if event_type_key == "issue_assigned":
         issue_number = payload.get("issue_number")
-        issue_title = payload.get("title", "Untitled")[:100]
+        issue_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         assigned_by = payload.get("assigned_by")
         assigned_by_str = f" by **{assigned_by}**" if assigned_by else ""
         return (
@@ -1378,7 +1473,7 @@ def _build_notification_message(
     
     elif event_type_key == "pr_review_requested":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         return (
             f"👀 **PR Review Requested**\n\n"
             f"**PR:** #{pr_number} – {pr_title}\n"
@@ -1415,7 +1510,7 @@ def _build_notification_message(
 
     elif event_type_key == "pr_review_comment":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         reviewer = event.github_user
         return (
             f"💬 **New Review Comments**\n\n"
@@ -1448,7 +1543,8 @@ def _build_notification_message(
 
     elif event_type_key == "pr_closed":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("pr_title") or payload.get("title", "Untitled")[:100]
+        raw_title = payload.get("pr_title") or payload.get("title", "Untitled")
+        pr_title = _sanitize_discord_title(raw_title)
         closed_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔒 **PR Closed**\n\n"
@@ -1460,7 +1556,7 @@ def _build_notification_message(
 
     elif event_type_key == "issue_reopened":
         issue_number = payload.get("issue_number")
-        issue_title = payload.get("title", "Untitled")[:100]
+        issue_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         issue_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/issues/{issue_number}"
         return (
             f"📌 **Issue Reopened**\n\n"
@@ -1473,7 +1569,7 @@ def _build_notification_message(
 
     elif event_type_key == "pr_reopened":
         pr_number = payload.get("pr_number")
-        pr_title = payload.get("title", "Untitled")[:100]
+        pr_title = _sanitize_discord_title(payload.get("title", "Untitled"))
         reopen_url = payload.get("html_url") or f"https://github.com/{github_org}/{repo}/pull/{pr_number}"
         return (
             f"🔄 **PR Reopened**\n\n"

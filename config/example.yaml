@@ -26,6 +26,8 @@ github:
 discord:
   guild_id: "000000000000000000"
   token: "${DISCORD_TOKEN}"
+  # Required for pr_opened_github_comment / issue_opened_github_comment (/link nudge on unverified authors).
+  # invite_url: "https://discord.gg/your-invite"
   permissions:
     read: true
     write: false
@@ -61,6 +63,8 @@ discord:
   #   pr_reopened: true                # 🔄 Notify when PR is reopened
   #   pr_opened: false                 # Channel post for new PRs (see discord.pr_open_channels)
   #   issue_opened: false              # Channel post for new issues (same pr_open_channels map)
+  #   pr_opened_github_comment: false  # Comment on new PRs asking unverified authors to /link (needs invite_url)
+  #   issue_opened_github_comment: false  # Same /link comment on new issues (needs invite_url)
   #   update_pr_channel_on_lifecycle: true
   #   update_issue_channel_on_lifecycle: true  # Edit issue posts on assign/unassign/close/reopen
   #   coderabbit_reminders: false

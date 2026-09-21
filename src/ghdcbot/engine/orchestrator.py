@@ -21,6 +21,7 @@ from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
     send_issue_opened_channel_notification,
+    send_issue_opened_github_link_comment,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
@@ -324,6 +325,16 @@ def _send_notifications_for_new_events(
         if event.event_type == "issue_opened":
             if send_issue_opened_channel_notification(
                 event, storage, discord_writer, policy, config, channels, github_org
+            ):
+                sent_count += 1
+            if github_writer is not None and send_issue_opened_github_link_comment(
+                event,
+                storage,
+                github_writer,
+                policy,
+                config,
+                github_org,
+                invite_url,
             ):
                 sent_count += 1
             continue

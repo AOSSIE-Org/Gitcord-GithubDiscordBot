@@ -16,8 +16,9 @@ from ghdcbot.engine.notifications import (
     _build_notification_message,
     _build_pr_opened_channel_message,
     _build_pr_opened_github_link_comment,
-    _sanitize_discord_pr_title,
+    _sanitize_discord_title,
     send_issue_opened_channel_notification,
+    send_issue_opened_github_link_comment,
     send_notification_for_event,
     send_pr_opened_channel_notification,
     send_pr_opened_github_link_comment,
@@ -128,7 +129,7 @@ class MockDiscordWriter:
     def __init__(self) -> None:
         self.dms_sent: list[tuple[str, str]] = []
         self.messages_sent: list[tuple[str, str]] = []
-        self.messages_edited: list[tuple[str, str, str]] = []
+        self.messages_edited: list[tuple[str, str, str, list[dict] | None]] = []
         self._next_message_id = 1000
     
     def send_dm(self, discord_user_id: str, content: str) -> bool:
@@ -1340,7 +1341,9 @@ def test_update_pr_channel_announcement_edits_on_merge() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0x8250DF
-    assert "Merged 🟣" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #42")
+    assert not embeds[0]["title"].startswith("Merged:")
+    assert "Merged:" not in embeds[0]["title"]
     assert "Merged by @mentor1" in embeds[0]["description"]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "merged"
 
@@ -1407,7 +1410,9 @@ def test_update_pr_channel_announcement_edits_on_close() -> None:
     embeds = discord_writer.messages_edited[0][3]
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "Closed 🔴" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("MiniChain #7")
+    assert not embeds[0]["title"].startswith("Closed:")
+    assert "Closed:" not in embeds[0]["title"]
     assert "Closed by @bob" in embeds[0]["description"]
 
 
@@ -1627,7 +1632,15 @@ def test_update_pr_channel_announcement_releases_claim_when_audit_fails() -> Non
     # Discord was edited and DB was marked closed, but dedupe was released.
     assert len(discord_writer.messages_edited) == 1
     assert discord_writer.messages_edited[0][2] == ""
-    assert "Closed 🔴" in discord_writer.messages_edited[0][3][0]["title"]
+    assert discord_writer.messages_edited[0][3][0]["title"].startswith(
+        "Gitcord-GithubDiscordBot #42"
+    )
+    assert "Closed:" not in discord_writer.messages_edited[0][3][0]["title"]
+    assert "Closed 🔴" not in discord_writer.messages_edited[0][3][0]["title"]
+    assert (
+        "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:closed"
+        not in storage.notifications_sent
+    )
 
     # 2. Simulate pr_reopened
     reopen_event = ContributionEvent(
@@ -1645,8 +1658,13 @@ def test_update_pr_channel_announcement_releases_claim_when_audit_fails() -> Non
         )
 
     assert len(discord_writer.messages_edited) == 2
+    assert "New PR:" in discord_writer.messages_edited[1][2]
     assert "Test PR" in discord_writer.messages_edited[1][2]
     assert storage.get_pr_channel_announcement("Gitcord-GithubDiscordBot", 42)["status"] == "open"
+    assert (
+        "pr_channel_lifecycle:Gitcord-GithubDiscordBot:42:open"
+        not in storage.notifications_sent
+    )
 
 
 def test_sqlite_pr_channel_announcement_roundtrip(tmp_path) -> None:
@@ -1676,8 +1694,14 @@ def _issue_opened_event(
     title: str = "Fix docs",
     assignee: str | None = None,
     assignees: list[str] | None = None,
+    labels: list[str] | None = None,
 ) -> ContributionEvent:
-    payload: dict = {"issue_number": issue_number, "title": title, "state": "open", "labels": []}
+    payload: dict = {
+        "issue_number": issue_number,
+        "title": title,
+        "state": "open",
+        "labels": list(labels or []),
+    }
     logins = list(assignees or [])
     if assignee and assignee not in logins:
         logins.insert(0, assignee)
@@ -1717,10 +1741,40 @@ def test_issue_opened_channel_notification_posts_with_assigned_none() -> None:
     assert "New Issue: [Gitcord-GithubDiscordBot #7" in message
     assert "**Opened by:** alice - <@999>" in message
     assert "**Assigned to:** None" in message
+    assert "**Labels:**" not in message
     tracked = storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)
     assert tracked is not None
     assert tracked["status"] == "open"
     assert tracked["assignee_github"] is None
+
+
+def test_issue_opened_channel_notification_includes_labels() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"}
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE,
+        github_write_allowed=True,
+        discord_write_allowed=True,
+    )
+
+    result = send_issue_opened_channel_notification(
+        _issue_opened_event(labels=["enhancement", "good first issue"]),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    message = discord_writer.messages_sent[0][1]
+    assert "**Labels:** `enhancement`, `good first issue`" in message
+
 
 
 def test_issue_opened_channel_notification_includes_existing_assignee() -> None:
@@ -1821,7 +1875,7 @@ def test_update_issue_channel_announcement_edits_on_assign() -> None:
         event_type="issue_assigned",
         repo="Gitcord-GithubDiscordBot",
         created_at=datetime.now(UTC),
-        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor"},
+        payload={"issue_number": 7, "title": "Fix docs", "assigned_by": "mentor", "labels": ["enhancement"]},
     )
 
     assert (
@@ -1836,6 +1890,7 @@ def test_update_issue_channel_announcement_edits_on_assign() -> None:
     assert message_id == "m42"
     assert "**Opened by:** alice - <@999>" in content
     assert "**Assigned to:** bob - <@888>" in content
+    assert "**Labels:** `enhancement`" in content
     assert "Closed" not in content
     assert storage.get_issue_channel_announcement("Gitcord-GithubDiscordBot", 7)["assignee_github"] == "bob"
 
@@ -2236,7 +2291,9 @@ def test_update_issue_channel_announcement_edits_on_close() -> None:
     assert content == ""
     assert embeds
     assert embeds[0]["color"] == 0xCF222E
-    assert "Closed: Gitcord-GithubDiscordBot #7" in embeds[0]["title"]
+    assert embeds[0]["title"].startswith("Gitcord-GithubDiscordBot #7")
+    assert not embeds[0]["title"].startswith("Closed:")
+    assert "Closed:" not in embeds[0]["title"]
     assert "**Opened by:**" not in embeds[0]["title"]
     assert "**Assigned to:**" not in (embeds[0].get("description") or "")
     assert "Closed by @mentor1" in embeds[0]["description"]
@@ -2406,6 +2463,76 @@ def test_build_pr_opened_github_link_comment_format() -> None:
     assert "`/link alice`" in body
     assert "`/verify-link alice`" in body
     assert "bio" in body.lower()
+    assert "opening this PR" in body
+
+
+def test_issue_opened_github_link_comment_posts_for_unverified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = []
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(github_user="stranger", issue_number=77),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is True
+    assert len(github_writer.comments) == 1
+    owner, repo, number, body = github_writer.comments[0]
+    assert owner == "AOSSIE-Org"
+    assert repo == "Gitcord-GithubDiscordBot"
+    assert number == 77
+    assert "opening this issue" in body
+    assert "/link stranger" in body
+    assert "issue_opened_github_link:Gitcord-GithubDiscordBot:77" in storage.notifications_sent
+
+
+def test_issue_opened_github_link_comment_skips_verified() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(github_user="alice"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
+
+
+def test_issue_opened_github_link_comment_skips_when_disabled() -> None:
+    storage = MockStorage()
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(enabled=True, issue_opened_github_comment=False)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_github_link_comment(
+        _issue_opened_event(),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert result is False
+    assert github_writer.comments == []
 
 
 def test_pr_opened_github_link_comment_posts_for_unverified() -> None:
@@ -2517,9 +2644,9 @@ def test_pr_opened_github_link_comment_skips_duplicate() -> None:
     assert github_writer.comments == []
 
 
-def test_sanitize_discord_pr_title_neutralizes_injection() -> None:
+def test_sanitize_discord_title_neutralizes_injection() -> None:
     dirty = "fix](https://evil.example) @everyone <@999> <@!888> <@&777> <#666> @here"
-    clean = _sanitize_discord_pr_title(dirty)
+    clean = _sanitize_discord_title(dirty)
     assert "\\]" in clean
     assert "@everyone" not in clean
     assert "@\u200beveryone" in clean
@@ -2878,4 +3005,148 @@ def test_batch_pr_opened_notifications_sent_oldest_first() -> None:
     assert len(discord_writer.messages_sent) == 2
     assert "#41" in discord_writer.messages_sent[0][1]
     assert "#42" in discord_writer.messages_sent[1][1]
+
+
+def test_closed_issue_embed_title_omits_closed_prefix() -> None:
+    """Bruno P0: status lives only in description, not duplicated in title."""
+    from ghdcbot.engine.notifications import _build_issue_channel_message
+
+    msg_built = _build_issue_channel_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord-GithubDiscordBot",
+        issue_number=83,
+        title="SQLite leak & Windows file locking",
+        author_github="alice",
+        author_discord_id=None,
+        assignees=[],
+        status="closed",
+        closed_by_github="shubham5080",
+        include_link_nudge=False,
+    )
+    assert msg_built is not None
+    content, embeds = msg_built
+    assert content == ""
+    assert len(embeds) == 1
+    title = embeds[0]["title"]
+    assert title.startswith("Gitcord-GithubDiscordBot #83 —")
+    assert not title.startswith("Closed:")
+    assert "Closed:" not in title
+    assert embeds[0]["description"] == "**Status:** Closed by @shubham5080"
+    assert embeds[0]["color"] == 0xCF222E
+
+
+def test_pr_lifecycle_embed_titles_omit_status_prefix() -> None:
+    """Bruno P0: Merged/Closed appear only under Status, not in the embed title."""
+    from ghdcbot.engine.notifications import _build_pr_lifecycle_channel_message
+
+    merged_event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": "Add filters", "merged_by": "mentor1"},
+    )
+    merged_built = _build_pr_lifecycle_channel_message(
+        merged_event,
+        "StabilityNexus",
+        status="merged",
+        actor_github="mentor1",
+        tracked={"pr_title": "Add filters"},
+    )
+    assert merged_built is not None
+    _, merged_embeds = merged_built
+    assert merged_embeds[0]["title"].startswith("MiniChain #10 —")
+    assert "Merged:" not in merged_embeds[0]["title"]
+    assert "**Status:** Merged by @mentor1" in merged_embeds[0]["description"]
+
+    closed_event = ContributionEvent(
+        github_user="bob",
+        event_type="pr_closed",
+        repo="MiniChain",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 11, "title": "WIP", "closed_by": "bob"},
+    )
+    closed_built = _build_pr_lifecycle_channel_message(
+        closed_event,
+        "StabilityNexus",
+        status="closed",
+        actor_github="bob",
+        tracked={"pr_title": "WIP"},
+    )
+    assert closed_built is not None
+    _, closed_embeds = closed_built
+    assert closed_embeds[0]["title"].startswith("MiniChain #11 —")
+    assert "Closed:" not in closed_embeds[0]["title"]
+    assert "**Status:** Closed by @bob" in closed_embeds[0]["description"]
+
+
+def test_notification_message_title_sanitization() -> None:
+    """Ensure issue and PR titles with mass mentions and markdown links are sanitized in all templates."""
+    malicious_title = "@everyone Urgent Security Fix [Click Here](https://evil.example) & @here"
+    
+    # 1. issue_assigned
+    event_issue = ContributionEvent(
+        event_type="issue_assigned",
+        repo="Gitcord",
+        github_user="testuser",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 42, "title": malicious_title, "assigned_by": "mentor"},
+    )
+    msg_issue = _build_notification_message(event_issue, "issue_assigned", "AOSSIE-Org", "testuser")
+    assert msg_issue is not None
+    assert "@everyone" not in msg_issue
+    assert "@here" not in msg_issue
+    assert "\\[Click Here\\]" in msg_issue
+
+    # 2. pr_review_requested
+    event_review_req = ContributionEvent(
+        event_type="pr_review_requested",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_review_req = _build_notification_message(event_review_req, "pr_review_requested", "AOSSIE-Org", "reviewer")
+    assert msg_review_req is not None
+    assert "@everyone" not in msg_review_req
+    assert "\\[Click Here\\]" in msg_review_req
+
+    # 3. pr_review_comment
+    event_comment = ContributionEvent(
+        event_type="pr_review_comment",
+        repo="Gitcord",
+        github_user="reviewer",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title},
+    )
+    msg_comment = _build_notification_message(event_comment, "pr_review_comment", "AOSSIE-Org", "author")
+    assert msg_comment is not None
+    assert "@everyone" not in msg_comment
+    assert "\\[Click Here\\]" in msg_comment
+
+    # 4. pr_closed
+    event_closed = ContributionEvent(
+        event_type="pr_closed",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 10, "title": malicious_title, "pr_author": "author"},
+    )
+    msg_closed = _build_notification_message(event_closed, "pr_closed", "AOSSIE-Org", "author")
+    assert msg_closed is not None
+    assert "@everyone" not in msg_closed
+    assert "\\[Click Here\\]" in msg_closed
+
+    # 5. issue_reopened & pr_reopened
+    event_reopened = ContributionEvent(
+        event_type="issue_reopened",
+        repo="Gitcord",
+        github_user="author",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 10, "title": malicious_title},
+    )
+    msg_reopened = _build_notification_message(event_reopened, "issue_reopened", "AOSSIE-Org", "author")
+    assert msg_reopened is not None
+    assert "@everyone" not in msg_reopened
+    assert "\\[Click Here\\]" in msg_reopened
 

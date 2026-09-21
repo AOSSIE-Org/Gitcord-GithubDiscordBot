@@ -11,7 +11,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from ghdcbot.config.access import cfg_get
+
 logger = logging.getLogger(__name__)
+
+# Backward compatibility alias for _cfg_get
+_cfg_get = cfg_get
 
 # Default CodeRabbit bot logins (matches notifications.py pattern).
 _DEFAULT_CODERABBIT_BOT_LOGINS = ["coderabbitai", "coderabbitai[bot]"]
@@ -45,17 +50,6 @@ def is_repo_allowed(repo_filter: Any, repo_name: str) -> bool:
     return True
 
 
-def _cfg_get(target: Any, key: str, default: Any = None) -> Any:
-    """Retrieve an attribute or dict key from target, returning default if absent or None."""
-    if target is None:
-        return default
-    if isinstance(target, dict):
-        val = target.get(key)
-    else:
-        val = getattr(target, key, None)
-    return default if val is None else val
-
-
 def get_configured_repo_names(config: Any) -> list[str]:
     """Extract repository names configured in Gitcord configuration.
 
@@ -80,31 +74,31 @@ def get_configured_repo_names(config: Any) -> list[str]:
         return repo_names
 
     # 1. github.repos.names (allow mode)
-    github_cfg = _cfg_get(config, "github")
+    github_cfg = cfg_get(config, "github")
     if github_cfg:
-        repos_cfg = _cfg_get(github_cfg, "repos")
+        repos_cfg = cfg_get(github_cfg, "repos")
         if repos_cfg:
             if isinstance(repos_cfg, (list, tuple)):
                 for r in repos_cfg:
                     _add(r)
             else:
-                mode = _cfg_get(repos_cfg, "mode", "allow") or "allow"
-                names = _cfg_get(repos_cfg, "names")
+                mode = cfg_get(repos_cfg, "mode", "allow") or "allow"
+                names = cfg_get(repos_cfg, "names")
 
                 if mode == "allow" and isinstance(names, (list, tuple)):
                     for r in names:
                         _add(r)
 
     # 2. discord.pr_open_channels
-    discord_cfg = _cfg_get(config, "discord")
+    discord_cfg = cfg_get(config, "discord")
     if discord_cfg:
-        pr_open_channels = _cfg_get(discord_cfg, "pr_open_channels")
+        pr_open_channels = cfg_get(discord_cfg, "pr_open_channels")
         if isinstance(pr_open_channels, dict):
             for r in pr_open_channels:
                 _add(r)
 
     # 3. repo_contributor_roles
-    contributor_roles = _cfg_get(config, "repo_contributor_roles")
+    contributor_roles = cfg_get(config, "repo_contributor_roles")
     if isinstance(contributor_roles, dict):
         for r in contributor_roles:
             _add(r)
@@ -150,9 +144,9 @@ async def resolve_repo_for_pr(
     """
     repo_filter = None
     if config:
-        github_cfg = _cfg_get(config, "github")
+        github_cfg = cfg_get(config, "github")
         if github_cfg:
-            repo_filter = _cfg_get(github_cfg, "repos")
+            repo_filter = cfg_get(github_cfg, "repos")
 
     # Case 1: User explicitly provided repo
     if repo and repo.strip():
@@ -180,9 +174,9 @@ async def resolve_repo_for_pr(
     # Multiple repos configured: check which one contains this PR number
     org = ""
     if config:
-        github_cfg = _cfg_get(config, "github")
+        github_cfg = cfg_get(config, "github")
         if github_cfg:
-            org = _cfg_get(github_cfg, "org", "") or ""
+            org = cfg_get(github_cfg, "org", "") or ""
 
     candidates = configured_repos[:RESOLVE_REPO_MAX_CANDIDATES]
     semaphore = asyncio.Semaphore(RESOLVE_REPO_MAX_CONCURRENCY)
@@ -601,7 +595,7 @@ def format_all_pr_status(
         return [
             f"📋 **PR Status Dashboard**\n\n"
             f"No PRs in range (skip={skip}, total={total}). "
-            f"Try `/pr-status show_all:True` without skip."
+            f"Use **Show All Open PRs** to restart from the beginning."
         ]
 
     # Sort by triage priority
@@ -683,7 +677,7 @@ def format_all_pr_status(
         footer_lines.append("")
         footer_lines.append(
             f"*…and {total - shown_end} more. "
-            f"Use `/pr-status show_all:True skip:{shown_end}` to see next page.*"
+            f"Use **Next page** in this menu to continue.*"
         )
 
     # Split into ≤2000 char messages
