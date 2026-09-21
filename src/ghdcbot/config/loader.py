@@ -44,6 +44,30 @@ def _construct_include(loader: _ConfigLoader, node: yaml.Node) -> Any:
 _ConfigLoader.add_constructor("!include", _construct_include)
 
 
+def _sanitize_windows_yaml_paths(content: str) -> str:
+    """Escape unescaped backslashes in double-quoted Windows paths in YAML content.
+
+    On Windows, absolute paths like "C:\\Users\\..." or relative paths like ".\\data"
+    contain backslashes. In YAML double-quoted scalars, unescaped backslashes are
+    treated as escape sequences (e.g. \\U, \\t, \\n), which causes YAML ScannerErrors
+    (such as expected escape sequence of 8 hexadecimal numbers for \\Users).
+    This pre-processes Windows paths inside double quotes so backslashes are preserved.
+    """
+    def _fix_windows_path(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        if "\\" in inner:
+            fixed = re.sub(
+                r"\\+",
+                lambda m: m.group(0) + ("\\" if len(m.group(0)) % 2 == 1 else ""),
+                inner,
+            )
+            return f'"{fixed}"'
+        return match.group(0)
+
+    pattern = r'"([a-zA-Z]:\\[^"\r\n]*|\.{1,2}\\[^"\r\n]*)"'
+    return re.sub(pattern, _fix_windows_path, content)
+
+
 def _load_yaml(config_path: Path) -> Any:
     config_dir = config_path.parent
 
@@ -52,9 +76,10 @@ def _load_yaml(config_path: Path) -> Any:
             super().__init__(stream, config_dir=config_dir)
 
     try:
-        with config_path.open(encoding="utf-8") as handle:
-            # Loader subclasses yaml.SafeLoader; !include only resolves relative paths.
-            return yaml.load(handle, Loader=Loader)  # nosec B506
+        content = config_path.read_text(encoding="utf-8")
+        sanitized = _sanitize_windows_yaml_paths(content)
+        # Loader subclasses yaml.SafeLoader; !include only resolves relative paths.
+        return yaml.load(sanitized, Loader=Loader)  # nosec B506
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to parse YAML: {exc}") from exc
     except OSError as exc:
