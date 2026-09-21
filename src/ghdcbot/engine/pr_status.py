@@ -595,7 +595,7 @@ def format_all_pr_status(
         return [
             f"📋 **PR Status Dashboard**\n\n"
             f"No PRs in range (skip={skip}, total={total}). "
-            f"Try `/pr-status show_all:True` without skip."
+            f"Use **Show All Open PRs** to restart from the beginning."
         ]
 
     # Sort by triage priority
@@ -677,7 +677,7 @@ def format_all_pr_status(
         footer_lines.append("")
         footer_lines.append(
             f"*…and {total - shown_end} more. "
-            f"Use `/pr-status show_all:True skip:{shown_end}` to see next page.*"
+            f"Use **Next page** in this menu to continue.*"
         )
 
     # Split into ≤2000 char messages

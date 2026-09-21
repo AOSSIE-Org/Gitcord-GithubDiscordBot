@@ -449,6 +449,188 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+class PRStatusModal(discord.ui.Modal, title="Check Specific PR"):
+    pr_number = discord.ui.TextInput(
+        label="Pull Request Number",
+        placeholder="e.g. 123",
+        required=True,
+        min_length=1,
+        max_length=10,
+    )
+
+    def __init__(self, repo: str | None, config: Any, github_adapter: Any) -> None:
+        super().__init__()
+        self.repo = repo
+        self.config = config
+        self.github_adapter = github_adapter
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            pr_num = int(self.pr_number.value.strip())
+        except ValueError:
+            await interaction.followup.send("❌ PR number must be an integer.", ephemeral=True)
+            return
+
+        repo_name, err = await resolve_repo_for_pr(
+            self.config, self.github_adapter, pr_num, repo=self.repo
+        )
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+
+        assert repo_name is not None
+
+        notification_config = getattr(self.config.discord, "notifications", None)
+        coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
+
+        try:
+            health = await asyncio.to_thread(
+                fetch_pr_health,
+                self.github_adapter,
+                self.config.github.org,
+                repo_name,
+                pr_num,
+                coderabbit_logins,
+            )
+        except Exception:
+            logging.getLogger("ghdcbot.bot").exception(
+                "Failed to fetch PR health",
+                extra={"repo": repo_name, "pr_number": pr_num},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching PR status. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if health is None:
+            # Check if this number is an Issue rather than a PR to provide an informative response
+            issue_info = None
+            try:
+                get_issue = getattr(self.github_adapter, "get_issue", None)
+                if callable(get_issue):
+                    issue_info = await asyncio.to_thread(
+                        get_issue, self.config.github.org, repo_name, pr_num
+                    )
+            except Exception as exc:
+                logging.getLogger("ghdcbot.bot").debug("Failed to fetch issue details for fallback check: %s", exc)
+
+            if issue_info and "pull_request" not in issue_info:
+                issue_title = (issue_info.get("title") or "").strip()
+                issue_state = issue_info.get("state") or "unknown"
+                state_label = "Closed 🔴" if issue_state == "closed" else "Open 🟢"
+                await interaction.followup.send(
+                    f"ℹ️ **{repo_name}#{pr_num}** is a GitHub **Issue**, not a Pull Request.\n\n"
+                    f"**Title:** {issue_title}\n"
+                    f"**State:** {state_label}\n\n"
+                    "💡 `/pr-status` is designed for Pull Requests. Use the modal for Pull Requests instead.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"❌ PR **{repo_name}#{pr_num}** not found or inaccessible.",
+                ephemeral=True,
+            )
+            return
+
+        message = format_single_pr_status(health, self.config.github.org)
+        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+
+
+class PRStatusView(discord.ui.View):
+    def __init__(self, repo: str | None, config: Any, github_adapter: Any, timeout: float = 300.0) -> None:
+        super().__init__(timeout=timeout)
+        self.repo = repo
+        self.config = config
+        self.github_adapter = github_adapter
+        self.skip = 0
+        self.total = 0
+        self.message: discord.Message | None = None
+        self._sync_next_button()
+
+    def _sync_next_button(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "pr_status_next_page":
+                item.disabled = self.total <= 0 or (self.skip + PR_STATUS_MAX_PRS) >= self.total
+                break
+
+    async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
+        notification_config = getattr(self.config.discord, "notifications", None)
+        coderabbit_logins = (
+            getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
+        )
+
+        try:
+            statuses, total = await asyncio.to_thread(
+                fetch_all_open_pr_health,
+                self.github_adapter,
+                self.config.github.org,
+                coderabbit_logins,
+                PR_STATUS_MAX_PRS,
+                skip,
+            )
+        except Exception:
+            logging.getLogger("ghdcbot.bot").exception("Failed to fetch all open PR health")
+            await interaction.followup.send(
+                "❌ Error fetching PR dashboard. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        self.skip = skip
+        self.total = total
+        self._sync_next_button()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                logging.getLogger("ghdcbot.bot").debug(
+                    "Could not refresh PRStatusView buttons after dashboard fetch",
+                    exc_info=True,
+                )
+
+        messages = format_all_pr_status(
+            statuses, self.config.github.org, skip=skip, total=total
+        )
+        for msg in messages:
+            await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
+
+    @discord.ui.button(label="Show All Open PRs", style=discord.ButtonStyle.primary, emoji="📄")
+    async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self._send_dashboard(interaction, skip=0)
+
+    @discord.ui.button(
+        label="Next page",
+        style=discord.ButtonStyle.secondary,
+        emoji="➡️",
+        custom_id="pr_status_next_page",
+        disabled=True,
+    )
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self._send_dashboard(interaction, skip=self.skip + PR_STATUS_MAX_PRS)
+
+    @discord.ui.button(label="Check Specific PR", style=discord.ButtonStyle.secondary, emoji="🔍")
+    async def specific_pr(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PRStatusModal(self.repo, self.config, self.github_adapter))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            logging.getLogger("ghdcbot.bot").debug(
+                "Could not disable PRStatusView after timeout",
+                exc_info=True,
+            )
+
+
 async def handle_app_command_error(
     interaction: discord.Interaction,
     error: app_commands.AppCommandError,
@@ -1480,122 +1662,25 @@ def run_bot(config_path: str) -> None:
     )
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from config if omitted)",
-        pr_number="Pull request number (optional if show_all is True)",
-        show_all="Show health dashboard for all open PRs in the organization",
-        skip="How many open PRs to skip for pagination (when show_all is True)",
     )
     @app_commands.checks.cooldown(1, 5.0)
     @app_commands.check(command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True))
     async def pr_status_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
-        pr_number: app_commands.Range[int, 1] | None = None,
-        show_all: bool = False,
-        skip: app_commands.Range[int, 0] = 0,
     ) -> None:
         """Show health status of a pull request or all open PRs."""
-        await interaction.response.defer(ephemeral=True)
-
-        # Resolve CodeRabbit bot logins from notification config
-        notification_config = getattr(config.discord, "notifications", None)
-        coderabbit_logins = None
-        if notification_config:
-            coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None)
-
-        if show_all:
-            try:
-                statuses, total = await asyncio.to_thread(
-                    fetch_all_open_pr_health,
-                    github_adapter,
-                    config.github.org,
-                    coderabbit_logins,
-                    PR_STATUS_MAX_PRS,
-                    int(skip),
-                )
-            except Exception:
-                logger.exception("Failed to fetch all open PR health")
-                await interaction.followup.send(
-                    "❌ Error fetching PR dashboard. Please try again later.",
-                    ephemeral=True,
-                )
-                return
-
-            messages = format_all_pr_status(
-                statuses, config.github.org, skip=int(skip), total=total
-            )
-            for msg in messages:
-                await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
-            return
-
-        if pr_number is None:
-            await interaction.followup.send(
-                "❌ Please specify `pr_number` to check PR health (or use `show_all:True` for the organization dashboard).",
-                ephemeral=True,
-            )
-            return
-
-        repo_name, err = await resolve_repo_for_pr(
-            config, github_adapter, int(pr_number), repo=repo
+        repo_display = f"`{repo}`" if repo else "auto-detected repository"
+        view = PRStatusView(repo, config, github_adapter)
+        await interaction.response.send_message(
+            f"Select an option for **{repo_display}** (or the org dashboard):",
+            view=view,
+            ephemeral=True
         )
-        if err:
-            await interaction.followup.send(err, ephemeral=True)
-            return
-
-        assert repo_name is not None
-
         try:
-            health = await asyncio.to_thread(
-                fetch_pr_health,
-                github_adapter,
-                config.github.org,
-                repo_name,
-                int(pr_number),
-                coderabbit_logins,
-            )
+            view.message = await interaction.original_response()
         except Exception:
-            logger.exception(
-                "Failed to fetch PR health",
-                extra={"repo": repo_name, "pr_number": pr_number},
-            )
-            await interaction.followup.send(
-                "❌ Error fetching PR status. Please try again later.",
-                ephemeral=True,
-            )
-            return
-
-        if health is None:
-            # Check if this number is an Issue rather than a PR to provide an informative response
-            issue_info = None
-            try:
-                get_issue = getattr(github_adapter, "get_issue", None)
-                if callable(get_issue):
-                    issue_info = await asyncio.to_thread(
-                        get_issue, config.github.org, repo_name, int(pr_number)
-                    )
-            except Exception as exc:
-                logger.debug("Failed to fetch issue details for fallback check: %s", exc)
-
-            if issue_info and "pull_request" not in issue_info:
-                issue_title = (issue_info.get("title") or "").strip()
-                issue_state = issue_info.get("state") or "unknown"
-                state_label = "Closed 🔴" if issue_state == "closed" else "Open 🟢"
-                await interaction.followup.send(
-                    f"ℹ️ **{repo_name}#{pr_number}** is a GitHub **Issue**, not a Pull Request.\n\n"
-                    f"**Title:** {issue_title}\n"
-                    f"**State:** {state_label}\n\n"
-                    "💡 `/pr-status` is designed for Pull Requests. Try `/pr-status pr_number:<PR#>`.",
-                    ephemeral=True,
-                )
-                return
-
-            await interaction.followup.send(
-                f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
-                ephemeral=True,
-            )
-            return
-
-        message = format_single_pr_status(health, config.github.org)
-        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+            logger.debug("Could not capture PRStatusView message for timeout edits", exc_info=True)
 
     @pr_status_cmd.autocomplete("repo")
     async def pr_status_repo_autocomplete(
