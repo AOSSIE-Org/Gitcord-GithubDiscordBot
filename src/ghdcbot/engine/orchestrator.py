@@ -80,6 +80,14 @@ class Orchestrator:
         enable_discord_role_updates = getattr(self.config.runtime, "enable_discord_role_updates", True)
 
         member_roles = self.discord_reader.list_member_roles()
+        member_roles_available = member_roles is not None
+        if not member_roles_available:
+            logger.warning(
+                "Discord member role listing failed (rate limit or API error); "
+                "skipping role-dependent operations to prevent false grants",
+                extra={"guild_id": self.config.discord.guild_id},
+            )
+            member_roles = {}
         role_to_github = build_role_to_github_map(identity_mappings, member_roles)
 
         assignment = RoleBasedAssignmentStrategy(
@@ -143,17 +151,23 @@ class Orchestrator:
             try:
                 merge_role_rules = getattr(self.config, "merge_role_rules", None)
                 repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
-                discord_plans = plan_discord_roles(
-                    member_roles,
-                    [],
-                    identity_mappings,
-                    [],
-                    storage=self.storage,
-                    period_start=period_start,
-                    period_end=period_end,
-                    merge_role_rules=merge_role_rules,
-                    repo_contributor_roles=repo_contributor_roles,
-                )
+                if member_roles_available:
+                    discord_plans = plan_discord_roles(
+                        member_roles,
+                        [],
+                        identity_mappings,
+                        [],
+                        storage=self.storage,
+                        period_start=period_start,
+                        period_end=period_end,
+                        merge_role_rules=merge_role_rules,
+                        repo_contributor_roles=repo_contributor_roles,
+                    )
+                else:
+                    discord_plans = []
+                    logger.info(
+                        "Skipping Discord role planning; member data unavailable"
+                    )
                 github_plans = _to_github_assignment_plans(issue_plans, review_plans)
                 # Pass difficulty_weights if available (optional parameter, backward compatible)
                 list_summaries = getattr(self.storage, "list_contribution_summaries", None)
@@ -209,7 +223,7 @@ class Orchestrator:
         apply_github_plans(self.github_writer, issue_plans, review_plans, policy, self.config.github.org)
         merge_role_rules = getattr(self.config, "merge_role_rules", None)
         repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
-        if enable_discord_role_updates:
+        if enable_discord_role_updates and member_roles_available:
             apply_discord_roles(
                 self.discord_writer,
                 member_roles,
@@ -223,39 +237,49 @@ class Orchestrator:
                 merge_role_rules=merge_role_rules,
                 repo_contributor_roles=repo_contributor_roles,
             )
+        elif not member_roles_available:
+            logger.info("Skipping Discord role updates; member data unavailable")
         else:
             logger.info("Discord role updates disabled by config (enable_discord_role_updates: false)")
         
         # Write GitHub snapshots (additive, non-blocking)
         # This happens AFTER all processing completes successfully
-        try:
-            # Compute contribution summaries for snapshot if not already computed
-            contribution_summaries_for_snapshot = None
-            list_summaries = getattr(self.storage, "list_contribution_summaries", None)
-            if callable(list_summaries):
-                try:
-                    contribution_summaries_for_snapshot = list_summaries(
-                        period_start,
-                        period_end,
-                    )
-                except Exception:
-                    # If summaries can't be computed, snapshot will have empty contributors data
-                    pass
-            
-            write_snapshots_to_github(
-                storage=self.storage,
-                config=self.config,
-                github_writer=self.github_writer,
-                identity_mappings=identity_mappings,
-                scores=[],
-                member_roles=member_roles,
-                period_start=period_start,
-                period_end=period_end,
-                contribution_summaries=contribution_summaries_for_snapshot,
+        # Skip snapshot writing when member roles are unavailable to avoid
+        # publishing an empty roles.json that downstream consumers would
+        # misinterpret as a valid empty guild.
+        if not member_roles_available:
+            logger.info(
+                "Skipping snapshot writing; member roles data unavailable"
             )
-        except Exception as exc:
-            # Never block run-once completion
-            logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
+        else:
+            try:
+                # Compute contribution summaries for snapshot if not already computed
+                contribution_summaries_for_snapshot = None
+                list_summaries = getattr(self.storage, "list_contribution_summaries", None)
+                if callable(list_summaries):
+                    try:
+                        contribution_summaries_for_snapshot = list_summaries(
+                            period_start,
+                            period_end,
+                        )
+                    except Exception:
+                        # If summaries can't be computed, snapshot will have empty contributors data
+                        pass
+                
+                write_snapshots_to_github(
+                    storage=self.storage,
+                    config=self.config,
+                    github_writer=self.github_writer,
+                    identity_mappings=identity_mappings,
+                    scores=[],
+                    member_roles=member_roles,
+                    period_start=period_start,
+                    period_end=period_end,
+                    contribution_summaries=contribution_summaries_for_snapshot,
+                )
+            except Exception as exc:
+                # Never block run-once completion
+                logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
 
         repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))
         requests_total = int(getattr(self.github_reader, "sync_request_count", 0))
