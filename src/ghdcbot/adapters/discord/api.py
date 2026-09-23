@@ -32,10 +32,12 @@ class DiscordApiAdapter:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def list_member_roles(self) -> dict[str, list[str]]:
+    def list_member_roles(self) -> dict[str, list[str]] | None:
         """Return mapping of Discord user ID to role names.
 
-        Degrades gracefully when roles or members cannot be listed due to permissions.
+        Returns None when the Discord API is unavailable (rate limit, network
+        error, or permission denied).  Callers must check for None before
+        using the result for mutation decisions.
         """
         roles, roles_ok = self._list_roles()
         members, members_ok = self._list_members()
@@ -43,16 +45,16 @@ class DiscordApiAdapter:
 
         if not roles_ok:
             self._logger.warning(
-                "Role listing unavailable; returning empty member roles",
+                "Role listing unavailable; member roles data cannot be determined",
                 extra={"guild_id": self._guild_id},
             )
-            return {}
+            return None
         if not members_ok:
             self._logger.warning(
-                "Member listing unavailable; returning empty member roles",
+                "Member listing unavailable; member roles data cannot be determined",
                 extra={"guild_id": self._guild_id},
             )
-            return {}
+            return None
 
         role_lookup = {role["id"]: role["name"] for role in roles}
         member_roles: dict[str, list[str]] = {}

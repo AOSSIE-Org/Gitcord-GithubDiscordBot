@@ -44,8 +44,13 @@ class GitHubWriter(Protocol):
 
 
 class DiscordReader(Protocol):
-    def list_member_roles(self) -> dict[str, Sequence[str]]:
-        """Return mapping of discord user ID to role names."""
+    def list_member_roles(self) -> dict[str, Sequence[str]] | None:
+        """Return mapping of discord user ID to role names.
+
+        Returns None when the Discord API is unavailable (rate limit, network
+        error, or permission denied).  Callers must check for None before
+        using the result for mutation decisions.
+        """
 
     def list_roles_for_member(self, discord_user_id: str) -> Sequence[str]:
         """Return role names for a single guild member (cheap, one API call)."""

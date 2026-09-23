@@ -164,7 +164,7 @@ async def _format_roles_line(discord_reader: Any, discord_user_id: str) -> str:
             target_roles = await asyncio.to_thread(fetch_one, discord_user_id)
         else:
             member_roles = await asyncio.to_thread(discord_reader.list_member_roles)
-            target_roles = member_roles.get(discord_user_id, [])
+            target_roles = member_roles.get(discord_user_id, []) if member_roles else []
     except Exception as e:
         logging.getLogger("ghdcbot.bot").debug("Error fetching roles for /profile: %s", e)
         target_roles = []
