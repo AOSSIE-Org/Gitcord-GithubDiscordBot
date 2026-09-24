@@ -451,7 +451,9 @@ def run_issue_inactivity_lifecycle(
 
             # Stage 1: Inactive (send check-in DM reminder)
             if (current_time - last_act) >= inactivity_delta:
-                dedupe_key = f"issue_inactivity_checkin:{repo}:{issue_number}:{assignee}"
+                dedupe_key = (
+                    f"issue_inactivity_checkin:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                )
                 was_sent = getattr(storage, "was_notification_sent", None)
                 if callable(was_sent) and was_sent(dedupe_key):
                     continue
