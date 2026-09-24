@@ -341,14 +341,17 @@ def run_issue_inactivity_lifecycle(
                     if auto_unassign and policy.allow_github_mutations:
                         # 1. Unassign on GitHub
                         unassign_fn = getattr(github_writer, "unassign_issue", None)
+                        unassigned = False
                         if callable(unassign_fn):
                             try:
-                                unassign_fn(github_org, repo, issue_number, assignee)
+                                unassigned = bool(unassign_fn(github_org, repo, issue_number, assignee))
                             except Exception as exc:  # noqa: BLE001
                                 logger.error(
                                     "Failed to unassign inactive contributor",
                                     extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
                                 )
+                        if not unassigned:
+                            continue  # retry next run; do not comment, DM, or record
 
                         # 2. Courtesy comment on issue
                         if comment_on_unassign:
