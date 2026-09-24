@@ -1188,6 +1188,13 @@ def run_bot(config_path: str) -> None:
             )
             return
 
+        if open_prs is None:
+            await interaction.followup.send(
+                "❌ Error fetching open PRs. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
         prs = list_open_prs_for_author(open_prs, github_user)
         message = format_open_prs_report(
             contributor_mention=contributor.mention,
@@ -1284,6 +1291,13 @@ def run_bot(config_path: str) -> None:
                     "repo": repo_name,
                 },
             )
+            await interaction.followup.send(
+                "❌ Error fetching PRs. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if all_prs is None:
             await interaction.followup.send(
                 "❌ Error fetching PRs. Please try again later.",
                 ephemeral=True,

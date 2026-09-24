@@ -37,8 +37,13 @@ class GitHubReader(Protocol):
 
     def get_issue_comments(
         self, owner: str, repo: str, issue_number: int
-    ) -> list[dict]:
-        """Fetch comments for an issue."""
+    ) -> list[dict] | None:
+        """Fetch comments for an issue, or None on error."""
+
+    def list_pull_requests_for_author(
+        self, github_user: str, *, repo: str | None = None
+    ) -> list[dict] | None:
+        """List pull requests for an author, or None on error."""
 
 
 class GitHubWriter(Protocol):
