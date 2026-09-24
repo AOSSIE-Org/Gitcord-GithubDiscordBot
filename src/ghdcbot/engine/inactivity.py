@@ -351,6 +351,16 @@ def run_issue_inactivity_lifecycle(
 
                 status = record.get("status") or "assigned"
                 if status in {"unassigned", "resolved"}:
+                    # User is assigned again after a closed lifecycle: restart tracking.
+                    track_fn = getattr(storage, "track_issue_assignment", None)
+                    if callable(track_fn):
+                        track_fn(
+                            repo=repo,
+                            issue_number=issue_number,
+                            github_user=assignee,
+                            assigned_at=current_time,
+                            last_activity_at=current_time,
+                        )
                     continue
 
                 last_act = _parse_utc_datetime(record.get("last_activity_at")) or issue_created_at
