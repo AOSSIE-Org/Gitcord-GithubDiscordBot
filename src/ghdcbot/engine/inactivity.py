@@ -283,21 +283,23 @@ def run_issue_inactivity_lifecycle(
 
             if record is None:
                 # First time seeing this assignment: initialize tracking
+                # Unknown real assignment time: start the clock now, not at issue creation.
+                first_seen = current_time
                 track_fn = getattr(storage, "track_issue_assignment", None)
                 if callable(track_fn):
                     track_fn(
                         repo=repo,
                         issue_number=issue_number,
                         github_user=assignee,
-                        assigned_at=issue_created_at,
-                        last_activity_at=issue_created_at,
+                        assigned_at=first_seen,
+                        last_activity_at=first_seen,
                     )
                 record = {
                     "repo": repo,
                     "issue_number": issue_number,
                     "github_user": assignee,
-                    "assigned_at": issue_created_at.isoformat(),
-                    "last_activity_at": issue_created_at.isoformat(),
+                    "assigned_at": first_seen.isoformat(),
+                    "last_activity_at": first_seen.isoformat(),
                     "status": "assigned",
                     "reminder_sent_at": None,
                     "escalated_at": None,
