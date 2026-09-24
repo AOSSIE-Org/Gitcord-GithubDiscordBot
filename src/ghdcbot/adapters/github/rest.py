@@ -197,7 +197,9 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)
 
-    def list_open_pull_requests_for_author(self, github_user: str) -> list[dict]:
+    def list_open_pull_requests_for_author(
+        self, github_user: str
+    ) -> list[dict] | None:
         """List open PRs by one author via Search API (avoids scanning every repo).
 
         Results are limited to the configured org and filtered by the active repo
@@ -212,7 +214,7 @@ class GitHubRestAdapter:
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """List recent PRs (open/merged/closed) for one author via Search API.
 
         Newest-updated first. Each item includes ``status``: open | merged | closed.
@@ -239,7 +241,7 @@ class GitHubRestAdapter:
         sort: str | None = None,
         order: str | None = None,
         repo: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -302,7 +304,7 @@ class GitHubRestAdapter:
                                 "log_label": log_label,
                             },
                         )
-                    break
+                    return None
                 payload = response.json()
                 items = payload.get("items") if isinstance(payload, dict) else None
                 if not isinstance(items, list) or not items:
@@ -510,7 +512,8 @@ class GitHubRestAdapter:
             True if unassignment succeeded, False otherwise.
         """
         try:
-            response = self._client.delete(
+            response = self._client.request(
+                "DELETE",
                 f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
                 json={"assignees": [assignee]},
             )
@@ -792,6 +795,30 @@ class GitHubRestAdapter:
         ):
             comments.extend(page)
         return comments
+
+    def get_issue_comments(
+        self, owner: str, repo: str, issue_number: int
+    ) -> list[dict] | None:
+        """Fetch comments for an issue.
+
+        Returns list of comment dicts (each has user.login, created_at, id, body, etc.).
+        Returns None on error.
+        """
+        try:
+            comments: list[dict] = []
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                params={"per_page": 100},
+                raise_on_error=True,
+            ):
+                comments.extend(page)
+            return comments
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to fetch issue comments",
+                extra={"owner": owner, "repo": repo, "issue": issue_number, "error": str(exc)},
+            )
+            return None
 
     def get_pull_request_review_threads(
         self, owner: str, repo: str, pr_number: int
@@ -1889,11 +1916,15 @@ class GitHubRestAdapter:
             for issue in page:
                 if "pull_request" in issue:
                     continue
-                # Include assignees so planning can skip already-assigned issues
+                # Include assignees and metadata for planning and inactivity tracking
                 yield {
                     "repo": repo["name"],
                     "number": issue["number"],
+                    "title": issue.get("title", ""),
                     "assignees": issue.get("assignees", []),
+                    "created_at": issue.get("created_at"),
+                    "updated_at": issue.get("updated_at"),
+                    "html_url": issue.get("html_url"),
                 }
 
     def _list_repo_open_prs(self, repo: dict) -> Iterable[dict]:

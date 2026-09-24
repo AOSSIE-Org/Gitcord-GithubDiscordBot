@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
@@ -15,10 +16,15 @@ class SqliteStorage:
         self._db_path = Path(data_dir) / "state.db"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def init_schema(self) -> None:
         with self._connect() as conn:
@@ -167,6 +173,20 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_channel_announcements_status
                     ON issue_channel_announcements (status);
+                CREATE TABLE IF NOT EXISTS issue_inactivity_tracking (
+                    repo TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    github_user TEXT NOT NULL,
+                    assigned_at TEXT NOT NULL,
+                    last_activity_at TEXT NOT NULL,
+                    last_checked_at TEXT NOT NULL,
+                    reminder_sent_at TEXT,
+                    escalated_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'assigned',
+                    PRIMARY KEY (repo, issue_number, github_user)
+                );
+                CREATE INDEX IF NOT EXISTS idx_issue_inactivity_status
+                    ON issue_inactivity_tracking (status);
                 """
             )
 
@@ -1180,6 +1200,175 @@ class SqliteStorage:
             ).fetchone()
         
         return dict(row) if row else None
+
+    def track_issue_assignment(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        assigned_at: datetime,
+        last_activity_at: datetime | None = None,
+    ) -> None:
+        """Upsert an issue assignment for inactivity tracking."""
+        assigned_str = _ensure_utc(assigned_at).isoformat()
+        act_str = _ensure_utc(last_activity_at or assigned_at).isoformat()
+        now_str = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO issue_inactivity_tracking
+                    (repo, issue_number, github_user, assigned_at, last_activity_at, last_checked_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'assigned')
+                ON CONFLICT(repo, issue_number, github_user) DO UPDATE SET
+                    last_checked_at = excluded.last_checked_at
+                """,
+                (repo, issue_number, github_user, assigned_str, act_str, now_str),
+            )
+
+    def update_issue_inactivity_activity(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        activity_at: datetime,
+    ) -> None:
+        """Update last_activity_at when contributor activity is detected, resetting status to 'assigned'."""
+        act_str = _ensure_utc(activity_at).isoformat()
+        now_str = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE issue_inactivity_tracking
+                SET last_activity_at = ?,
+                    last_checked_at = ?,
+                    status = 'assigned',
+                    reminder_sent_at = NULL
+                WHERE repo = ? AND issue_number = ? AND github_user = ?
+                """,
+                (act_str, now_str, repo, issue_number, github_user),
+            )
+
+    def record_issue_inactivity_reminder(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        reminder_sent_at: datetime,
+    ) -> None:
+        """Record that a reminder DM has been sent."""
+        rem_str = _ensure_utc(reminder_sent_at).isoformat()
+        now_str = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE issue_inactivity_tracking
+                SET reminder_sent_at = ?,
+                    last_checked_at = ?,
+                    status = 'reminded'
+                WHERE repo = ? AND issue_number = ? AND github_user = ?
+                """,
+                (rem_str, now_str, repo, issue_number, github_user),
+            )
+
+    def record_issue_inactivity_escalation(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        escalated_at: datetime,
+        status: str = "unassigned",
+    ) -> None:
+        """Record that an issue has been escalated / unassigned."""
+        esc_str = _ensure_utc(escalated_at).isoformat()
+        now_str = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE issue_inactivity_tracking
+                SET escalated_at = ?,
+                    last_checked_at = ?,
+                    status = ?
+                WHERE repo = ? AND issue_number = ? AND github_user = ?
+                """,
+                (esc_str, now_str, status, repo, issue_number, github_user),
+            )
+
+    def get_issue_inactivity_record(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+    ) -> dict | None:
+        """Get tracking record for a specific assignment."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT repo, issue_number, github_user, assigned_at, last_activity_at,
+                       last_checked_at, reminder_sent_at, escalated_at, status
+                FROM issue_inactivity_tracking
+                WHERE repo = ? AND issue_number = ? AND github_user = ?
+                """,
+                (repo, issue_number, github_user),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_active_issue_inactivity_trackers(
+        self,
+        repo: str | None = None,
+    ) -> list[dict]:
+        """List all active (not resolved or unassigned) tracking records."""
+        with self._connect() as conn:
+            if repo:
+                rows = conn.execute(
+                    """
+                    SELECT repo, issue_number, github_user, assigned_at, last_activity_at,
+                           last_checked_at, reminder_sent_at, escalated_at, status
+                    FROM issue_inactivity_tracking
+                    WHERE repo = ? AND status IN ('assigned', 'reminded')
+                    ORDER BY assigned_at ASC
+                    """,
+                    (repo,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT repo, issue_number, github_user, assigned_at, last_activity_at,
+                           last_checked_at, reminder_sent_at, escalated_at, status
+                    FROM issue_inactivity_tracking
+                    WHERE status IN ('assigned', 'reminded')
+                    ORDER BY assigned_at ASC
+                    """
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def close_issue_inactivity_tracking(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str | None = None,
+        status: str = "resolved",
+    ) -> None:
+        """Mark issue tracking as resolved/closed (e.g. when issue is closed or unassigned)."""
+        now_str = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            if github_user:
+                conn.execute(
+                    """
+                    UPDATE issue_inactivity_tracking
+                    SET status = ?, last_checked_at = ?
+                    WHERE repo = ? AND issue_number = ? AND github_user = ?
+                    """,
+                    (status, now_str, repo, issue_number, github_user),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE issue_inactivity_tracking
+                    SET status = ?, last_checked_at = ?
+                    WHERE repo = ? AND issue_number = ?
+                    """,
+                    (status, now_str, repo, issue_number),
+                )
 
 
 def _ensure_utc(value: datetime) -> datetime:

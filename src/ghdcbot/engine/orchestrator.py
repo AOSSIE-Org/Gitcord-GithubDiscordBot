@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from ghdcbot.config.models import BotConfig, IdentityMapping, MergeRoleRulesConfig, RoleMappingConfig
+from ghdcbot.config.models import (
+    BotConfig,
+    IdentityMapping,
+    MergeRoleRulesConfig,
+    RoleMappingConfig,
+)
 from ghdcbot.config.sync_safety import assert_sync_safe
 from ghdcbot.core.interfaces import (
     DiscordReader,
@@ -15,9 +21,10 @@ from ghdcbot.core.interfaces import (
     GitHubWriter,
     Storage,
 )
-from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
+from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
+from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
 from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
     send_issue_opened_channel_notification,
@@ -29,7 +36,7 @@ from ghdcbot.engine.notifications import (
     update_pr_channel_announcement_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
-from ghdcbot.engine.reporting import write_reports, write_activity_report
+from ghdcbot.engine.reporting import write_activity_report, write_reports
 from ghdcbot.engine.snapshots import write_snapshots_to_github
 from ghdcbot.logging.sync_context import SyncSession
 
@@ -56,7 +63,7 @@ class Orchestrator:
         assert_sync_safe(self.config)
         self.storage.init_schema()
 
-        period_end = datetime.now(timezone.utc)
+        period_end = datetime.now(UTC)
         period_start = period_end - timedelta(days=self.config.runtime.activity_period_days)
 
         identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
@@ -137,6 +144,24 @@ class Orchestrator:
                 except Exception as exc:
                     logger.warning(
                         "CodeRabbit reminders failed (non-blocking)",
+                        exc_info=True,
+                        extra={"error": str(exc)},
+                    )
+            # Issue inactivity check-ins and escalation: 7d reminder, 14d escalation (opt-in, non-blocking)
+            if getattr(notification_config, "issue_inactivity_reminders", False):
+                try:
+                    run_issue_inactivity_lifecycle(
+                        github_reader=self.github_reader,
+                        github_writer=self.github_writer,
+                        discord_writer=self.discord_writer,
+                        storage=self.storage,
+                        policy=policy,
+                        config=notification_config,
+                        github_org=self.config.github.org,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Issue inactivity lifecycle check failed (non-blocking)",
                         exc_info=True,
                         extra={"error": str(exc)},
                     )
