@@ -107,6 +107,15 @@ class NotificationConfig(BaseModel):
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
+    # Inactive issue check-in and escalation
+    issue_inactivity_reminders: bool = False  # Enable inactivity check-ins for assigned issues
+    issue_inactivity_days: int = 7  # Inactivity threshold in days before sending first DM check-in
+    issue_inactivity_escalate_days: int = 7  # Additional days of inactivity after reminder before escalation/unassignment
+    issue_inactivity_minutes: int | None = None  # Minutes threshold before sending first DM check-in (overrides days)
+    issue_inactivity_escalate_minutes: int | None = None  # Minutes threshold after reminder before escalation (overrides days)
+    issue_inactivity_auto_unassign: bool = True  # Auto-unassign on second cutoff (14 days total) if still inactive
+    issue_inactivity_comment_on_unassign: bool = True  # Post explanatory comment on GitHub issue when unassigning
+    issue_inactivity_alert_channel_id: str | None = None  # Optional channel to alert mentors when escalation occurs
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
 
@@ -115,6 +124,18 @@ class NotificationConfig(BaseModel):
     def validate_coderabbit_reminder_hours(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("coderabbit_reminder_after_hours must be positive")
+        return value
+
+    @field_validator(
+        "issue_inactivity_days",
+        "issue_inactivity_escalate_days",
+        "issue_inactivity_minutes",
+        "issue_inactivity_escalate_minutes",
+    )
+    @classmethod
+    def validate_inactivity_days(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("inactivity timing must be positive")
         return value
 
 

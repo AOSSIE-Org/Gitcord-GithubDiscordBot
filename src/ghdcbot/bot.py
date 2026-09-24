@@ -9,6 +9,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 
 from ghdcbot.adapters.discord.social_commands import register_social_commands
 from ghdcbot.adapters.github.app_auth import resolve_github_token
@@ -16,11 +17,13 @@ from ghdcbot.adapters.github.identity import GitHubIdentityReader
 from ghdcbot.config.access import cfg_get
 from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
+from ghdcbot.core.modes import MutationPolicy
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
     slash_command_allowed,
 )
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
+from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
 from ghdcbot.engine.issue_assignment import (
     resolve_discord_to_github,
     resolve_github_to_discord,
@@ -2133,11 +2136,55 @@ def run_bot(config_path: str) -> None:
 
     register_social_commands(tree, guild_id, social_service)
 
+    notification_cfg = getattr(config.discord, "notifications", None)
+    if notification_cfg and getattr(notification_cfg, "issue_inactivity_reminders", False):
+        interval_kwargs = (
+            {"minutes": 1}
+            if getattr(notification_cfg, "issue_inactivity_minutes", None)
+            else {"hours": 1}
+        )
+
+        @tasks.loop(**interval_kwargs)
+        async def issue_inactivity_check_task() -> None:
+            try:
+                policy = MutationPolicy(
+                    mode=config.runtime.mode,
+                    github_write_allowed=config.github.permissions.write,
+                    discord_write_allowed=config.discord.permissions.write,
+                )
+                discord_writer_adapter = build_adapter(
+                    config.runtime.discord_adapter,
+                    token=config.discord.token,
+                    guild_id=config.discord.guild_id,
+                )
+                await asyncio.to_thread(
+                    run_issue_inactivity_lifecycle,
+                    github_reader=github_adapter,
+                    github_writer=github_adapter,
+                    discord_writer=discord_writer_adapter,
+                    storage=storage,
+                    policy=policy,
+                    config=notification_cfg,
+                    github_org=config.github.org,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Error running periodic issue inactivity check: %s", e)
+
     @client.event
     async def on_ready() -> None:
         synced = await tree.sync(guild=discord.Object(id=guild_id))
         cmd_names = [c.name for c in synced]
         logger.info("Bot ready; slash commands synced for guild %s: %s", guild_id, cmd_names)
+        if (
+            notification_cfg
+            and getattr(notification_cfg, "issue_inactivity_reminders", False)
+            and not issue_inactivity_check_task.is_running()
+        ):
+            issue_inactivity_check_task.start()
+            logger.info(
+                "Started periodic issue inactivity check task (%s)",
+                "every 1m" if "minutes" in interval_kwargs else "every 1h",
+            )
 
     client.run(config.discord.token)
 

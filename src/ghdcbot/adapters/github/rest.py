@@ -510,7 +510,8 @@ class GitHubRestAdapter:
             True if unassignment succeeded, False otherwise.
         """
         try:
-            response = self._client.delete(
+            response = self._client.request(
+                "DELETE",
                 f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
                 json={"assignees": [assignee]},
             )
@@ -789,6 +790,19 @@ class GitHubRestAdapter:
         comments: list[dict] = []
         for page in self._paginate(
             f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", params={"per_page": 100}
+        ):
+            comments.extend(page)
+        return comments
+
+    def get_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
+        """Fetch comments for an issue.
+
+        Returns list of comment dicts (each has user.login, created_at, id, body, etc.).
+        Empty list on error.
+        """
+        comments: list[dict] = []
+        for page in self._paginate(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments", params={"per_page": 100}
         ):
             comments.extend(page)
         return comments
@@ -1889,11 +1903,15 @@ class GitHubRestAdapter:
             for issue in page:
                 if "pull_request" in issue:
                     continue
-                # Include assignees so planning can skip already-assigned issues
+                # Include assignees and metadata for planning and inactivity tracking
                 yield {
                     "repo": repo["name"],
                     "number": issue["number"],
+                    "title": issue.get("title", ""),
                     "assignees": issue.get("assignees", []),
+                    "created_at": issue.get("created_at"),
+                    "updated_at": issue.get("updated_at"),
+                    "html_url": issue.get("html_url"),
                 }
 
     def _list_repo_open_prs(self, repo: dict) -> Iterable[dict]:
