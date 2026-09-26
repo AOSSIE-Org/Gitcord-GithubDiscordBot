@@ -222,6 +222,8 @@ def test_collect_snapshot_data_with_contributors() -> None:
     assert len(contributors["data"]) == 1
     assert contributors["data"][0]["github_user"] == "alice"
     assert contributors["data"][0]["issues_opened"] == 5
+    assert contributors["data"][0]["prs_opened"] == 3
+    assert contributors["data"][0]["prs_merged"] == 2
     assert contributors["data"][0]["total_score"] == 50
 
 

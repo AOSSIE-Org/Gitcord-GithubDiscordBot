@@ -79,6 +79,46 @@ def test_list_contribution_summaries_counts_activity(tmp_path) -> None:
     assert bob.total_score == 0
 
 
+def test_pr_opened_and_merged_counted_separately(tmp_path) -> None:
+    """A PR opened and merged in the same period must not double-count.
+
+    This is the exact scenario from the bug report: a single PR that is
+    opened and later merged should yield prs_opened=1 and prs_merged=1,
+    not prs_opened=2.
+    """
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    events = [
+        ContributionEvent(
+            github_user="dave",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=10),
+            payload={"pr_number": 42},
+        ),
+        ContributionEvent(
+            github_user="dave",
+            event_type="pr_merged",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"pr_number": 42},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+
+    assert len(summaries) == 1
+    dave = summaries[0]
+    assert dave.github_user == "dave"
+    assert dave.prs_opened == 1
+    assert dave.prs_merged == 1
+
+
 def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -> None:
     storage = SqliteStorage(str(tmp_path))
     storage.init_schema()

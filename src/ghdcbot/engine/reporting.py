@@ -143,14 +143,8 @@ def _render_contribution_summary_section(
     lines.append("|------|--------|------------|------------|---------|----------|")
     for summary in sorted(summaries, key=lambda entry: entry.github_user):
         lines.append(
-            "| {user} | {issues} | {opened} | {merged} | {reviews} | {comments} |".format(
-                user=summary.github_user,
-                issues=summary.issues_opened,
-                opened=summary.prs_opened,
-                merged=summary.prs_merged,
-                reviews=summary.prs_reviewed,
-                comments=summary.comments,
-            )
+            f"| {summary.github_user} | {summary.issues_opened} | {summary.prs_opened} | "
+            f"{summary.prs_merged} | {summary.prs_reviewed} | {summary.comments} |"
         )
     return "\n".join(lines)
 
