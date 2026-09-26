@@ -66,15 +66,96 @@ def test_list_contribution_summaries_counts_activity(tmp_path) -> None:
     alice, bob = summaries
     assert alice.issues_opened == 1
     assert alice.prs_opened == 0
+    assert alice.prs_merged == 0
     assert alice.prs_reviewed == 1
     assert alice.comments == 0
     assert alice.total_score == 0
 
     assert bob.issues_opened == 0
-    assert bob.prs_opened == 1
+    assert bob.prs_opened == 0
+    assert bob.prs_merged == 1
     assert bob.prs_reviewed == 0
     assert bob.comments == 1
     assert bob.total_score == 0
+
+
+def test_pr_opened_and_merged_counted_separately(tmp_path) -> None:
+    """A PR opened and merged in the same period must not double-count.
+
+    This is the exact scenario from the bug report: a single PR that is
+    opened and later merged should yield prs_opened=1 and prs_merged=1,
+    not prs_opened=2.
+    """
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    events = [
+        ContributionEvent(
+            github_user="dave",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=10),
+            payload={"pr_number": 42},
+        ),
+        ContributionEvent(
+            github_user="dave",
+            event_type="pr_merged",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"pr_number": 42},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+
+    assert len(summaries) == 1
+    dave = summaries[0]
+    assert dave.github_user == "dave"
+    assert dave.prs_opened == 1
+    assert dave.prs_merged == 1
+
+
+def test_pr_opened_before_window_and_merged_within_window(tmp_path) -> None:
+    """A PR opened before period_start but merged within the period must not count as opened.
+
+    Only the pr_merged event occurred inside the window, so prs_opened must be 0
+    and prs_merged must be 1.
+    """
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    events = [
+        ContributionEvent(
+            github_user="eve",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=45),
+            payload={"pr_number": 55},
+        ),
+        ContributionEvent(
+            github_user="eve",
+            event_type="pr_merged",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"pr_number": 55},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+
+    assert len(summaries) == 1
+    eve = summaries[0]
+    assert eve.github_user == "eve"
+    assert eve.prs_opened == 0
+    assert eve.prs_merged == 1
 
 
 def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -> None:

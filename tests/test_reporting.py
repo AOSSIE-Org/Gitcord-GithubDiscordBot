@@ -142,6 +142,7 @@ def test_render_markdown_report_with_data(base_config: BotConfig) -> None:
             github_user="alice",
             issues_opened=1,
             prs_opened=2,
+            prs_merged=1,
             prs_reviewed=0,
             comments=5,
             total_score=10,
@@ -156,7 +157,7 @@ def test_render_markdown_report_with_data(base_config: BotConfig) -> None:
     assert "`add` `Contributor` for `u1`" in md
     assert "`add` `alice` to `repo-a#1`" in md
     assert "`add` `bob` on `repo-a#2`" in md
-    assert "| alice | 1 | 2 | 0 | 5 |" in md
+    assert "| alice | 1 | 2 | 1 | 0 | 5 |" in md
 
 
 def test_write_reports(base_config: BotConfig, tmp_path: Path) -> None:
