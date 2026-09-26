@@ -119,6 +119,45 @@ def test_pr_opened_and_merged_counted_separately(tmp_path) -> None:
     assert dave.prs_merged == 1
 
 
+def test_pr_opened_before_window_and_merged_within_window(tmp_path) -> None:
+    """A PR opened before period_start but merged within the period must not count as opened.
+
+    Only the pr_merged event occurred inside the window, so prs_opened must be 0
+    and prs_merged must be 1.
+    """
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    events = [
+        ContributionEvent(
+            github_user="eve",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=45),
+            payload={"pr_number": 55},
+        ),
+        ContributionEvent(
+            github_user="eve",
+            event_type="pr_merged",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"pr_number": 55},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+
+    assert len(summaries) == 1
+    eve = summaries[0]
+    assert eve.github_user == "eve"
+    assert eve.prs_opened == 0
+    assert eve.prs_merged == 1
+
+
 def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -> None:
     storage = SqliteStorage(str(tmp_path))
     storage.init_schema()
