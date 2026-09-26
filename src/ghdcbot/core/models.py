@@ -19,6 +19,7 @@ class ContributionSummary:
     github_user: str
     issues_opened: int
     prs_opened: int
+    prs_merged: int
     prs_reviewed: int
     comments: int
     total_score: int

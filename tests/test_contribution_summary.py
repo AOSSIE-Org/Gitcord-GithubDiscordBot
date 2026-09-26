@@ -66,12 +66,14 @@ def test_list_contribution_summaries_counts_activity(tmp_path) -> None:
     alice, bob = summaries
     assert alice.issues_opened == 1
     assert alice.prs_opened == 0
+    assert alice.prs_merged == 0
     assert alice.prs_reviewed == 1
     assert alice.comments == 0
     assert alice.total_score == 0
 
     assert bob.issues_opened == 0
-    assert bob.prs_opened == 1
+    assert bob.prs_opened == 0
+    assert bob.prs_merged == 1
     assert bob.prs_reviewed == 0
     assert bob.comments == 1
     assert bob.total_score == 0

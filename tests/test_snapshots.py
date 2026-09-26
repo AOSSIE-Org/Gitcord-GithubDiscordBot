@@ -196,6 +196,7 @@ def test_collect_snapshot_data_with_contributors() -> None:
             github_user="alice",
             issues_opened=5,
             prs_opened=3,
+            prs_merged=2,
             prs_reviewed=2,
             comments=10,
             total_score=50,
