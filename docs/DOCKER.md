@@ -236,6 +236,22 @@ Overlapping runs are skipped via a lock file on the `/data` volume.
 docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
 
+### Connect repos to channels from Discord (`/pr-channel`)
+
+Mentors can route a repo's **PR-opened and issue-opened** posts to a channel or thread without editing `gitcord.yaml` or restarting the bot:
+
+| Command | What it does |
+| ------- | ------------ |
+| `/pr-channel set repo:<name> [channel:<channel or thread>]` | Post the repo's new PRs and issues to `channel` (default: where you run it). Re-running moves the repo. |
+| `/pr-channel remove repo:<name>` | Delete the route set from Discord. If `gitcord.yaml` also maps the repo, it falls back to that channel. |
+| `/pr-channel list [all:true]` | Repos posting to this channel, or every route grouped by channel (`config` = `gitcord.yaml`, `discord` = set with the command). |
+
+- **Who:** `discord.command_permissions.pr-channel`; when that key is absent, the `sync` rule applies (Mentor + admins in AOSSIE / SN).
+- **Layering:** routes are stored in SQLite (`repo_channel_routes`, shared by bot and scheduler on the same volume) and applied on top of `gitcord.yaml` at every sync. A Discord route overrides the YAML channel for that repo. With `repos.mode: allow` the repo is added to the scan list automatically; deny-listed repos are refused.
+- **Checks:** the repo must exist in the org; forum channels are rejected (pick a post inside the forum); the bot must have **View Channel**, **Send Messages** (or **Send Messages in Threads**) and **Embed Links** there.
+- **Only new activity:** PRs and issues opened after the route is set are posted on the next sync (scheduler or `/sync`); already-open PRs are not re-posted.
+- Posting still needs `discord.notifications.pr_opened` / `issue_opened`, `runtime.mode: active` and `discord.permissions.write: true`. Every set/remove is appended to `audit_events.jsonl`.
+
 ---
 
 ## Production and Maintainability Notes

@@ -167,6 +167,12 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_channel_announcements_status
                     ON issue_channel_announcements (status);
+                CREATE TABLE IF NOT EXISTS repo_channel_routes (
+                    repo TEXT PRIMARY KEY COLLATE NOCASE,
+                    channel_id TEXT NOT NULL,
+                    set_by_discord_id TEXT,
+                    set_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -958,6 +964,93 @@ class SqliteStorage:
                 """,
                 tuple(values),
             )
+
+    def set_repo_channel_route(
+        self,
+        repo: str,
+        channel_id: str,
+        *,
+        set_by_discord_id: str | None = None,
+    ) -> str | None:
+        """Upsert a Discord-set repo → channel route. Returns the previous channel ID, if any."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT channel_id FROM repo_channel_routes WHERE repo = ?",
+                (repo,),
+            ).fetchone()
+            previous = str(row["channel_id"]) if row else None
+            conn.execute(
+                """
+                INSERT INTO repo_channel_routes (repo, channel_id, set_by_discord_id, set_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repo) DO UPDATE SET
+                    repo = excluded.repo,
+                    channel_id = excluded.channel_id,
+                    set_by_discord_id = excluded.set_by_discord_id,
+                    set_at = excluded.set_at
+                """,
+                (repo, str(channel_id), set_by_discord_id, now),
+            )
+        self.append_audit_event({
+            "actor_type": "discord_user",
+            "actor_id": set_by_discord_id or "",
+            "event_type": "repo_channel_route_set",
+            "context": {
+                "repo": repo,
+                "old_channel_id": previous,
+                "new_channel_id": str(channel_id),
+            },
+        })
+        return previous
+
+    def delete_repo_channel_route(
+        self,
+        repo: str,
+        *,
+        removed_by_discord_id: str | None = None,
+    ) -> str | None:
+        """Delete a Discord-set route. Returns the removed channel ID, or None if none existed."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT repo, channel_id FROM repo_channel_routes WHERE repo = ?",
+                (repo,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM repo_channel_routes WHERE repo = ?", (repo,))
+        removed = str(row["channel_id"])
+        self.append_audit_event({
+            "actor_type": "discord_user",
+            "actor_id": removed_by_discord_id or "",
+            "event_type": "repo_channel_route_removed",
+            "context": {
+                "repo": str(row["repo"]),
+                "old_channel_id": removed,
+                "new_channel_id": None,
+            },
+        })
+        return removed
+
+    def list_repo_channel_routes(self) -> list[dict]:
+        """Return all Discord-set routes ordered by repo name."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, channel_id, set_by_discord_id, set_at
+                FROM repo_channel_routes
+                ORDER BY repo COLLATE NOCASE
+                """
+            ).fetchall()
+        return [
+            {
+                "repo": str(r["repo"]),
+                "channel_id": str(r["channel_id"]),
+                "set_by_discord_id": r["set_by_discord_id"],
+                "set_at": r["set_at"],
+            }
+            for r in rows
+        ]
 
     def mark_notification_sent(
         self,

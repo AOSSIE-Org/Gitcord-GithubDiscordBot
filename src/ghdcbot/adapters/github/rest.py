@@ -193,6 +193,21 @@ class GitHubRestAdapter:
         self._repo_names_cache = (now, names)
         return names
 
+    def list_all_org_repo_names(self) -> list[str]:
+        """Return every non-archived org repo name, ignoring the repos allow/deny filter.
+
+        Used by /pr-channel, which must be able to connect repos not yet on the allowlist.
+        Raises RuntimeError when GitHub does not return the repo list.
+        """
+        repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
+        if status != 200:
+            raise RuntimeError(f"Could not list repositories for {self._org} (status {status})")
+        return [
+            str(r["name"])
+            for r in repos
+            if isinstance(r, dict) and r.get("name") and not r.get("archived")
+        ]
+
     def list_open_pull_requests(self) -> Iterable[dict]:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)

@@ -228,6 +228,7 @@ discord:
 - Contribution metrics (`/summary`, `/open-prs`, `/pr`)
 - Passive PR URL previews in configured channels
 - Mentor-only sync (`/sync`)
+- Mentor-only repo → channel routing (`/pr-channel set|remove|list`): routes stored in SQLite (`repo_channel_routes`) and layered on top of `discord.pr_open_channels` / `github.repos` by `engine/channel_routes.py` at bot startup, after each change, and at the start of every `run-once`
 
 #### **Orchestrator (`src/ghdcbot/engine/orchestrator.py`)**
 - Core execution engine for `run-once` cycle
@@ -1182,6 +1183,7 @@ discord:
       role_ids: []
       role_names: ["Mentor"]
       allow_discord_administrators: true
+    # pr-channel: optional; when omitted /pr-channel uses the sync rule above
   # TESTING ONLY: Allow any guild member to run restricted commands (default: false)
   unrestricted_slash_commands: false
   notifications:

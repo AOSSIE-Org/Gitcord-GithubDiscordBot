@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from typing import Any
+
+from pydantic import BaseModel, Field, HttpUrl, PrivateAttr, field_validator, model_validator
 
 from ghdcbot.core.modes import RunMode
 
@@ -132,7 +134,8 @@ class DiscordConfig(BaseModel):
     pr_open_channels: dict[str, str] = Field(default_factory=dict)
     # Optional: verified-only GitHub → Discord notifications
     notifications: NotificationConfig | None = None
-    # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync). See SlashCommandPermissionRule.
+    # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync, pr-channel;
+    # pr-channel falls back to the sync rule). See SlashCommandPermissionRule.
     command_permissions: dict[str, SlashCommandPermissionRule] | None = None
     # TESTING ONLY: if true, any guild member may run assign-issue / issue-requests / sync. Turn off for production.
     unrestricted_slash_commands: bool = False
@@ -264,6 +267,8 @@ class BotConfig(BaseModel):
     remote_config: RemoteConfigSettings | None = None
     # Optional: repo name -> Discord role for "Contributor-X" (PR merged in repo X grants role)
     repo_contributor_roles: dict[str, str] | None = None
+    # YAML-only repos.names / pr_open_channels, captured before /pr-channel routes are layered on.
+    _routing_base: Any = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod
