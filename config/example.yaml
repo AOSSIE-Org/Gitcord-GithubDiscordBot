@@ -33,6 +33,14 @@ discord:
     write: false
   # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
   activity_channel_id: null
+  # Optional: weekly maintainer digest (auto-only, once per ISO week). Distinct from activity_channel_id.
+  # digest:
+  #   enabled: true
+  #   channel_id: "000000000000000000"
+  #   weekday_utc: 6   # Sunday
+  #   hour_utc: 12
+  #   lookback_days: 7
+  #   top_n: 5
   # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
   # Example: ["mentor-chat", "review-queue"]
   pr_preview_channels: []

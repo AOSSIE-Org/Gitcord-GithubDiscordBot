@@ -230,6 +230,25 @@ Example line (every 6 hours):
 
 Overlapping runs are skipped via a lock file on the `/data` volume.
 
+### Weekly maintainer digest (optional)
+
+Distinct from `discord.activity_channel_id` (which can post a truncated activity feed **every** sync).
+
+When enabled, Gitcord posts **one** maintainer digest per ISO week after a successful `run-once` (default: Sunday ≥ 12:00 UTC). No `/digest` slash command.
+
+```yaml
+discord:
+  digest:
+    enabled: true
+    channel_id: "YOUR_MENTOR_CHANNEL_ID"
+    weekday_utc: 6   # Sunday
+    hour_utc: 12
+    lookback_days: 7
+    top_n: 5
+```
+
+Requires `runtime.mode: active` and `discord.permissions.write: true`. Default is **off** until you set a channel.
+
 ### Manual one-off
 
 ```bash

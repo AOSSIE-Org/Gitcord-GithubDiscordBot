@@ -124,6 +124,46 @@ class NotificationConfig(BaseModel):
         return value
 
 
+class DigestConfig(BaseModel):
+    """Auto-only weekly maintainer digest (posted after sync; no slash command)."""
+
+    enabled: bool = False
+    channel_id: str | None = None
+    # 0=Monday … 6=Sunday (datetime.weekday()). Default Sunday.
+    weekday_utc: int = 6
+    hour_utc: int = 12
+    lookback_days: int = 7
+    top_n: int = 5
+
+    @field_validator("weekday_utc")
+    @classmethod
+    def validate_weekday_utc(cls, value: int) -> int:
+        if value < 0 or value > 6:
+            raise ValueError("digest.weekday_utc must be 0–6 (Mon–Sun)")
+        return value
+
+    @field_validator("hour_utc")
+    @classmethod
+    def validate_hour_utc(cls, value: int) -> int:
+        if value < 0 or value > 23:
+            raise ValueError("digest.hour_utc must be 0–23")
+        return value
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("digest.lookback_days must be positive")
+        return value
+
+    @field_validator("top_n")
+    @classmethod
+    def validate_top_n(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("digest.top_n must be positive")
+        return value
+
+
 class DiscordConfig(BaseModel):
     guild_id: str
     token: str
@@ -132,6 +172,8 @@ class DiscordConfig(BaseModel):
     invite_url: str | None = None
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
+    # Optional: weekly maintainer digest (opt-in; distinct from activity_channel_id).
+    digest: DigestConfig = Field(default_factory=DigestConfig)
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
     pr_preview_channels: list[str] = Field(default_factory=list)
     # Repo short name → Discord channel/thread ID for pr_opened / issue_opened channel posts.

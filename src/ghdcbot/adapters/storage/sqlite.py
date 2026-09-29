@@ -1017,6 +1017,44 @@ class SqliteStorage:
             ).fetchone()
         return int(row["refresh_failures"]) if row else 0
 
+    def count_pr_channel_announcements(self, status: str = "open") -> int:
+        """Count tracked PR channel announcements with the given lifecycle status."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM pr_channel_announcements
+                WHERE status = ?
+                """,
+                (status,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
+    def list_oldest_open_pr_announcements(self, limit: int) -> list[dict]:
+        """Open tracked PR announcements, oldest post first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, pr_number, pr_title, channel_id, message_id, created_at
+                FROM pr_channel_announcements
+                WHERE status = 'open'
+                ORDER BY created_at ASC, repo ASC, pr_number ASC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [
+            {
+                "repo": row["repo"],
+                "pr_number": int(row["pr_number"]),
+                "pr_title": row["pr_title"],
+                "channel_id": row["channel_id"],
+                "message_id": row["message_id"],
+                "created_at": _parse_utc(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     def save_issue_channel_announcement(
         self,
         *,
