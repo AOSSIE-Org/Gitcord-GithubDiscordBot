@@ -65,6 +65,7 @@ discord:
       - Mentor
       allow_discord_administrators: true
   activity_channel_id: null
+  # Weekly digest (opt-in): discord.digest.enabled + channel_id — distinct from activity_channel_id.
   pr_preview_channels: []
   pr_open_channels:
     MiniChain: '1471163521877410045'

@@ -28,6 +28,7 @@ from ghdcbot.engine.notifications import (
     update_issue_channel_announcement_for_event,
     update_pr_channel_announcement_for_event,
 )
+from ghdcbot.engine.digest import maybe_post_weekly_digest
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.snapshots import write_snapshots_to_github
@@ -280,6 +281,25 @@ class Orchestrator:
             except Exception as exc:
                 # Never block run-once completion
                 logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
+
+        # Weekly maintainer digest (opt-in; once per ISO week; ≠ activity_channel_id)
+        try:
+            digest_cfg = getattr(self.config.discord, "digest", None)
+            if digest_cfg is not None:
+                maybe_post_weekly_digest(
+                    storage=self.storage,
+                    discord_writer=self.discord_writer,
+                    policy=policy,
+                    org=self.config.github.org,
+                    digest_config=digest_cfg,
+                    identity_mappings=identity_mappings,
+                )
+        except Exception as digest_exc:
+            logger.warning(
+                "Weekly digest failed (non-blocking)",
+                exc_info=True,
+                extra={"error": str(digest_exc)},
+            )
 
         repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))
         requests_total = int(getattr(self.github_reader, "sync_request_count", 0))

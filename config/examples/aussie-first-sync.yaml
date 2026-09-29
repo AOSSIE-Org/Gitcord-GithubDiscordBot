@@ -51,6 +51,7 @@ discord:
       role_names: ["Mentor"]
       allow_discord_administrators: true
   activity_channel_id: null
+  # Weekly digest (opt-in): discord.digest.enabled + channel_id — distinct from activity_channel_id.
   pr_preview_channels: []
   notifications:
     enabled: false   # FIRST SYNC: no DM flood while catching up 13 new repos

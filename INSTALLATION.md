@@ -285,7 +285,7 @@ Start with defaults in the template:
 - `discord.permissions.write: false`
 - `github.permissions.write: false`
 
-Optional blocks (`notifications`, `snapshots`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
+Optional blocks (`notifications`, `snapshots`, `repos` filter, weekly `discord.digest`) are commented in `config/example.yaml` — enable only when needed. The weekly digest is auto-only (no slash command) and is **not** the same as `activity_channel_id`; see [docs/DOCKER.md](docs/DOCKER.md#weekly-maintainer-digest-optional).
 
 **Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample, remote bootstrap templates).
 

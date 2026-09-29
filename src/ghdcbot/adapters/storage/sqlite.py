@@ -844,6 +844,19 @@ class SqliteStorage:
                 (status, now, repo, int(pr_number)),
             )
 
+    def count_pr_channel_announcements(self, status: str = "open") -> int:
+        """Count tracked PR channel announcements with the given lifecycle status."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM pr_channel_announcements
+                WHERE status = ?
+                """,
+                (status,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     def save_issue_channel_announcement(
         self,
         *,
