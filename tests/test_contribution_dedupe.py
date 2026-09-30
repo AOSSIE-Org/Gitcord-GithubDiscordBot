@@ -56,7 +56,7 @@ def _legacy_db_with_duplicates(tmp_path) -> None:
     for _ in range(17):
         rows.append(("alice", "pr_reviewed", "Gluon-EVM", T0.isoformat(), json.dumps({"pr_number": 40})))
         rows.append(("alice", "comment", "Gluon-EVM", T0.isoformat(), json.dumps({"pr_number": 40})))
-    rows.append(("bob", "pr_merged", "Other", (T0 - timedelta(days=1)).isoformat(), json.dumps({"pr_number": 7})))
+    rows.append(("bob", "pr_opened", "Other", (T0 - timedelta(days=1)).isoformat(), json.dumps({"pr_number": 7})))
     with sqlite3.connect(tmp_path / "state.db") as conn:
         conn.execute(
             """
