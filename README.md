@@ -300,13 +300,14 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
 - `/issue` - List recent open issues in the project channel or specified repository (excluding PRs) with optional `repo` (with autocomplete) and `limit` (default 10, max 50)
 - `/assign-issue` - Assign a GitHub issue to up to 3 verified Discord users (requires permissions configured via `discord.command_permissions.assign-issue`).
-- `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) for a single PR or multi-PR org dashboard (`show_all:True`, optional `skip` M). Accessible to all server members by default (cooldown: one invocation per user every 5 seconds); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page. Each PR uses a small number of REST calls (pull request, reviews, check runs) plus paginated GraphQL queries for review threads, so a full dashboard page costs roughly 100 or more API requests. When querying a single PR, omitting `repo:` probes each configured repository with one additional REST call to auto-detect the repository (capped at 25 candidate repositories, resulting in a maximum of 25 probe calls).
+- `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) via an interactive menu: **Show All Open PRs**, **Next page**, or **Check Specific PR** (modal). Optional `repo:` scopes auto-detect / modal lookup. Accessible to all server members by default (cooldown: one invocation per user every 5 seconds); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page. Each PR uses a small number of REST calls (pull request, reviews, check runs) plus paginated GraphQL queries for review threads, so a full dashboard page costs roughly 100 or more API requests. When checking a specific PR without `repo:`, Gitcord probes each configured repository with one additional REST call to auto-detect the repository (capped at 25 candidate repositories, resulting in a maximum of 25 probe calls).
 
 ### Sync (mentor-only)
 
 - `/sync` - Manually sync GitHub events and send notifications
+- `/pr-channel set|remove|list` - Connect a repo to a channel or thread for new PR and issue posts, right from Discord (no config edit or restart). Routes layer on top of `gitcord.yaml`; only PRs and issues opened afterwards are posted. See [docs/DOCKER.md](docs/DOCKER.md#connect-repos-to-channels-from-discord-pr-channel).
 
-**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. The bot can also auto-detect PR URLs in configured channels and post passive previews.
+**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. `/pr-channel` uses `discord.command_permissions.pr-channel`, or the `sync` rule when that key is absent. The bot can also auto-detect PR URLs in configured channels and post passive previews.
 
 ---
 

@@ -18,7 +18,25 @@ from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
+    permission_rule_name,
     slash_command_allowed,
+)
+from ghdcbot.engine.channel_routes import (
+    PR_CHANNEL_COMMAND,
+    PR_CHANNEL_FALLBACK_COMMAND,
+    apply_stored_channel_routes,
+    build_route_entries,
+    channel_type_error,
+    config_channel_for,
+    format_remove_reply,
+    format_route_list,
+    format_set_reply,
+    is_repo_deny_listed,
+    is_thread_channel_type,
+    load_channel_routes,
+    missing_bot_permissions,
+    resolve_org_repo_name,
+    routing_base_for,
 )
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
@@ -164,7 +182,7 @@ async def _format_roles_line(discord_reader: Any, discord_user_id: str) -> str:
             target_roles = await asyncio.to_thread(fetch_one, discord_user_id)
         else:
             member_roles = await asyncio.to_thread(discord_reader.list_member_roles)
-            target_roles = member_roles.get(discord_user_id, [])
+            target_roles = member_roles.get(discord_user_id, []) if member_roles else []
     except Exception as e:
         logging.getLogger("ghdcbot.bot").debug("Error fetching roles for /profile: %s", e)
         target_roles = []
@@ -449,6 +467,188 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+class PRStatusModal(discord.ui.Modal, title="Check Specific PR"):
+    pr_number = discord.ui.TextInput(
+        label="Pull Request Number",
+        placeholder="e.g. 123",
+        required=True,
+        min_length=1,
+        max_length=10,
+    )
+
+    def __init__(self, repo: str | None, config: Any, github_adapter: Any) -> None:
+        super().__init__()
+        self.repo = repo
+        self.config = config
+        self.github_adapter = github_adapter
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            pr_num = int(self.pr_number.value.strip())
+        except ValueError:
+            await interaction.followup.send("❌ PR number must be an integer.", ephemeral=True)
+            return
+
+        repo_name, err = await resolve_repo_for_pr(
+            self.config, self.github_adapter, pr_num, repo=self.repo
+        )
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+
+        assert repo_name is not None
+
+        notification_config = getattr(self.config.discord, "notifications", None)
+        coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
+
+        try:
+            health = await asyncio.to_thread(
+                fetch_pr_health,
+                self.github_adapter,
+                self.config.github.org,
+                repo_name,
+                pr_num,
+                coderabbit_logins,
+            )
+        except Exception:
+            logging.getLogger("ghdcbot.bot").exception(
+                "Failed to fetch PR health",
+                extra={"repo": repo_name, "pr_number": pr_num},
+            )
+            await interaction.followup.send(
+                "❌ Error fetching PR status. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if health is None:
+            # Check if this number is an Issue rather than a PR to provide an informative response
+            issue_info = None
+            try:
+                get_issue = getattr(self.github_adapter, "get_issue", None)
+                if callable(get_issue):
+                    issue_info = await asyncio.to_thread(
+                        get_issue, self.config.github.org, repo_name, pr_num
+                    )
+            except Exception as exc:
+                logging.getLogger("ghdcbot.bot").debug("Failed to fetch issue details for fallback check: %s", exc)
+
+            if issue_info and "pull_request" not in issue_info:
+                issue_title = (issue_info.get("title") or "").strip()
+                issue_state = issue_info.get("state") or "unknown"
+                state_label = "Closed 🔴" if issue_state == "closed" else "Open 🟢"
+                await interaction.followup.send(
+                    f"ℹ️ **{repo_name}#{pr_num}** is a GitHub **Issue**, not a Pull Request.\n\n"
+                    f"**Title:** {issue_title}\n"
+                    f"**State:** {state_label}\n\n"
+                    "💡 `/pr-status` is designed for Pull Requests. Use the modal for Pull Requests instead.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"❌ PR **{repo_name}#{pr_num}** not found or inaccessible.",
+                ephemeral=True,
+            )
+            return
+
+        message = format_single_pr_status(health, self.config.github.org)
+        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+
+
+class PRStatusView(discord.ui.View):
+    def __init__(self, repo: str | None, config: Any, github_adapter: Any, timeout: float = 300.0) -> None:
+        super().__init__(timeout=timeout)
+        self.repo = repo
+        self.config = config
+        self.github_adapter = github_adapter
+        self.skip = 0
+        self.total = 0
+        self.message: discord.Message | None = None
+        self._sync_next_button()
+
+    def _sync_next_button(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "pr_status_next_page":
+                item.disabled = self.total <= 0 or (self.skip + PR_STATUS_MAX_PRS) >= self.total
+                break
+
+    async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
+        notification_config = getattr(self.config.discord, "notifications", None)
+        coderabbit_logins = (
+            getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
+        )
+
+        try:
+            statuses, total = await asyncio.to_thread(
+                fetch_all_open_pr_health,
+                self.github_adapter,
+                self.config.github.org,
+                coderabbit_logins,
+                PR_STATUS_MAX_PRS,
+                skip,
+            )
+        except Exception:
+            logging.getLogger("ghdcbot.bot").exception("Failed to fetch all open PR health")
+            await interaction.followup.send(
+                "❌ Error fetching PR dashboard. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        self.skip = skip
+        self.total = total
+        self._sync_next_button()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                logging.getLogger("ghdcbot.bot").debug(
+                    "Could not refresh PRStatusView buttons after dashboard fetch",
+                    exc_info=True,
+                )
+
+        messages = format_all_pr_status(
+            statuses, self.config.github.org, skip=skip, total=total
+        )
+        for msg in messages:
+            await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
+
+    @discord.ui.button(label="Show All Open PRs", style=discord.ButtonStyle.primary, emoji="📄")
+    async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self._send_dashboard(interaction, skip=0)
+
+    @discord.ui.button(
+        label="Next page",
+        style=discord.ButtonStyle.secondary,
+        emoji="➡️",
+        custom_id="pr_status_next_page",
+        disabled=True,
+    )
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self._send_dashboard(interaction, skip=self.skip + PR_STATUS_MAX_PRS)
+
+    @discord.ui.button(label="Check Specific PR", style=discord.ButtonStyle.secondary, emoji="🔍")
+    async def specific_pr(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PRStatusModal(self.repo, self.config, self.github_adapter))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            logging.getLogger("ghdcbot.bot").debug(
+                "Could not disable PRStatusView after timeout",
+                exc_info=True,
+            )
+
+
 async def handle_app_command_error(
     interaction: discord.Interaction,
     error: app_commands.AppCommandError,
@@ -584,6 +784,12 @@ def run_bot(config_path: str) -> None:
         data_dir=config.runtime.data_dir,
     )
     storage.init_schema()
+    try:
+        startup_routes = apply_stored_channel_routes(config, storage)
+        if startup_routes:
+            logger.info("Applied %d Discord repo channel route(s)", len(startup_routes))
+    except Exception:
+        logger.exception("Failed to apply Discord repo channel routes at startup")
     github_token = resolve_github_token(
         pat=config.github.token,
         api_base=str(config.github.api_base),
@@ -1480,122 +1686,25 @@ def run_bot(config_path: str) -> None:
     )
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from config if omitted)",
-        pr_number="Pull request number (optional if show_all is True)",
-        show_all="Show health dashboard for all open PRs in the organization",
-        skip="How many open PRs to skip for pagination (when show_all is True)",
     )
     @app_commands.checks.cooldown(1, 5.0)
     @app_commands.check(command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True))
     async def pr_status_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
-        pr_number: app_commands.Range[int, 1] | None = None,
-        show_all: bool = False,
-        skip: app_commands.Range[int, 0] = 0,
     ) -> None:
         """Show health status of a pull request or all open PRs."""
-        await interaction.response.defer(ephemeral=True)
-
-        # Resolve CodeRabbit bot logins from notification config
-        notification_config = getattr(config.discord, "notifications", None)
-        coderabbit_logins = None
-        if notification_config:
-            coderabbit_logins = getattr(notification_config, "coderabbit_bot_logins", None)
-
-        if show_all:
-            try:
-                statuses, total = await asyncio.to_thread(
-                    fetch_all_open_pr_health,
-                    github_adapter,
-                    config.github.org,
-                    coderabbit_logins,
-                    PR_STATUS_MAX_PRS,
-                    int(skip),
-                )
-            except Exception:
-                logger.exception("Failed to fetch all open PR health")
-                await interaction.followup.send(
-                    "❌ Error fetching PR dashboard. Please try again later.",
-                    ephemeral=True,
-                )
-                return
-
-            messages = format_all_pr_status(
-                statuses, config.github.org, skip=int(skip), total=total
-            )
-            for msg in messages:
-                await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
-            return
-
-        if pr_number is None:
-            await interaction.followup.send(
-                "❌ Please specify `pr_number` to check PR health (or use `show_all:True` for the organization dashboard).",
-                ephemeral=True,
-            )
-            return
-
-        repo_name, err = await resolve_repo_for_pr(
-            config, github_adapter, int(pr_number), repo=repo
+        repo_display = f"`{repo}`" if repo else "auto-detected repository"
+        view = PRStatusView(repo, config, github_adapter)
+        await interaction.response.send_message(
+            f"Select an option for **{repo_display}** (or the org dashboard):",
+            view=view,
+            ephemeral=True
         )
-        if err:
-            await interaction.followup.send(err, ephemeral=True)
-            return
-
-        assert repo_name is not None
-
         try:
-            health = await asyncio.to_thread(
-                fetch_pr_health,
-                github_adapter,
-                config.github.org,
-                repo_name,
-                int(pr_number),
-                coderabbit_logins,
-            )
+            view.message = await interaction.original_response()
         except Exception:
-            logger.exception(
-                "Failed to fetch PR health",
-                extra={"repo": repo_name, "pr_number": pr_number},
-            )
-            await interaction.followup.send(
-                "❌ Error fetching PR status. Please try again later.",
-                ephemeral=True,
-            )
-            return
-
-        if health is None:
-            # Check if this number is an Issue rather than a PR to provide an informative response
-            issue_info = None
-            try:
-                get_issue = getattr(github_adapter, "get_issue", None)
-                if callable(get_issue):
-                    issue_info = await asyncio.to_thread(
-                        get_issue, config.github.org, repo_name, int(pr_number)
-                    )
-            except Exception as exc:
-                logger.debug("Failed to fetch issue details for fallback check: %s", exc)
-
-            if issue_info and "pull_request" not in issue_info:
-                issue_title = (issue_info.get("title") or "").strip()
-                issue_state = issue_info.get("state") or "unknown"
-                state_label = "Closed 🔴" if issue_state == "closed" else "Open 🟢"
-                await interaction.followup.send(
-                    f"ℹ️ **{repo_name}#{pr_number}** is a GitHub **Issue**, not a Pull Request.\n\n"
-                    f"**Title:** {issue_title}\n"
-                    f"**State:** {state_label}\n\n"
-                    "💡 `/pr-status` is designed for Pull Requests. Try `/pr-status pr_number:<PR#>`.",
-                    ephemeral=True,
-                )
-                return
-
-            await interaction.followup.send(
-                f"❌ PR **{repo_name}#{pr_number}** not found or inaccessible.",
-                ephemeral=True,
-            )
-            return
-
-        message = format_single_pr_status(health, config.github.org)
-        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+            logger.debug("Could not capture PRStatusView message for timeout edits", exc_info=True)
 
     @pr_status_cmd.autocomplete("repo")
     async def pr_status_repo_autocomplete(
@@ -1688,6 +1797,263 @@ def run_bot(config_path: str) -> None:
                     await interaction.followup.send(err_text, ephemeral=True)
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
+
+    pr_channel_group = app_commands.Group(
+        name=PR_CHANNEL_COMMAND,
+        description="Connect GitHub repos to Discord channels for PR and issue posts (mentor-only)",
+    )
+    all_org_repos_cache: list[str] = []
+    all_org_repos_fetched_at: datetime | None = None
+
+    def pr_channel_rule() -> str:
+        return permission_rule_name(config, PR_CHANNEL_COMMAND, PR_CHANNEL_FALLBACK_COMMAND)
+
+    async def deny_pr_channel(interaction: discord.Interaction) -> bool:
+        """Send the permission-denied reply and return True when the member may not run it."""
+        rule = pr_channel_rule()
+        if slash_command_allowed(interaction, config, rule):
+            return False
+        await interaction.response.send_message(
+            format_slash_command_permission_denied(config, PR_CHANNEL_COMMAND, rule_name=rule),
+            ephemeral=True,
+        )
+        return True
+
+    async def all_org_repo_names(*, force: bool = False) -> list[str]:
+        """Every org repo (not just the allowlist), cached for an hour."""
+        nonlocal all_org_repos_cache, all_org_repos_fetched_at
+        now = datetime.now(UTC)
+        fresh = (
+            all_org_repos_fetched_at is not None
+            and (now - all_org_repos_fetched_at).total_seconds() < 3600
+        )
+        if all_org_repos_cache and fresh and not force:
+            return all_org_repos_cache
+        list_repos = getattr(github_adapter, "list_all_org_repo_names", None)
+        if not callable(list_repos):
+            return all_org_repos_cache
+        fetched = await asyncio.to_thread(list_repos)
+        all_org_repos_cache = [r for r in fetched if isinstance(r, str)]
+        all_org_repos_fetched_at = now
+        return all_org_repos_cache
+
+    async def pr_channel_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, pr_channel_rule()):
+            return []
+        try:
+            names = await all_org_repo_names()
+        except Exception as e:
+            logger.error("Failed to fetch org repos for /pr-channel autocomplete: %s", e)
+            return []
+        base = routing_base_for(config)
+        needle = current.strip().lower()
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in names
+            if needle in r.lower() and not is_repo_deny_listed(base, r)
+        ][:25]
+
+    async def pr_channel_routed_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, pr_channel_rule()):
+            return []
+        needle = current.strip().lower()
+        try:
+            routes = await asyncio.to_thread(load_channel_routes, storage)
+        except Exception as e:
+            logger.error("Failed to load channel routes for /pr-channel autocomplete: %s", e)
+            return []
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in routes
+            if needle in r.lower()
+        ][:25]
+
+    async def resolve_route_target(
+        interaction: discord.Interaction,
+        channel: app_commands.AppCommandChannel | app_commands.AppCommandThread | None,
+    ) -> tuple[Any | None, str | None]:
+        """Resolve the target channel/thread and check the bot can post there."""
+        guild = interaction.guild
+        if guild is None or guild.id != guild_id:
+            return None, "❌ Run this command inside the server."
+        target_id = channel.id if channel is not None else interaction.channel_id
+        if target_id is None:
+            return None, "❌ Could not tell which channel to use. Pass the `channel` option."
+        target = guild.get_channel_or_thread(int(target_id))
+        if target is None:
+            try:
+                target = await guild.fetch_channel(int(target_id))
+            except discord.NotFound:
+                return None, "❌ That channel is not in this server."
+            except discord.Forbidden:
+                return None, "❌ I can't see that channel. Give me **View Channel** there and try again."
+            except discord.HTTPException as exc:
+                return None, f"❌ Could not load that channel: {exc}"
+        if getattr(getattr(target, "guild", None), "id", None) != guild.id:
+            return None, "❌ Pick a channel in this server."
+        type_error = channel_type_error(getattr(target, "type", None))
+        if type_error:
+            return None, type_error
+        if getattr(target, "locked", False):
+            return None, f"❌ <#{target.id}> is locked, so I can't post there."
+        try:
+            perms = target.permissions_for(guild.me)
+        except Exception:
+            logger.warning("Could not compute bot permissions for channel %s", target.id, exc_info=True)
+            return None, f"❌ Could not check my permissions in <#{target.id}>."
+        missing = missing_bot_permissions(perms, is_thread=is_thread_channel_type(target.type))
+        if missing:
+            return None, (
+                f"❌ I can't post in <#{target.id}>. Missing permission(s): **{', '.join(missing)}**."
+            )
+        return target, None
+
+    @pr_channel_group.command(
+        name="set",
+        description="Post a repo's new PRs and issues to a channel or thread",
+    )
+    @app_commands.describe(
+        repo="GitHub repository in the org",
+        channel="Channel or thread to post in (default: this one)",
+    )
+    @app_commands.autocomplete(repo=pr_channel_repo_autocomplete)
+    async def pr_channel_set_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        channel: app_commands.AppCommandChannel | app_commands.AppCommandThread | None = None,
+    ) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        target, error = await resolve_route_target(interaction, channel)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+
+        try:
+            canonical = resolve_org_repo_name(repo, await all_org_repo_names())
+            if canonical is None:
+                canonical = resolve_org_repo_name(repo, await all_org_repo_names(force=True))
+        except Exception:
+            logger.warning("Failed to list org repos for /pr-channel set", exc_info=True)
+            await interaction.followup.send(
+                "❌ Couldn't check the repo on GitHub right now. Try again in a minute.",
+                ephemeral=True,
+            )
+            return
+        if canonical is None:
+            await interaction.followup.send(
+                f"❌ **{repo.strip()}** is not an active repository in **{config.github.org}**.",
+                ephemeral=True,
+            )
+            return
+
+        base = routing_base_for(config)
+        if is_repo_deny_listed(base, canonical):
+            await interaction.followup.send(
+                f"❌ **{canonical}** is on the `repos` deny list in `gitcord.yaml`, so Gitcord never "
+                "scans it. Remove it from the deny list first.",
+                ephemeral=True,
+            )
+            return
+
+        channel_id = str(target.id)
+        previous = await asyncio.to_thread(
+            storage.set_repo_channel_route,
+            canonical,
+            channel_id,
+            set_by_discord_id=str(interaction.user.id),
+        )
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        logger.info(
+            "PR channel route set",
+            extra={
+                "repo": canonical,
+                "channel_id": channel_id,
+                "previous_channel_id": previous,
+                "discord_user_id": str(interaction.user.id),
+            },
+        )
+        await interaction.followup.send(
+            format_set_reply(
+                canonical,
+                channel_id,
+                previous_channel_id=previous,
+                config_channel_id=config_channel_for(base, canonical),
+            ),
+            ephemeral=True,
+        )
+
+    @pr_channel_group.command(
+        name="remove",
+        description="Remove a repo's channel route set from Discord",
+    )
+    @app_commands.describe(repo="Repository whose Discord-set route to remove")
+    @app_commands.autocomplete(repo=pr_channel_routed_repo_autocomplete)
+    async def pr_channel_remove_cmd(interaction: discord.Interaction, repo: str) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        requested = repo.strip()
+        routes = await asyncio.to_thread(load_channel_routes, storage)
+        routed = next(
+            (r for r in routes if r.lower() == requested.lower()),
+            requested,
+        )
+        removed = await asyncio.to_thread(
+            storage.delete_repo_channel_route,
+            routed,
+            removed_by_discord_id=str(interaction.user.id),
+        )
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        if removed is not None:
+            logger.info(
+                "PR channel route removed",
+                extra={
+                    "repo": routed,
+                    "channel_id": removed,
+                    "discord_user_id": str(interaction.user.id),
+                },
+            )
+        await interaction.followup.send(
+            format_remove_reply(
+                routed,
+                removed_channel_id=removed,
+                config_channel_id=config_channel_for(routing_base_for(config), routed),
+            ),
+            ephemeral=True,
+        )
+
+    @pr_channel_group.command(
+        name="list",
+        description="Show which repos post to this channel (or every route)",
+    )
+    @app_commands.describe(all_routes="Show every route grouped by channel")
+    @app_commands.rename(all_routes="all")
+    async def pr_channel_list_cmd(interaction: discord.Interaction, all_routes: bool = False) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        routes = await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        entries = build_route_entries(routing_base_for(config), routes)
+        description = format_route_list(
+            entries,
+            channel_id=None if all_routes else str(interaction.channel_id),
+        )
+        embed = discord.Embed(
+            title="PR channel routes",
+            description=description,
+            color=0x2F81F7,
+        )
+        embed.set_footer(text="config = gitcord.yaml · discord = set with /pr-channel")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    tree.add_command(pr_channel_group, guild=discord.Object(id=guild_id))
 
     dynamic_repos_cache: list[str] = []
     dynamic_repos_last_fetched: datetime | None = None
