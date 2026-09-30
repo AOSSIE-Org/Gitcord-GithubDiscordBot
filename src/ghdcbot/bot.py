@@ -18,7 +18,25 @@ from ghdcbot.config.loader import load_config
 from ghdcbot.core.errors import ConfigError
 from ghdcbot.discord_command_permissions import (
     format_slash_command_permission_denied,
+    permission_rule_name,
     slash_command_allowed,
+)
+from ghdcbot.engine.channel_routes import (
+    PR_CHANNEL_COMMAND,
+    PR_CHANNEL_FALLBACK_COMMAND,
+    apply_stored_channel_routes,
+    build_route_entries,
+    channel_type_error,
+    config_channel_for,
+    format_remove_reply,
+    format_route_list,
+    format_set_reply,
+    is_repo_deny_listed,
+    is_thread_channel_type,
+    load_channel_routes,
+    missing_bot_permissions,
+    resolve_org_repo_name,
+    routing_base_for,
 )
 from ghdcbot.engine.identity_linking import IdentityLinkService, LinkClaim
 from ghdcbot.engine.issue_assignment import (
@@ -766,6 +784,12 @@ def run_bot(config_path: str) -> None:
         data_dir=config.runtime.data_dir,
     )
     storage.init_schema()
+    try:
+        startup_routes = apply_stored_channel_routes(config, storage)
+        if startup_routes:
+            logger.info("Applied %d Discord repo channel route(s)", len(startup_routes))
+    except Exception:
+        logger.exception("Failed to apply Discord repo channel routes at startup")
     github_token = resolve_github_token(
         pat=config.github.token,
         api_base=str(config.github.api_base),
@@ -1773,6 +1797,263 @@ def run_bot(config_path: str) -> None:
                     await interaction.followup.send(err_text, ephemeral=True)
             else:
                 await interaction.followup.send(err_text, ephemeral=True)
+
+    pr_channel_group = app_commands.Group(
+        name=PR_CHANNEL_COMMAND,
+        description="Connect GitHub repos to Discord channels for PR and issue posts (mentor-only)",
+    )
+    all_org_repos_cache: list[str] = []
+    all_org_repos_fetched_at: datetime | None = None
+
+    def pr_channel_rule() -> str:
+        return permission_rule_name(config, PR_CHANNEL_COMMAND, PR_CHANNEL_FALLBACK_COMMAND)
+
+    async def deny_pr_channel(interaction: discord.Interaction) -> bool:
+        """Send the permission-denied reply and return True when the member may not run it."""
+        rule = pr_channel_rule()
+        if slash_command_allowed(interaction, config, rule):
+            return False
+        await interaction.response.send_message(
+            format_slash_command_permission_denied(config, PR_CHANNEL_COMMAND, rule_name=rule),
+            ephemeral=True,
+        )
+        return True
+
+    async def all_org_repo_names(*, force: bool = False) -> list[str]:
+        """Every org repo (not just the allowlist), cached for an hour."""
+        nonlocal all_org_repos_cache, all_org_repos_fetched_at
+        now = datetime.now(UTC)
+        fresh = (
+            all_org_repos_fetched_at is not None
+            and (now - all_org_repos_fetched_at).total_seconds() < 3600
+        )
+        if all_org_repos_cache and fresh and not force:
+            return all_org_repos_cache
+        list_repos = getattr(github_adapter, "list_all_org_repo_names", None)
+        if not callable(list_repos):
+            return all_org_repos_cache
+        fetched = await asyncio.to_thread(list_repos)
+        all_org_repos_cache = [r for r in fetched if isinstance(r, str)]
+        all_org_repos_fetched_at = now
+        return all_org_repos_cache
+
+    async def pr_channel_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, pr_channel_rule()):
+            return []
+        try:
+            names = await all_org_repo_names()
+        except Exception as e:
+            logger.error("Failed to fetch org repos for /pr-channel autocomplete: %s", e)
+            return []
+        base = routing_base_for(config)
+        needle = current.strip().lower()
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in names
+            if needle in r.lower() and not is_repo_deny_listed(base, r)
+        ][:25]
+
+    async def pr_channel_routed_repo_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, pr_channel_rule()):
+            return []
+        needle = current.strip().lower()
+        try:
+            routes = await asyncio.to_thread(load_channel_routes, storage)
+        except Exception as e:
+            logger.error("Failed to load channel routes for /pr-channel autocomplete: %s", e)
+            return []
+        return [
+            app_commands.Choice(name=r, value=r)
+            for r in routes
+            if needle in r.lower()
+        ][:25]
+
+    async def resolve_route_target(
+        interaction: discord.Interaction,
+        channel: app_commands.AppCommandChannel | app_commands.AppCommandThread | None,
+    ) -> tuple[Any | None, str | None]:
+        """Resolve the target channel/thread and check the bot can post there."""
+        guild = interaction.guild
+        if guild is None or guild.id != guild_id:
+            return None, "❌ Run this command inside the server."
+        target_id = channel.id if channel is not None else interaction.channel_id
+        if target_id is None:
+            return None, "❌ Could not tell which channel to use. Pass the `channel` option."
+        target = guild.get_channel_or_thread(int(target_id))
+        if target is None:
+            try:
+                target = await guild.fetch_channel(int(target_id))
+            except discord.NotFound:
+                return None, "❌ That channel is not in this server."
+            except discord.Forbidden:
+                return None, "❌ I can't see that channel. Give me **View Channel** there and try again."
+            except discord.HTTPException as exc:
+                return None, f"❌ Could not load that channel: {exc}"
+        if getattr(getattr(target, "guild", None), "id", None) != guild.id:
+            return None, "❌ Pick a channel in this server."
+        type_error = channel_type_error(getattr(target, "type", None))
+        if type_error:
+            return None, type_error
+        if getattr(target, "locked", False):
+            return None, f"❌ <#{target.id}> is locked, so I can't post there."
+        try:
+            perms = target.permissions_for(guild.me)
+        except Exception:
+            logger.warning("Could not compute bot permissions for channel %s", target.id, exc_info=True)
+            return None, f"❌ Could not check my permissions in <#{target.id}>."
+        missing = missing_bot_permissions(perms, is_thread=is_thread_channel_type(target.type))
+        if missing:
+            return None, (
+                f"❌ I can't post in <#{target.id}>. Missing permission(s): **{', '.join(missing)}**."
+            )
+        return target, None
+
+    @pr_channel_group.command(
+        name="set",
+        description="Post a repo's new PRs and issues to a channel or thread",
+    )
+    @app_commands.describe(
+        repo="GitHub repository in the org",
+        channel="Channel or thread to post in (default: this one)",
+    )
+    @app_commands.autocomplete(repo=pr_channel_repo_autocomplete)
+    async def pr_channel_set_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        channel: app_commands.AppCommandChannel | app_commands.AppCommandThread | None = None,
+    ) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        target, error = await resolve_route_target(interaction, channel)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+
+        try:
+            canonical = resolve_org_repo_name(repo, await all_org_repo_names())
+            if canonical is None:
+                canonical = resolve_org_repo_name(repo, await all_org_repo_names(force=True))
+        except Exception:
+            logger.warning("Failed to list org repos for /pr-channel set", exc_info=True)
+            await interaction.followup.send(
+                "❌ Couldn't check the repo on GitHub right now. Try again in a minute.",
+                ephemeral=True,
+            )
+            return
+        if canonical is None:
+            await interaction.followup.send(
+                f"❌ **{repo.strip()}** is not an active repository in **{config.github.org}**.",
+                ephemeral=True,
+            )
+            return
+
+        base = routing_base_for(config)
+        if is_repo_deny_listed(base, canonical):
+            await interaction.followup.send(
+                f"❌ **{canonical}** is on the `repos` deny list in `gitcord.yaml`, so Gitcord never "
+                "scans it. Remove it from the deny list first.",
+                ephemeral=True,
+            )
+            return
+
+        channel_id = str(target.id)
+        previous = await asyncio.to_thread(
+            storage.set_repo_channel_route,
+            canonical,
+            channel_id,
+            set_by_discord_id=str(interaction.user.id),
+        )
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        logger.info(
+            "PR channel route set",
+            extra={
+                "repo": canonical,
+                "channel_id": channel_id,
+                "previous_channel_id": previous,
+                "discord_user_id": str(interaction.user.id),
+            },
+        )
+        await interaction.followup.send(
+            format_set_reply(
+                canonical,
+                channel_id,
+                previous_channel_id=previous,
+                config_channel_id=config_channel_for(base, canonical),
+            ),
+            ephemeral=True,
+        )
+
+    @pr_channel_group.command(
+        name="remove",
+        description="Remove a repo's channel route set from Discord",
+    )
+    @app_commands.describe(repo="Repository whose Discord-set route to remove")
+    @app_commands.autocomplete(repo=pr_channel_routed_repo_autocomplete)
+    async def pr_channel_remove_cmd(interaction: discord.Interaction, repo: str) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        requested = repo.strip()
+        routes = await asyncio.to_thread(load_channel_routes, storage)
+        routed = next(
+            (r for r in routes if r.lower() == requested.lower()),
+            requested,
+        )
+        removed = await asyncio.to_thread(
+            storage.delete_repo_channel_route,
+            routed,
+            removed_by_discord_id=str(interaction.user.id),
+        )
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        if removed is not None:
+            logger.info(
+                "PR channel route removed",
+                extra={
+                    "repo": routed,
+                    "channel_id": removed,
+                    "discord_user_id": str(interaction.user.id),
+                },
+            )
+        await interaction.followup.send(
+            format_remove_reply(
+                routed,
+                removed_channel_id=removed,
+                config_channel_id=config_channel_for(routing_base_for(config), routed),
+            ),
+            ephemeral=True,
+        )
+
+    @pr_channel_group.command(
+        name="list",
+        description="Show which repos post to this channel (or every route)",
+    )
+    @app_commands.describe(all_routes="Show every route grouped by channel")
+    @app_commands.rename(all_routes="all")
+    async def pr_channel_list_cmd(interaction: discord.Interaction, all_routes: bool = False) -> None:
+        if await deny_pr_channel(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        routes = await asyncio.to_thread(apply_stored_channel_routes, config, storage)
+        entries = build_route_entries(routing_base_for(config), routes)
+        description = format_route_list(
+            entries,
+            channel_id=None if all_routes else str(interaction.channel_id),
+        )
+        embed = discord.Embed(
+            title="PR channel routes",
+            description=description,
+            color=0x2F81F7,
+        )
+        embed.set_footer(text="config = gitcord.yaml · discord = set with /pr-channel")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    tree.add_command(pr_channel_group, guild=discord.Object(id=guild_id))
 
     dynamic_repos_cache: list[str] = []
     dynamic_repos_last_fetched: datetime | None = None
