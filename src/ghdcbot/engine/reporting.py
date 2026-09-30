@@ -139,17 +139,12 @@ def _render_contribution_summary_section(
     if not summaries:
         lines.append("No activity in period.")
         return "\n".join(lines)
-    lines.append("| User | Issues | PRs | Reviews | Comments |")
-    lines.append("|------|--------|-----|---------|----------|")
+    lines.append("| User | Issues | PRs Opened | PRs Merged | Reviews | Comments |")
+    lines.append("|------|--------|------------|------------|---------|----------|")
     for summary in sorted(summaries, key=lambda entry: entry.github_user):
         lines.append(
-            "| {user} | {issues} | {prs} | {reviews} | {comments} |".format(
-                user=summary.github_user,
-                issues=summary.issues_opened,
-                prs=summary.prs_opened,
-                reviews=summary.prs_reviewed,
-                comments=summary.comments,
-            )
+            f"| {summary.github_user} | {summary.issues_opened} | {summary.prs_opened} | "
+            f"{summary.prs_merged} | {summary.prs_reviewed} | {summary.comments} |"
         )
     return "\n".join(lines)
 

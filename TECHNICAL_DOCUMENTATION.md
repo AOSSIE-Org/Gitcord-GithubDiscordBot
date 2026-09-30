@@ -902,7 +902,7 @@ class MutationPolicy:
 - `meta.json` - Metadata (schema_version, generated_at, org, run_id, period_start, period_end)
 - `identities.json` - Array of `{discord_user_id, github_user}`
 - `scores.json` - Array of `{github_user, period_start, period_end, points}`
-- `contributors.json` - Array of `{github_user, period_start, period_end, issues_opened, prs_opened, prs_reviewed, comments, total_score}`
+- `contributors.json` - Array of `{github_user, period_start, period_end, issues_opened, prs_opened, prs_merged, prs_reviewed, comments, total_score}`
 - `roles.json` - Array of `{discord_user_id, roles: [string]}`
 - `issue_requests.json` - Array of `{request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, created_at, status}`
 - `notifications.json` - Array of `{dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at}`

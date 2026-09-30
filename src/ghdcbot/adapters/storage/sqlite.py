@@ -248,6 +248,7 @@ class SqliteStorage:
                 {
                     "issues_opened": 0,
                     "prs_opened": 0,
+                    "prs_merged": 0,
                     "prs_reviewed": 0,
                     "comments": 0,
                     "total_score": 0,
@@ -255,8 +256,10 @@ class SqliteStorage:
             )
             if event_type == "issue_opened":
                 bucket["issues_opened"] += 1
-            elif event_type in {"pr_opened", "pr_merged"}:
+            elif event_type == "pr_opened":
                 bucket["prs_opened"] += 1
+            elif event_type == "pr_merged":
+                bucket["prs_merged"] += 1
             elif event_type == "pr_reviewed":
                 bucket["prs_reviewed"] += 1
             elif event_type == "comment":
@@ -267,6 +270,7 @@ class SqliteStorage:
                 github_user=user,
                 issues_opened=counts["issues_opened"],
                 prs_opened=counts["prs_opened"],
+                prs_merged=counts["prs_merged"],
                 prs_reviewed=counts["prs_reviewed"],
                 comments=counts["comments"],
                 total_score=counts["total_score"],
