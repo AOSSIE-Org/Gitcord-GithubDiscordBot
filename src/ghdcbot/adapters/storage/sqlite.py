@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -95,6 +96,7 @@ class SqliteStorage:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_links_discord_github_norm "
                 "ON identity_links (discord_user_id, github_user_normalized)"
             )
+            _dedupe_contributions(conn)
             # Issue requests: contributor requests for assignment, mentor reviews
             conn.executescript(
                 """
@@ -177,24 +179,33 @@ class SqliteStorage:
             )
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
+        """Store new events; events already stored (e.g. re-fetched at the sync cursor) are skipped.
+
+        Returns the number of rows actually inserted.
+        """
         stored = 0
         with self._connect() as conn:
             for event in events:
-                created_at = _ensure_utc(event.created_at)
-                conn.execute(
+                created_at = _ensure_utc(event.created_at).isoformat()
+                payload_json = json.dumps(event.payload, separators=(",", ":"))
+                cur = conn.execute(
                     """
-                    INSERT INTO contributions (github_user, event_type, repo, created_at, payload_json)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO contributions
+                        (github_user, event_type, repo, created_at, payload_json, dedupe_key)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.github_user,
                         event.event_type,
                         event.repo,
-                        created_at.isoformat(),
-                        json.dumps(event.payload, separators=(",", ":")),
+                        created_at,
+                        payload_json,
+                        _contribution_dedupe_key(
+                            event.github_user, event.event_type, event.repo, created_at, payload_json
+                        ),
                     ),
                 )
-                stored += 1
+                stored += cur.rowcount
         return stored
 
     def list_contributions(self, since: datetime) -> Sequence[ContributionEvent]:
@@ -1277,6 +1288,65 @@ class SqliteStorage:
             ).fetchone()
         
         return dict(row) if row else None
+
+
+def _dedupe_contributions(conn: sqlite3.Connection) -> None:
+    """Key contributions by identity, drop repeated rows, and enforce uniqueness.
+
+    Keeps the oldest row per identity. Rows written without a key (older code during a
+    rollout) are keyed on the next ``init_schema``; NULL keys never violate the index.
+    Runs inside ``init_schema``'s open write transaction, so bot and scheduler cannot
+    migrate concurrently.
+    """
+    try:
+        conn.execute("ALTER TABLE contributions ADD COLUMN dedupe_key TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+    pending = conn.execute(
+        """
+        SELECT id, github_user, event_type, repo, created_at, payload_json
+        FROM contributions
+        WHERE dedupe_key IS NULL
+        ORDER BY id
+        """
+    ).fetchall()
+    if pending:
+        seen = {
+            row[0]
+            for row in conn.execute(
+                "SELECT dedupe_key FROM contributions WHERE dedupe_key IS NOT NULL"
+            )
+        }
+        keyed: list[tuple[str, int]] = []
+        repeated: list[tuple[int]] = []
+        for row in pending:
+            key = _contribution_dedupe_key(
+                row["github_user"],
+                row["event_type"],
+                row["repo"],
+                row["created_at"],
+                row["payload_json"],
+            )
+            if key in seen:
+                repeated.append((row["id"],))
+            else:
+                seen.add(key)
+                keyed.append((key, row["id"]))
+        conn.executemany("DELETE FROM contributions WHERE id = ?", repeated)
+        conn.executemany("UPDATE contributions SET dedupe_key = ? WHERE id = ?", keyed)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contributions_dedupe_key "
+        "ON contributions (dedupe_key)"
+    )
+
+
+def _contribution_dedupe_key(
+    github_user: str, event_type: str, repo: str, created_at: str, payload_json: str
+) -> str:
+    """Identity of a stored contribution: the same columns the DISTINCT reads compare."""
+    raw = "\x1f".join((github_user, event_type, repo, created_at, payload_json))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _ensure_utc(value: datetime) -> datetime:
