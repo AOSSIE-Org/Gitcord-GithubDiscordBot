@@ -9,7 +9,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 
-from ghdcbot.core.social_models import XProfile, LinkedInProfile
+from ghdcbot.core.social_models import (
+    LinkedInProfile,
+    XProfile,
+    parse_linkedin_profile_url,
+)
 
 
 class PlatformValidator(ABC):
@@ -101,71 +105,42 @@ class XProfileValidator(PlatformValidator):
 
 
 class LinkedInProfileValidator(PlatformValidator):
-    """Validator for LinkedIn profiles"""
-    
-    @staticmethod
-    def _extract_profile_id(url: str) -> str:
-        """Extract profile ID from LinkedIn URL"""
-        # Expected format: https://[www.]linkedin.com/in/profile-id[-optional-stuff]
-        try:
-            parsed = urlparse(url)
-            path = parsed.path.strip("/")
-            
-            # Expected: in/profile-id or in/profile-id-more-text
-            parts = path.split("/")
-            if len(parts) < 2 or parts[0] != "in":
-                raise ValueError("Invalid LinkedIn profile path")
-            
-            profile_id = parts[1]
-            if not profile_id:
-                raise ValueError("Profile ID is empty")
-            
-            return profile_id
-        except Exception as e:
-            raise ValueError(f"Could not extract profile ID from URL: {e}")
-    
+    """Validator for LinkedIn profiles.
+
+    All parsing rules live in ghdcbot.core.social_models.parse_linkedin_profile_url
+    so the validator and the LinkedInProfile model can never disagree.
+    """
+
     @staticmethod
     def _normalize_url(url: str) -> str:
-        """Normalize LinkedIn URL to canonical format"""
-        url = url.strip()
-        
-        # Ensure https
-        if url.startswith("http://"):
-            url = "https://" + url[7:]
-        elif not url.startswith("https://"):
-            url = "https://" + url
-        
-        # Remove www if present (normalize to linkedin.com)
-        url = url.replace("www.linkedin.com", "linkedin.com")
-        
-        # Remove trailing slashes and query params
-        url = url.split("?")[0].rstrip("/")
-        
-        # Reject company pages
-        if "/company/" in url or "/companies/" in url or "/school/" in url:
-            raise ValueError("Company and school pages are not supported, only personal profiles")
-        
-        # Must be in /in/ path for personal profiles
-        if "/in/" not in url:
-            raise ValueError("Only LinkedIn profile URLs (linkedin.com/in/...) are supported")
-        
-        return url
-    
+        """Canonicalize a LinkedIn profile URL to https://linkedin.com/in/<id>."""
+        return parse_linkedin_profile_url(url)[0]
+
+    @staticmethod
+    def _extract_profile_id(url: str) -> str:
+        """Extract the profile ID from a LinkedIn profile URL (host is validated too)."""
+        return parse_linkedin_profile_url(url)[1]
+
     def validate(self, input_value: str) -> dict:
         """
         Accept:
         - https://linkedin.com/in/profile-id
-        - https://www.linkedin.com/in/profile-id
+        - https://www.linkedin.com/in/profile-id (also m. and regional uk., in., ...)
         - http://linkedin.com/in/profile-id
-        
+        - linkedin.com/in/profile-id
+
+        Reject anything that is not a LinkedIn host (including lookalike
+        domains such as linkedin.com.attacker.com or fake-linkedin.com), any
+        non-http(s) scheme, and profile IDs containing characters that could
+        be rendered as Markdown or a link in Discord embeds.
+
         Returns normalized URL and profile ID
         """
-        url = self._normalize_url(input_value)
-        profile_id = self._extract_profile_id(url)
-        
+        url, profile_id = parse_linkedin_profile_url(input_value)
+
         # Create profile object to trigger Pydantic validation
         profile = LinkedInProfile(profile_url=url, profile_id=profile_id)
-        
+
         return {
             "normalized": profile.profile_url,  # Full URL as identifier
             "display": profile.profile_url,
