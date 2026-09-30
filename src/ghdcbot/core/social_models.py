@@ -157,7 +157,11 @@ def parse_linkedin_profile_url(url: str) -> tuple[str, str]:
     if not _SCHEME_PREFIX_RE.match(url):
         url = f"https://{url}"
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # e.g. an unclosed IPv6 bracket: urlparse raises "Invalid IPv6 URL"
+        raise ValueError("LinkedIn profile URL is malformed") from None
 
     if parsed.scheme.lower() not in {"http", "https"}:
         raise ValueError("LinkedIn profile URL must use http or https scheme")

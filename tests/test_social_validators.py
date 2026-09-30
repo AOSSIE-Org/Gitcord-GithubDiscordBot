@@ -235,14 +235,14 @@ class TestLinkedInProfileValidator:
             "https://linkedin.com@evil.com/in/target",  # userinfo trick
             "https://evil.com/#@linkedin.com/in/target",  # fragment trick
             "https://evil.com/linkedin.com/in/target",  # host in path
-            "https://sub.linkedin.com/in/target",  # only linkedin.com / www.linkedin.com
+            "https://sub.linkedin.com/in/target",  # not www/m/<two-letter region>
         ],
     )
     def test_reject_non_linkedin_domains_containing_in_path(self, url):
         """Should reject any host other than linkedin.com even if the path contains /in/"""
         validator = LinkedInProfileValidator()
 
-        with pytest.raises(ValueError, match="linkedin.com"):
+        with pytest.raises(ValueError, match=r"on linkedin\.com"):
             validator.validate(url)
 
     @pytest.mark.parametrize(
@@ -260,6 +260,13 @@ class TestLinkedInProfileValidator:
 
         with pytest.raises(ValueError, match="http or https"):
             validator.validate(url)
+
+    def test_reject_malformed_url_with_clean_message(self):
+        """urlparse errors (e.g. unclosed IPv6 bracket) must not leak raw messages"""
+        validator = LinkedInProfileValidator()
+
+        with pytest.raises(ValueError, match="malformed"):
+            validator.validate("https://[::1/in/x")
 
     def test_reject_extra_path_segments(self):
         """Should reject /in/<id>/<more> paths"""
@@ -336,7 +343,7 @@ class TestLinkedInProfileValidator:
         """Only www, m and two-letter regional subdomains are LinkedIn profile hosts"""
         validator = LinkedInProfileValidator()
 
-        with pytest.raises(ValueError, match="linkedin.com"):
+        with pytest.raises(ValueError, match=r"on linkedin\.com"):
             validator.validate(url)
 
     def test_accept_bare_url_with_port(self):
