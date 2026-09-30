@@ -1861,9 +1861,14 @@ def run_bot(config_path: str) -> None:
         if not slash_command_allowed(interaction, config, pr_channel_rule()):
             return []
         needle = current.strip().lower()
+        try:
+            routes = await asyncio.to_thread(load_channel_routes, storage)
+        except Exception as e:
+            logger.error("Failed to load channel routes for /pr-channel autocomplete: %s", e)
+            return []
         return [
             app_commands.Choice(name=r, value=r)
-            for r in load_channel_routes(storage)
+            for r in routes
             if needle in r.lower()
         ][:25]
 
@@ -1958,10 +1963,13 @@ def run_bot(config_path: str) -> None:
             return
 
         channel_id = str(target.id)
-        previous = storage.set_repo_channel_route(
-            canonical, channel_id, set_by_discord_id=str(interaction.user.id)
+        previous = await asyncio.to_thread(
+            storage.set_repo_channel_route,
+            canonical,
+            channel_id,
+            set_by_discord_id=str(interaction.user.id),
         )
-        apply_stored_channel_routes(config, storage)
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
         logger.info(
             "PR channel route set",
             extra={
@@ -1990,15 +1998,19 @@ def run_bot(config_path: str) -> None:
     async def pr_channel_remove_cmd(interaction: discord.Interaction, repo: str) -> None:
         if await deny_pr_channel(interaction):
             return
+        await interaction.response.defer(ephemeral=True)
         requested = repo.strip()
+        routes = await asyncio.to_thread(load_channel_routes, storage)
         routed = next(
-            (r for r in load_channel_routes(storage) if r.lower() == requested.lower()),
+            (r for r in routes if r.lower() == requested.lower()),
             requested,
         )
-        removed = storage.delete_repo_channel_route(
-            routed, removed_by_discord_id=str(interaction.user.id)
+        removed = await asyncio.to_thread(
+            storage.delete_repo_channel_route,
+            routed,
+            removed_by_discord_id=str(interaction.user.id),
         )
-        apply_stored_channel_routes(config, storage)
+        await asyncio.to_thread(apply_stored_channel_routes, config, storage)
         if removed is not None:
             logger.info(
                 "PR channel route removed",
@@ -2008,7 +2020,7 @@ def run_bot(config_path: str) -> None:
                     "discord_user_id": str(interaction.user.id),
                 },
             )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             format_remove_reply(
                 routed,
                 removed_channel_id=removed,
@@ -2026,7 +2038,8 @@ def run_bot(config_path: str) -> None:
     async def pr_channel_list_cmd(interaction: discord.Interaction, all_routes: bool = False) -> None:
         if await deny_pr_channel(interaction):
             return
-        routes = apply_stored_channel_routes(config, storage)
+        await interaction.response.defer(ephemeral=True)
+        routes = await asyncio.to_thread(apply_stored_channel_routes, config, storage)
         entries = build_route_entries(routing_base_for(config), routes)
         description = format_route_list(
             entries,
@@ -2038,7 +2051,7 @@ def run_bot(config_path: str) -> None:
             color=0x2F81F7,
         )
         embed.set_footer(text="config = gitcord.yaml · discord = set with /pr-channel")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     tree.add_command(pr_channel_group, guild=discord.Object(id=guild_id))
 

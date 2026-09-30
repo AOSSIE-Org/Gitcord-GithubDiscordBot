@@ -149,6 +149,7 @@ def test_discord_route_overrides_yaml_case_insensitively(tmp_path) -> None:
     cr.apply_channel_routes(config, cr.routing_base_for(config), {"Website": "200"})
 
     assert config.discord.pr_open_channels == {"Website": "200"}
+    assert config.github.repos.names == ["website"]
 
 
 def test_removal_falls_back_to_yaml_and_apply_is_idempotent(tmp_path) -> None:
@@ -498,12 +499,14 @@ def test_bot_set_stores_route_and_updates_config(tmp_path) -> None:
 
     list_interaction = _interaction(target, guild, member=_member("Mentor"), channel_id=target.id)
     asyncio.run(commands["list"].callback(list_interaction, all_routes=False))
-    embed = list_interaction.response.send_message.call_args.kwargs["embed"]
+    list_interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    embed = list_interaction.followup.send.call_args.kwargs["embed"]
     assert "**Website** `discord`" in embed.description
 
     remove_interaction = _interaction(target, guild, member=_member("Mentor"), channel_id=target.id)
     asyncio.run(commands["remove"].callback(remove_interaction, repo="WEBSITE"))
-    assert "Removed the Discord route for **Website**" in remove_interaction.response.send_message.call_args[0][0]
+    remove_interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    assert "Removed the Discord route for **Website**" in remove_interaction.followup.send.call_args[0][0]
     assert storage.list_repo_channel_routes() == []
     assert config.discord.pr_open_channels == {}
     assert config.github.repos.names == ["Agora"]

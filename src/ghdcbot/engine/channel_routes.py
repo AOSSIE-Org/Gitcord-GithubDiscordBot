@@ -99,9 +99,11 @@ def apply_channel_routes(config: Any, base: RoutingBase, routes: Mapping[str, st
     if repos_cfg is None or base.repo_mode != "allow":
         return
     names = list(base.repo_names)
+    names_lower = {name.lower() for name in names}
     for repo in routes:
-        if repo not in names:
+        if repo.lower() not in names_lower:
             names.append(repo)
+            names_lower.add(repo.lower())
     repos_cfg.names = names
 
 
