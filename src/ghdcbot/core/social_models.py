@@ -172,7 +172,7 @@ def parse_linkedin_profile_url(url: str) -> tuple[str, str]:
         )
 
     try:
-        parsed.port  # raises ValueError for non-numeric or out-of-range ports
+        _ = parsed.port  # raises ValueError for non-numeric or out-of-range ports
     except ValueError:
         raise ValueError("LinkedIn profile URL has an invalid port") from None
 
