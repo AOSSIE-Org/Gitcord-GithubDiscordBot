@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
@@ -24,7 +25,7 @@ def _event(user: str = "alice", kind: str = "pr_reviewed", at: datetime = T0, **
 
 
 def _row_count(tmp_path) -> int:
-    with sqlite3.connect(tmp_path / "state.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn, conn:
         return conn.execute("SELECT COUNT(*) FROM contributions").fetchone()[0]
 
 
@@ -57,7 +58,7 @@ def _legacy_db_with_duplicates(tmp_path) -> None:
         rows.append(("alice", "pr_reviewed", "Gluon-EVM", T0.isoformat(), json.dumps({"pr_number": 40})))
         rows.append(("alice", "comment", "Gluon-EVM", T0.isoformat(), json.dumps({"pr_number": 40})))
     rows.append(("bob", "pr_opened", "Other", (T0 - timedelta(days=1)).isoformat(), json.dumps({"pr_number": 7})))
-    with sqlite3.connect(tmp_path / "state.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn, conn:
         conn.execute(
             """
             CREATE TABLE contributions (
@@ -82,7 +83,7 @@ def test_migration_removes_duplicates_without_changing_reads(tmp_path) -> None:
     storage = SqliteStorage(str(tmp_path))
     period_end = T0 + timedelta(days=1)
 
-    with sqlite3.connect(tmp_path / "state.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn, conn:
         conn.row_factory = sqlite3.Row
         before_rows = conn.execute(
             "SELECT DISTINCT github_user, event_type, repo, created_at, payload_json "
@@ -106,7 +107,7 @@ def test_migration_removes_duplicates_without_changing_reads(tmp_path) -> None:
     assert summaries["alice"].comments == 1
     assert summaries["bob"].prs_opened == 1
 
-    with sqlite3.connect(tmp_path / "state.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn, conn:
         kept_ids = [r[0] for r in conn.execute("SELECT id FROM contributions ORDER BY id")]
         assert kept_ids == [1, 2, 35]
         indexes = {r[1] for r in conn.execute("PRAGMA index_list('contributions')")}
@@ -119,7 +120,7 @@ def test_rows_written_without_key_are_keyed_on_next_init(tmp_path) -> None:
     storage.record_contributions([_event()])
 
     stored = storage.list_contributions(EPOCH)[0]
-    with sqlite3.connect(tmp_path / "state.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn, conn:
         for _ in range(2):
             conn.execute(
                 "INSERT INTO contributions (github_user, event_type, repo, created_at, payload_json) "
