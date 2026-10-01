@@ -2069,5 +2069,265 @@ class TestRepoRecommendationAndAutocomplete:
         assert "Closed 🔴" in msg
 
 
+# ===================================================================
+# Issue #114: Repo Scoping vs Org Scope Dashboard Tests
+# ===================================================================
 
 
+class TestPRStatusRepoScopingAndOrgDashboard:
+    def test_fetch_all_open_pr_health_with_repo_filters_and_queries_repo(self) -> None:
+        """When repo is provided, fetch_all_open_pr_health queries only that repo."""
+        adapter = MagicMock()
+        adapter.list_open_pull_requests.return_value = [
+            {"repo": "selected-repo", "number": 10},
+            {"repo": "other-repo", "number": 20},
+        ]
+        adapter.get_pull_request.return_value = _make_pr_data(repo="selected-repo", number=10)
+        adapter.get_pull_request_reviews.return_value = []
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        results, total = fetch_all_open_pr_health(adapter, "test-org", repo="selected-repo")
+        assert total == 1
+        assert len(results) == 1
+        assert results[0].repo == "selected-repo"
+        assert results[0].number == 10
+        adapter.list_open_pull_requests.assert_called_once_with(repo="selected-repo")
+
+    def test_fetch_all_open_pr_health_without_repo_queries_org(self) -> None:
+        """When repo is None, fetch_all_open_pr_health queries org-wide."""
+        adapter = MagicMock()
+        adapter.list_open_pull_requests.return_value = [
+            {"repo": "repo-a", "number": 1},
+            {"repo": "repo-b", "number": 2},
+        ]
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = []
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        results, total = fetch_all_open_pr_health(adapter, "test-org", repo=None)
+        assert total == 2
+        assert len(results) == 2
+        adapter.list_open_pull_requests.assert_called_once_with()
+
+    def test_format_all_pr_status_with_repo_includes_repo_in_header(self) -> None:
+        """Dashboard formatted for a specific repo displays repo name in title and count."""
+        statuses = [_make_health(repo="my-bot", number=1)]
+        msgs = format_all_pr_status(statuses, "test-org", skip=0, total=1, repo="my-bot")
+        combined = "\n".join(msgs)
+        assert "PR Status Dashboard — my-bot" in combined
+        assert "Showing 1 of 1 open PR" in combined
+
+    def test_format_all_pr_status_zero_prs_in_repo_friendly_message(self) -> None:
+        """Zero open PRs in a repo returns a friendly message without crashing."""
+        msgs = format_all_pr_status([], "test-org", skip=0, total=0, repo="my-bot")
+        assert len(msgs) == 1
+        assert "No open PRs found in my-bot." in msgs[0]
+        assert "PR Status Dashboard — my-bot" in msgs[0]
+
+    def test_format_all_pr_status_without_repo_uses_org_title(self) -> None:
+        """Org-scoped dashboard preserves generic org title without repo suffix."""
+        statuses = [_make_health(repo="my-bot", number=1)]
+        msgs = format_all_pr_status(statuses, "test-org", skip=0, total=10, repo=None)
+        combined = "\n".join(msgs)
+        assert "📋 **PR Status Dashboard**" in combined
+        assert "PR Status Dashboard — " not in combined
+        assert "Showing 1 of 10 open PRs" in combined
+
+    @pytest.mark.asyncio
+    async def test_pr_status_view_show_all_scopes_to_selected_repo(self) -> None:
+        """Clicking 'Show All Open PRs' on PRStatusView with repo set queries repo-only."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ghdcbot.bot import PRStatusView
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_github = MagicMock()
+        mock_github.list_open_pull_requests.return_value = [
+            {"repo": "selected-repo", "number": 42},
+            {"repo": "unrelated-repo", "number": 99},
+        ]
+        mock_github.get_pull_request.return_value = _make_pr_data(repo="selected-repo", number=42)
+        mock_github.get_pull_request_reviews.return_value = []
+        mock_github.get_pull_request_check_runs.return_value = []
+        mock_github.get_pull_request_review_comments.return_value = []
+
+        view = PRStatusView(repo="selected-repo", config=cfg, github_adapter=mock_github)
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        await view.show_all.callback(mock_interaction)
+
+        mock_interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        assert view.active_scope == "repo"
+        assert view.total == 1
+        assert view.skip == 0
+        mock_interaction.followup.send.assert_awaited_once()
+        msg = mock_interaction.followup.send.call_args[0][0]
+        assert "PR Status Dashboard — selected-repo" in msg
+        assert "Showing 1 of 1 open PR" in msg
+        assert "unrelated-repo" not in msg
+
+    @pytest.mark.asyncio
+    async def test_pr_status_view_org_dashboard_button_fetches_org_scope(self) -> None:
+        """Clicking 'Org Dashboard' on PRStatusView queries all open PRs in org."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ghdcbot.bot import PRStatusView
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_github = MagicMock()
+        mock_github.list_open_pull_requests.return_value = [
+            {"repo": "repo-1", "number": 1},
+            {"repo": "repo-2", "number": 2},
+        ]
+        mock_github.get_pull_request.return_value = _make_pr_data()
+        mock_github.get_pull_request_reviews.return_value = []
+        mock_github.get_pull_request_check_runs.return_value = []
+        mock_github.get_pull_request_review_comments.return_value = []
+
+        view = PRStatusView(repo="repo-1", config=cfg, github_adapter=mock_github)
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        await view.org_dashboard.callback(mock_interaction)
+
+        mock_interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        assert view.active_scope == "org"
+        assert view.total == 2
+        mock_interaction.followup.send.assert_awaited_once()
+        msg = mock_interaction.followup.send.call_args[0][0]
+        assert "📋 **PR Status Dashboard**" in msg
+        assert "Showing 2 of 2 open PRs" in msg
+
+    @pytest.mark.asyncio
+    async def test_pr_status_view_missing_repo_does_not_silently_fallback_to_org(self) -> None:
+        """Clicking 'Show All Open PRs' when repo is None warns user and does not fetch org."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ghdcbot.bot import PRStatusView
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_github = MagicMock()
+
+        view = PRStatusView(repo=None, config=cfg, github_adapter=mock_github)
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        await view.show_all.callback(mock_interaction)
+
+        # Must NOT call list_open_pull_requests
+        mock_github.list_open_pull_requests.assert_not_called()
+        mock_interaction.followup.send.assert_awaited_once()
+        err_msg = mock_interaction.followup.send.call_args[0][0]
+        assert "No repository selected or auto-detected" in err_msg
+
+    @pytest.mark.asyncio
+    async def test_pr_status_view_next_page_preserves_active_scope(self) -> None:
+        """'Next page' button preserves the active scope (repo vs org)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ghdcbot.bot import PRStatusView
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+        mock_github = MagicMock()
+        prs = [{"repo": "big-repo", "number": i} for i in range(1, 40)]
+        mock_github.list_open_pull_requests.return_value = prs
+        mock_github.get_pull_request.return_value = _make_pr_data(repo="big-repo")
+        mock_github.get_pull_request_reviews.return_value = []
+        mock_github.get_pull_request_check_runs.return_value = []
+        mock_github.get_pull_request_review_comments.return_value = []
+
+        view = PRStatusView(repo="big-repo", config=cfg, github_adapter=mock_github)
+
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        # 1. Fetch first page
+        await view.show_all.callback(mock_interaction)
+        assert view.skip == 0
+        assert view.total == 39
+
+        # 2. Next page
+        mock_interaction.reset_mock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+        await view.next_page.callback(mock_interaction)
+
+        assert view.active_scope == "repo"
+        assert view.skip == 25
+        assert view.total == 39
+        mock_interaction.followup.send.assert_awaited_once()
+        msg = mock_interaction.followup.send.call_args[0][0]
+        assert "PR Status Dashboard — big-repo" in msg
+        assert "Showing 14 of 39 open PRs" in msg
+
+    def test_rest_adapter_list_open_pull_requests_with_repo(self) -> None:
+        """Rest adapter list_open_pull_requests with repo queries only that repo."""
+        from unittest.mock import patch
+
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter(token="fake", org="test-org", api_base="https://api.github.com")
+
+        mock_prs = [{"repo": "my-repo", "number": 1}]
+        with (
+            patch.object(
+                adapter, "_list_repo_open_prs", return_value=iter(mock_prs)
+            ) as mock_list_repo,
+            patch.object(adapter, "_list_repos") as mock_list_repos,
+        ):
+            results = list(adapter.list_open_pull_requests(repo="my-repo"))
+            assert results == mock_prs
+            mock_list_repo.assert_called_once_with(
+                {"owner": {"login": "test-org"}, "name": "my-repo"}
+            )
+            mock_list_repos.assert_not_called()

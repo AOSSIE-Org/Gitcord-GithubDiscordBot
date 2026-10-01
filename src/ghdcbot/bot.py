@@ -563,6 +563,7 @@ class PRStatusView(discord.ui.View):
         self.repo = repo
         self.config = config
         self.github_adapter = github_adapter
+        self.active_scope: str = "repo" if repo else "org"
         self.skip = 0
         self.total = 0
         self.message: discord.Message | None = None
@@ -574,7 +575,26 @@ class PRStatusView(discord.ui.View):
                 item.disabled = self.total <= 0 or (self.skip + PR_STATUS_MAX_PRS) >= self.total
                 break
 
-    async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
+    async def _send_dashboard(
+        self,
+        interaction: discord.Interaction,
+        *,
+        skip: int,
+        scope: str | None = None,
+    ) -> None:
+        if scope is not None:
+            self.active_scope = scope
+        current_scope = self.active_scope
+
+        target_repo = self.repo if current_scope == "repo" else None
+
+        if current_scope == "repo" and not target_repo:
+            await interaction.followup.send(
+                "❌ No repository selected or auto-detected. Please run `/pr-status repo:<name>` or click **Org Dashboard**.",
+                ephemeral=True,
+            )
+            return
+
         notification_config = getattr(self.config.discord, "notifications", None)
         coderabbit_logins = (
             getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
@@ -588,6 +608,7 @@ class PRStatusView(discord.ui.View):
                 coderabbit_logins,
                 PR_STATUS_MAX_PRS,
                 skip,
+                target_repo,
             )
         except Exception:
             logging.getLogger("ghdcbot.bot").exception("Failed to fetch all open PR health")
@@ -610,7 +631,7 @@ class PRStatusView(discord.ui.View):
                 )
 
         messages = format_all_pr_status(
-            statuses, self.config.github.org, skip=skip, total=total
+            statuses, self.config.github.org, skip=skip, total=total, repo=target_repo
         )
         for msg in messages:
             await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
@@ -618,7 +639,12 @@ class PRStatusView(discord.ui.View):
     @discord.ui.button(label="Show All Open PRs", style=discord.ButtonStyle.primary, emoji="📄")
     async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True)
-        await self._send_dashboard(interaction, skip=0)
+        await self._send_dashboard(interaction, skip=0, scope="repo")
+
+    @discord.ui.button(label="Org Dashboard", style=discord.ButtonStyle.secondary, emoji="🏢")
+    async def org_dashboard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await self._send_dashboard(interaction, skip=0, scope="org")
 
     @discord.ui.button(
         label="Next page",
@@ -1694,12 +1720,52 @@ def run_bot(config_path: str) -> None:
         repo: str | None = None,
     ) -> None:
         """Show health status of a pull request or all open PRs."""
-        repo_display = f"`{repo}`" if repo else "auto-detected repository"
-        view = PRStatusView(repo, config, github_adapter)
+        repo_filter = None
+        if config:
+            github_cfg = cfg_get(config, "github")
+            if github_cfg:
+                repo_filter = cfg_get(github_cfg, "repos")
+
+        if repo and repo.strip():
+            cleaned = repo.strip()
+            if not is_repo_allowed(repo_filter, cleaned):
+                await interaction.response.send_message(
+                    f"❌ Repository **{cleaned}** is not allowed by Gitcord configuration.",
+                    ephemeral=True,
+                )
+                return
+            repo_name = cleaned
+        else:
+            repo_name = None
+            if config:
+                configured_repos = [
+                    c for c in get_configured_repo_names(config)
+                    if is_repo_allowed(repo_filter, c)
+                ]
+                if len(configured_repos) == 1:
+                    repo_name = configured_repos[0]
+                elif interaction.channel_id:
+                    discord_cfg = cfg_get(config, "discord")
+                    if discord_cfg:
+                        pr_open_channels = cfg_get(discord_cfg, "pr_open_channels")
+                        if isinstance(pr_open_channels, dict):
+                            for r, cid in pr_open_channels.items():
+                                if str(cid) == str(interaction.channel_id) and is_repo_allowed(repo_filter, r):
+                                    repo_name = r
+                                    break
+                    if not repo_name and hasattr(interaction.channel, "name") and interaction.channel.name:
+                        clean_chan = interaction.channel.name.strip().lstrip("#").lower().replace("-", "_")
+                        for r in configured_repos:
+                            if r.lower().replace("-", "_") == clean_chan:
+                                repo_name = r
+                                break
+
+        repo_display = f"`{repo_name}`" if repo_name else "auto-detected repository"
+        view = PRStatusView(repo_name, config, github_adapter)
         await interaction.response.send_message(
             f"Select an option for **{repo_display}** (or the org dashboard):",
             view=view,
-            ephemeral=True
+            ephemeral=True,
         )
         try:
             view.message = await interaction.original_response()
