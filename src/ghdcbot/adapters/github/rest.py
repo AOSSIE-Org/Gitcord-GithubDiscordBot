@@ -208,9 +208,13 @@ class GitHubRestAdapter:
             if isinstance(r, dict) and r.get("name") and not r.get("archived")
         ]
 
-    def list_open_pull_requests(self) -> Iterable[dict]:
-        for repo in self._list_repos():
-            yield from self._list_repo_open_prs(repo)
+    def list_open_pull_requests(self, repo: str | None = None) -> Iterable[dict]:
+        if repo and repo.strip():
+            cleaned = repo.strip()
+            yield from self._list_repo_open_prs({"owner": {"login": self._org}, "name": cleaned})
+            return
+        for repo_info in self._list_repos():
+            yield from self._list_repo_open_prs(repo_info)
 
     def list_open_pull_requests_for_author(self, github_user: str) -> list[dict]:
         """List open PRs by one author via Search API (avoids scanning every repo).

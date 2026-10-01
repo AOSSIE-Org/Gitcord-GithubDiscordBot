@@ -428,12 +428,25 @@ def fetch_all_open_pr_health(
     coderabbit_bot_logins: list[str] | None = None,
     max_prs: int = PR_STATUS_MAX_PRS,
     skip: int = 0,
+    repo: str | None = None,
 ) -> tuple[list[PRHealthStatus], int]:
-    """Fetch health for all open PRs in the configured org.
+    """Fetch health for open PRs in the configured org or a specific repository.
 
     Returns (health_list, total_open_count).
     """
-    all_open_prs = list(github_adapter.list_open_pull_requests())
+    if repo and repo.strip():
+        cleaned = repo.strip()
+        try:
+            raw_prs = list(github_adapter.list_open_pull_requests(repo=cleaned))
+        except TypeError:
+            raw_prs = list(github_adapter.list_open_pull_requests())
+        all_open_prs = [
+            pr for pr in raw_prs
+            if (pr.get("repo") or "").lower() == cleaned.lower()
+        ]
+    else:
+        all_open_prs = list(github_adapter.list_open_pull_requests())
+
     total = len(all_open_prs)
 
     # Apply pagination
@@ -584,18 +597,27 @@ def format_all_pr_status(
     org: str,
     skip: int = 0,
     total: int = 0,
+    repo: str | None = None,
 ) -> list[str]:
     """Format a triage-priority sorted summary for multiple PRs.
 
     Returns a list of message strings, each ≤2000 chars (Discord limit).
     """
+    clean_repo = repo.strip() if repo and repo.strip() else None
+    title = f"📋 **PR Status Dashboard — {clean_repo}**" if clean_repo else "📋 **PR Status Dashboard**"
+
     if not statuses:
         if total == 0:
-            return ["📋 **PR Status Dashboard**\n\nNo open PRs found in configured repos."]
+            if clean_repo:
+                return [f"{title}\n\nNo open PRs found in {clean_repo}."]
+            return [f"{title}\n\nNo open PRs found in configured repos."]
+        scope_info = f" for {clean_repo}" if clean_repo else ""
         return [
-            f"📋 **PR Status Dashboard**\n\n"
-            f"No PRs in range (skip={skip}, total={total}). "
-            f"Use **Show All Open PRs** to restart from the beginning."
+            (
+                f"{title}\n\n"
+                f"No PRs in range (skip={skip}, total={total}){scope_info}. "
+                "Use **Show All Open PRs** to restart from the beginning."
+            )
         ]
 
     # Sort by triage priority
@@ -611,7 +633,7 @@ def format_all_pr_status(
 
     # Build header
     header_lines = [
-        "📋 **PR Status Dashboard**",
+        title,
         "",
         f"Showing {len(statuses)} of {total} open PR{'s' if total != 1 else ''}",
     ]

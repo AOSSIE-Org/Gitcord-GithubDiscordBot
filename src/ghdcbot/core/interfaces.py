@@ -19,7 +19,7 @@ class GitHubReader(Protocol):
     def list_open_issues(self) -> Iterable[dict]:
         """Yield open issues with metadata needed for assignment."""
 
-    def list_open_pull_requests(self) -> Iterable[dict]:
+    def list_open_pull_requests(self, repo: str | None = None) -> Iterable[dict]:
         """Yield open PRs with metadata needed for review assignment."""
 
     def list_org_repo_names(self) -> list[str]:
