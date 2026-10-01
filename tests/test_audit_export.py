@@ -233,7 +233,7 @@ def test_cli_export_audit_csv_no_filters(tmp_path: Path, capsys: pytest.CaptureF
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -290,7 +290,7 @@ def test_cli_export_audit_json_filtered_by_user(tmp_path: Path, capsys: pytest.C
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -356,7 +356,7 @@ def test_cli_export_audit_md_filtered_by_event_type(tmp_path: Path, capsys: pyte
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -420,7 +420,7 @@ def test_cli_export_audit_date_range(tmp_path: Path, capsys: pytest.CaptureFixtu
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -503,7 +503,7 @@ def test_cli_export_audit_invalid_date_format(tmp_path: Path, capsys: pytest.Cap
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
@@ -548,7 +548,7 @@ def test_cli_export_audit_empty_result(tmp_path: Path, capsys: pytest.CaptureFix
 runtime:
   mode: dry-run
   log_level: INFO
-  data_dir: "{tmp_path}"
+  data_dir: "{tmp_path.as_posix()}"
   github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
   discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
   storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage

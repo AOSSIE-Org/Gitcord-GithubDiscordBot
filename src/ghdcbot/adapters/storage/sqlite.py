@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -95,6 +96,7 @@ class SqliteStorage:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_links_discord_github_norm "
                 "ON identity_links (discord_user_id, github_user_normalized)"
             )
+            _dedupe_contributions(conn)
             # Issue requests: contributor requests for assignment, mentor reviews
             conn.executescript(
                 """
@@ -167,28 +169,43 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_channel_announcements_status
                     ON issue_channel_announcements (status);
+                CREATE TABLE IF NOT EXISTS repo_channel_routes (
+                    repo TEXT PRIMARY KEY COLLATE NOCASE,
+                    channel_id TEXT NOT NULL,
+                    set_by_discord_id TEXT,
+                    set_at TEXT NOT NULL
+                );
                 """
             )
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
+        """Store new events; events already stored (e.g. re-fetched at the sync cursor) are skipped.
+
+        Returns the number of rows actually inserted.
+        """
         stored = 0
         with self._connect() as conn:
             for event in events:
-                created_at = _ensure_utc(event.created_at)
-                conn.execute(
+                created_at = _ensure_utc(event.created_at).isoformat()
+                payload_json = json.dumps(event.payload, separators=(",", ":"))
+                cur = conn.execute(
                     """
-                    INSERT INTO contributions (github_user, event_type, repo, created_at, payload_json)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO contributions
+                        (github_user, event_type, repo, created_at, payload_json, dedupe_key)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.github_user,
                         event.event_type,
                         event.repo,
-                        created_at.isoformat(),
-                        json.dumps(event.payload, separators=(",", ":")),
+                        created_at,
+                        payload_json,
+                        _contribution_dedupe_key(
+                            event.github_user, event.event_type, event.repo, created_at, payload_json
+                        ),
                     ),
                 )
-                stored += 1
+                stored += cur.rowcount
         return stored
 
     def list_contributions(self, since: datetime) -> Sequence[ContributionEvent]:
@@ -248,6 +265,7 @@ class SqliteStorage:
                 {
                     "issues_opened": 0,
                     "prs_opened": 0,
+                    "prs_merged": 0,
                     "prs_reviewed": 0,
                     "comments": 0,
                     "total_score": 0,
@@ -255,8 +273,10 @@ class SqliteStorage:
             )
             if event_type == "issue_opened":
                 bucket["issues_opened"] += 1
-            elif event_type in {"pr_opened", "pr_merged"}:
+            elif event_type == "pr_opened":
                 bucket["prs_opened"] += 1
+            elif event_type == "pr_merged":
+                bucket["prs_merged"] += 1
             elif event_type == "pr_reviewed":
                 bucket["prs_reviewed"] += 1
             elif event_type == "comment":
@@ -267,6 +287,7 @@ class SqliteStorage:
                 github_user=user,
                 issues_opened=counts["issues_opened"],
                 prs_opened=counts["prs_opened"],
+                prs_merged=counts["prs_merged"],
                 prs_reviewed=counts["prs_reviewed"],
                 comments=counts["comments"],
                 total_score=counts["total_score"],
@@ -767,9 +788,15 @@ class SqliteStorage:
         pr_title: str | None = None,
         author_github: str | None = None,
         status: str = "open",
+        created_at: datetime | str | None = None,
     ) -> None:
-        """Track a newly posted PR-opened channel message (future lifecycle edits only)."""
+        """Track a newly posted PR-opened channel message (future lifecycle edits only).
+
+        ``created_at`` should be the GitHub PR creation time so lifecycle embeds
+        can show ``Created by … on YYYY-MM-DD``. Defaults to now when omitted.
+        """
         now = datetime.now(timezone.utc).isoformat()
+        created = _normalize_announcement_created_at(created_at) or now
         with self._connect() as conn:
             conn.execute(
                 """
@@ -792,7 +819,7 @@ class SqliteStorage:
                     status,
                     pr_title,
                     author_github,
-                    now,
+                    created,
                     now,
                 ),
             )
@@ -849,9 +876,15 @@ class SqliteStorage:
         author_github: str | None = None,
         assignee_github: str | None = None,
         status: str = "open",
+        created_at: datetime | str | None = None,
     ) -> None:
-        """Track a newly posted issue-opened channel message (future lifecycle edits)."""
+        """Track a newly posted issue-opened channel message (future lifecycle edits).
+
+        ``created_at`` should be the GitHub issue creation time so lifecycle embeds
+        can show ``Created by … on YYYY-MM-DD``. Defaults to now when omitted.
+        """
         now = datetime.now(timezone.utc).isoformat()
+        created = _normalize_announcement_created_at(created_at) or now
         with self._connect() as conn:
             conn.execute(
                 """
@@ -879,7 +912,7 @@ class SqliteStorage:
                     issue_title,
                     author_github,
                     assignee_github,
-                    now,
+                    created,
                     now,
                 ),
             )
@@ -946,6 +979,93 @@ class SqliteStorage:
                 """,
                 tuple(values),
             )
+
+    def set_repo_channel_route(
+        self,
+        repo: str,
+        channel_id: str,
+        *,
+        set_by_discord_id: str | None = None,
+    ) -> str | None:
+        """Upsert a Discord-set repo → channel route. Returns the previous channel ID, if any."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT channel_id FROM repo_channel_routes WHERE repo = ?",
+                (repo,),
+            ).fetchone()
+            previous = str(row["channel_id"]) if row else None
+            conn.execute(
+                """
+                INSERT INTO repo_channel_routes (repo, channel_id, set_by_discord_id, set_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repo) DO UPDATE SET
+                    repo = excluded.repo,
+                    channel_id = excluded.channel_id,
+                    set_by_discord_id = excluded.set_by_discord_id,
+                    set_at = excluded.set_at
+                """,
+                (repo, str(channel_id), set_by_discord_id, now),
+            )
+        self.append_audit_event({
+            "actor_type": "discord_user",
+            "actor_id": set_by_discord_id or "",
+            "event_type": "repo_channel_route_set",
+            "context": {
+                "repo": repo,
+                "old_channel_id": previous,
+                "new_channel_id": str(channel_id),
+            },
+        })
+        return previous
+
+    def delete_repo_channel_route(
+        self,
+        repo: str,
+        *,
+        removed_by_discord_id: str | None = None,
+    ) -> str | None:
+        """Delete a Discord-set route. Returns the removed channel ID, or None if none existed."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT repo, channel_id FROM repo_channel_routes WHERE repo = ?",
+                (repo,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM repo_channel_routes WHERE repo = ?", (repo,))
+        removed = str(row["channel_id"])
+        self.append_audit_event({
+            "actor_type": "discord_user",
+            "actor_id": removed_by_discord_id or "",
+            "event_type": "repo_channel_route_removed",
+            "context": {
+                "repo": str(row["repo"]),
+                "old_channel_id": removed,
+                "new_channel_id": None,
+            },
+        })
+        return removed
+
+    def list_repo_channel_routes(self) -> list[dict]:
+        """Return all Discord-set routes ordered by repo name."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, channel_id, set_by_discord_id, set_at
+                FROM repo_channel_routes
+                ORDER BY repo COLLATE NOCASE
+                """
+            ).fetchall()
+        return [
+            {
+                "repo": str(r["repo"]),
+                "channel_id": str(r["channel_id"]),
+                "set_by_discord_id": r["set_by_discord_id"],
+                "set_at": r["set_at"],
+            }
+            for r in rows
+        ]
 
     def mark_notification_sent(
         self,
@@ -1170,11 +1290,86 @@ class SqliteStorage:
         return dict(row) if row else None
 
 
+def _dedupe_contributions(conn: sqlite3.Connection) -> None:
+    """Key contributions by identity, drop repeated rows, and enforce uniqueness.
+
+    Keeps the oldest row per identity. Rows written without a key (older code during a
+    rollout) are keyed on the next ``init_schema``; NULL keys never violate the index.
+    Runs inside ``init_schema``'s open write transaction, so bot and scheduler cannot
+    migrate concurrently.
+    """
+    try:
+        conn.execute("ALTER TABLE contributions ADD COLUMN dedupe_key TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+    pending = conn.execute(
+        """
+        SELECT id, github_user, event_type, repo, created_at, payload_json
+        FROM contributions
+        WHERE dedupe_key IS NULL
+        ORDER BY id
+        """
+    ).fetchall()
+    if pending:
+        seen = {
+            row[0]
+            for row in conn.execute(
+                "SELECT dedupe_key FROM contributions WHERE dedupe_key IS NOT NULL"
+            )
+        }
+        keyed: list[tuple[str, int]] = []
+        repeated: list[tuple[int]] = []
+        for row in pending:
+            key = _contribution_dedupe_key(
+                row["github_user"],
+                row["event_type"],
+                row["repo"],
+                row["created_at"],
+                row["payload_json"],
+            )
+            if key in seen:
+                repeated.append((row["id"],))
+            else:
+                seen.add(key)
+                keyed.append((key, row["id"]))
+        conn.executemany("DELETE FROM contributions WHERE id = ?", repeated)
+        conn.executemany("UPDATE contributions SET dedupe_key = ? WHERE id = ?", keyed)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contributions_dedupe_key "
+        "ON contributions (dedupe_key)"
+    )
+
+
+def _contribution_dedupe_key(
+    github_user: str, event_type: str, repo: str, created_at: str, payload_json: str
+) -> str:
+    """Identity of a stored contribution: the same columns the DISTINCT reads compare."""
+    raw = "\x1f".join((github_user, event_type, repo, created_at, payload_json))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _ensure_utc(value: datetime) -> datetime:
     """Normalize timestamps to UTC with tzinfo for safe SQLite ordering."""
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _normalize_announcement_created_at(value: datetime | str | None) -> str | None:
+    """Serialize a GitHub creation timestamp for channel-announcement rows."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _ensure_utc(value).isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        return _ensure_utc(datetime.fromisoformat(normalized)).isoformat()
+    except ValueError:
+        return text
 
 
 def _parse_utc(value: str) -> datetime:
