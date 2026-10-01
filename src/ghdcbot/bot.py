@@ -1310,6 +1310,12 @@ def run_bot(config_path: str) -> None:
                 ephemeral=True,
             )
             return
+        if all_prs is None:
+            await interaction.followup.send(
+                "❌ Error fetching PRs. Please try again later.",
+                ephemeral=True,
+            )
+            return
 
         scoped = filter_prs_by_repo(all_prs, repo_name)
         selected = select_recent_prs(scoped, count=n, skip=m)

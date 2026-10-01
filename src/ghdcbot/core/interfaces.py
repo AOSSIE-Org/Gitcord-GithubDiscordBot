@@ -41,8 +41,14 @@ class GitHubReader(Protocol):
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """List pull requests for an author."""
+
+    def get_successful_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues were listed successfully."""
+
+    def get_failed_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues listing failed."""
 
 
 class GitHubWriter(Protocol):

@@ -117,6 +117,8 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        self._successful_issue_listing_repos: set[str] = set()
+        self._failed_issue_listing_repos: set[str] = set()
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
@@ -167,8 +169,18 @@ class GitHubRestAdapter:
             self._sync_cached_repos = None
 
     def list_open_issues(self) -> Iterable[dict]:
+        self._successful_issue_listing_repos = set()
+        self._failed_issue_listing_repos = set()
         for repo in self._list_repos():
             yield from self._list_repo_open_issues(repo)
+
+    def get_successful_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues were listed successfully."""
+        return set(getattr(self, "_successful_issue_listing_repos", set()))
+
+    def get_failed_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues listing failed."""
+        return set(getattr(self, "_failed_issue_listing_repos", set()))
 
     def invalidate_repo_cache(self) -> None:
         """Explicitly invalidate the repository cache (e.g. after config changes)."""
@@ -218,21 +230,23 @@ class GitHubRestAdapter:
         Results are limited to the configured org and filtered by the active repo
         allowlist/denylist when present. Shape matches ``list_open_pull_requests``.
         """
-        return self._search_pull_requests_for_author(
+        prs = self._search_pull_requests_for_author(
             github_user,
             query_extra="is:open",
             include_status=False,
             log_label="open PRs",
         )
+        return prs if prs is not None else []
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """List recent PRs (open/merged/closed) for one author via Search API.
 
         Newest-updated first. Each item includes ``status``: open | merged | closed.
         Scoped to the configured org and active repo allowlist/denylist.
         When ``repo`` is set, search is limited to that repository name.
+        Returns None if any search page fails.
         """
         return self._search_pull_requests_for_author(
             github_user,
@@ -254,7 +268,7 @@ class GitHubRestAdapter:
         sort: str | None = None,
         order: str | None = None,
         repo: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -317,7 +331,7 @@ class GitHubRestAdapter:
                                 "log_label": log_label,
                             },
                         )
-                    break
+                    return None
                 payload = response.json()
                 items = payload.get("items") if isinstance(payload, dict) else None
                 if not isinstance(items, list) or not items:
@@ -343,6 +357,7 @@ class GitHubRestAdapter:
                         "number": item.get("number"),
                         "author": user.get("login") or author,
                         "title": item.get("title"),
+                        "body": item.get("body"),
                         "html_url": item.get("html_url"),
                         "created_at": item.get("created_at"),
                         "updated_at": item.get("updated_at"),
@@ -1925,20 +1940,37 @@ class GitHubRestAdapter:
         owner = repo["owner"]["login"]
         repo_name = repo["name"]
         params = {"state": "open", "per_page": 100}
-        for page in self._paginate(f"/repos/{owner}/{repo_name}/issues", params=params):
-            for issue in page:
-                if "pull_request" in issue:
-                    continue
-                # Include assignees and metadata for planning and inactivity tracking
-                yield {
-                    "repo": repo["name"],
-                    "number": issue["number"],
-                    "title": issue.get("title", ""),
-                    "assignees": issue.get("assignees", []),
-                    "created_at": issue.get("created_at"),
-                    "updated_at": issue.get("updated_at"),
-                    "html_url": issue.get("html_url"),
-                }
+        try:
+            for page in self._paginate(
+                f"/repos/{owner}/{repo_name}/issues", params=params, raise_on_error=True
+            ):
+                for issue in page:
+                    if "pull_request" in issue:
+                        continue
+                    # Include assignees and metadata for planning and inactivity tracking
+                    yield {
+                        "repo": repo["name"],
+                        "number": issue["number"],
+                        "title": issue.get("title", ""),
+                        "assignees": issue.get("assignees", []),
+                        "created_at": issue.get("created_at"),
+                        "updated_at": issue.get("updated_at"),
+                        "html_url": issue.get("html_url"),
+                    }
+            if hasattr(self, "_successful_issue_listing_repos"):
+                self._successful_issue_listing_repos.add(repo_name)
+            if hasattr(self, "_failed_issue_listing_repos"):
+                self._failed_issue_listing_repos.discard(repo_name)
+        except Exception:
+            self._logger.warning(
+                "Failed to list open issues for repository",
+                extra={"repo": repo_name, "owner": owner},
+                exc_info=True,
+            )
+            if hasattr(self, "_successful_issue_listing_repos"):
+                self._successful_issue_listing_repos.discard(repo_name)
+            if hasattr(self, "_failed_issue_listing_repos"):
+                self._failed_issue_listing_repos.add(repo_name)
 
     def _list_repo_open_prs(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
