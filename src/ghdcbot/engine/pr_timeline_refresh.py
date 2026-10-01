@@ -158,11 +158,20 @@ def refresh_pr_channel_timelines(
 
     queue_pr_timeline_refreshes(contributions, open_prs, storage)
     rows = list_queued(MAX_REFRESHES_PER_SYNC)
+    # The triggering events are not replayed once the cursor advances, so queued posts
+    # must stay queued until a run that can actually edit them.
+    if not policy.allow_discord_mutations:
+        if rows:
+            logger.info(
+                "PR timeline: posts queued; Discord writes disabled, not refreshing",
+                extra={"queued": len(rows)},
+            )
+        return 0
     edited = 0
     for row in rows:
         repo, pr_number = row["repo"], int(row["pr_number"])
         try:
-            if _refresh_one(row, storage, get_snapshot, discord_writer, policy, github_org):
+            if _refresh_one(row, storage, get_snapshot, discord_writer, github_org):
                 edited += 1
         except Exception:
             logger.warning(
@@ -186,7 +195,6 @@ def _refresh_one(
     storage: Storage,
     get_snapshot: Any,
     discord_writer: DiscordWriter,
-    policy: MutationPolicy,
     github_org: str,
 ) -> bool:
     repo, pr_number = row["repo"], int(row["pr_number"])
@@ -206,13 +214,6 @@ def _refresh_one(
     )
     fingerprint = prt.render_fingerprint(content, embeds)
     if fingerprint == row.get("render_hash"):
-        storage.clear_pr_announcement_refresh(repo, pr_number)
-        return False
-    if not policy.allow_discord_mutations:
-        logger.info(
-            "PR timeline: would edit post (Discord writes disabled)",
-            extra={"repo": repo, "pr_number": pr_number, "status": timeline.status},
-        )
         storage.clear_pr_announcement_refresh(repo, pr_number)
         return False
 

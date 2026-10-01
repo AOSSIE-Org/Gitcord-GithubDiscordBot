@@ -1566,10 +1566,11 @@ def build_pr_timeline_channel_message(
         header += " · Draft"
     lines = [_pr_timeline_line(line, discord_ids) for line in prt.collapse_timeline(timeline.entries)]
     lines.reverse()
-    if len(lines) > PR_TIMELINE_MAX_LINES:
-        hidden = len(lines) - PR_TIMELINE_MAX_LINES
+    history, created = lines[:-1], lines[-1:]
+    if len(history) > PR_TIMELINE_MAX_LINES:
+        hidden = len(history) - PR_TIMELINE_MAX_LINES
         plural = "s" if hidden != 1 else ""
-        lines = [*lines[: PR_TIMELINE_MAX_LINES - 1], f"… {hidden} earlier update{plural}", lines[-1]]
+        lines = [*history[:PR_TIMELINE_MAX_LINES], f"… {hidden} earlier update{plural}", *created]
     embeds = [{"description": "\n".join([header, *lines]), "color": color}]
 
     author = timeline.author

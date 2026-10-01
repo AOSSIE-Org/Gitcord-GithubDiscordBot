@@ -331,9 +331,14 @@ def test_render_truncates_to_max_lines_keeping_created() -> None:
     _, embeds = _render(timeline)
     lines = embeds[0]["description"].split("\n")[1:]
 
-    assert len(lines) == PR_TIMELINE_MAX_LINES + 1
-    assert lines[-2] == "… 5 earlier updates"
+    assert len(lines) == PR_TIMELINE_MAX_LINES + 2
+    assert lines[-2] == "… 4 earlier updates"
     assert lines[-1].startswith("Created by ")
+
+    seven = prt.PRTimeline(prt.STATUS_REVISED, False, "contrib", "T", entries[: PR_TIMELINE_MAX_LINES + 1])
+    lines = _render(seven)[1][0]["description"].split("\n")[1:]
+    assert len(lines) == PR_TIMELINE_MAX_LINES + 1
+    assert not any(line.startswith("…") for line in lines)
 
 
 def test_render_nudge_only_for_open_unverified_human_author() -> None:
@@ -546,12 +551,16 @@ def test_refresh_edits_once_then_skips_unchanged(tmp_path) -> None:
     assert discord.created == [] and discord.sent == [] and discord.dms == []
 
 
-def test_refresh_dry_run_never_edits(tmp_path) -> None:
+def test_refresh_dry_run_keeps_posts_queued_until_writes_allowed(tmp_path) -> None:
     storage = _storage(tmp_path)
     _track(storage)
     github, discord = FakeGitHub(_snapshot()), FakeDiscord()
     assert _run(storage, github, discord, policy=DRY_RUN) == 0
-    assert discord.edits == []
+    assert _run(storage, github, discord, policy=DRY_RUN, events=[]) == 0
+    assert discord.edits == [] and github.calls == []
+    assert [r["pr_number"] for r in storage.list_pr_announcements_needing_refresh(10)] == [106]
+
+    assert _run(storage, github, discord, events=[]) == 1
     assert storage.list_pr_announcements_needing_refresh(10) == []
 
 
