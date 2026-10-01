@@ -795,6 +795,43 @@ class GitHubRestAdapter:
             reviews.extend(page)
         return reviews
 
+    def get_pr_timeline_snapshot(self, repo: str, pr_number: int) -> dict | None:
+        """Read the PR, its issue timeline and its commits for the PR channel timeline.
+
+        Returns None when any part cannot be read completely, so callers never render a
+        partial history.
+        """
+        owner = self._org
+        pr = self.get_pull_request(owner, repo, pr_number)
+        if not pr:
+            return None
+        try:
+            timeline = [
+                item
+                for page in self._paginate(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/timeline",
+                    params={"per_page": 100},
+                    raise_on_error=True,
+                )
+                for item in page
+            ]
+            commits = [
+                item
+                for page in self._paginate(
+                    f"/repos/{owner}/{repo}/pulls/{pr_number}/commits",
+                    params={"per_page": 100},
+                    raise_on_error=True,
+                )
+                for item in page
+            ]
+        except GitHubPaginationError:
+            self._logger.warning(
+                "Could not read full PR timeline",
+                extra={"repo": f"{owner}/{repo}", "pr_number": pr_number},
+            )
+            return None
+        return {"pr": pr, "timeline": timeline, "commits": commits}
+
     def get_pull_request_review_comments(self, owner: str, repo: str, pr_number: int) -> list[dict]:
         """Fetch inline review comments for a pull request.
 
@@ -1925,6 +1962,7 @@ class GitHubRestAdapter:
                     "title": pr.get("title"),
                     "html_url": pr.get("html_url"),
                     "created_at": pr.get("created_at"),
+                    "head_sha": (pr.get("head") or {}).get("sha"),
                 }
 
     def _paginate(

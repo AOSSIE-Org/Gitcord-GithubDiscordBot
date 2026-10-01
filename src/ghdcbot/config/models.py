@@ -103,6 +103,10 @@ class NotificationConfig(BaseModel):
     # Edit the tracked PR-opened channel message when that PR is later merged/closed.
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
+    # Keep tracked PR channel posts updated with a status dot and review timeline
+    # (created / reviewed / revised / approved / merged / closed). Replaces the
+    # merge/close-only edits above for tracked posts. No backfill of older posts.
+    pr_channel_timeline: bool = False
     # Edit tracked issue channel messages on assign / unassign / close / reopen
     # (open: Opened by + assignees; closed: Closed by only; reopen restores open lines).
     update_issue_channel_on_lifecycle: bool = True

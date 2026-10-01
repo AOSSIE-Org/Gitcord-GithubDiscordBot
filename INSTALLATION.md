@@ -518,6 +518,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 | Dry-run sync | `docker compose run --rm bot --config /app/config/config.yaml run-once` | `ghdcbot --config config/config.yaml run-once` |
 | Validate setup | `docker compose run --rm bot --config /app/config/config.yaml validate` | `ghdcbot --config config/config.yaml validate` |
 | Identity status | `docker compose run --rm bot --config /app/config/config.yaml identity status --discord-user-id ID` | `ghdcbot --config config/config.yaml identity status --discord-user-id ID` |
+| Preview PR timeline post | `docker compose run --rm bot --config /app/config/config.yaml preview-pr-timeline --repo REPO --pr N` | `ghdcbot --config config/config.yaml preview-pr-timeline --repo REPO --pr N` |
 
 ### Config files
 

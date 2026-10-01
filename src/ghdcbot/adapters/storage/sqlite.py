@@ -175,8 +175,16 @@ class SqliteStorage:
                     set_by_discord_id TEXT,
                     set_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS pr_head_observations (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    head_sha TEXT NOT NULL,
+                    first_seen_after TEXT NOT NULL,
+                    PRIMARY KEY (repo, pr_number, head_sha)
+                );
                 """
             )
+            _add_pr_timeline_columns(conn)
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
         """Store new events; events already stored (e.g. re-fetched at the sync cursor) are skipped.
@@ -865,6 +873,150 @@ class SqliteStorage:
                 (status, now, repo, int(pr_number)),
             )
 
+    def observe_pr_heads(
+        self, heads: Iterable[tuple[str, int, str]], *, now: datetime | None = None
+    ) -> list[tuple[str, int]]:
+        """Record the current head SHA of open tracked PRs; return PRs whose head changed.
+
+        The first observation of a PR only stores its head (no change reported). A new
+        head is remembered with the previous check time as a lower bound on its push time
+        and the PR is queued for a timeline refresh.
+        """
+        now_iso = _ensure_utc(now or datetime.now(timezone.utc)).isoformat()
+        changed: list[tuple[str, int]] = []
+        with self._connect() as conn:
+            for repo, pr_number, head_sha in heads:
+                if not head_sha:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT last_head_sha, head_checked_at FROM pr_channel_announcements
+                    WHERE repo = ? AND pr_number = ? AND status = 'open'
+                    """,
+                    (repo, int(pr_number)),
+                ).fetchone()
+                if row is None:
+                    continue
+                if row["last_head_sha"] and row["last_head_sha"] != head_sha:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO pr_head_observations
+                            (repo, pr_number, head_sha, first_seen_after)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (repo, int(pr_number), head_sha, row["head_checked_at"] or now_iso),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE pr_channel_announcements
+                        SET last_head_sha = ?, head_checked_at = ?, needs_refresh = 1
+                        WHERE repo = ? AND pr_number = ?
+                        """,
+                        (head_sha, now_iso, repo, int(pr_number)),
+                    )
+                    changed.append((repo, int(pr_number)))
+                else:
+                    conn.execute(
+                        """
+                        UPDATE pr_channel_announcements
+                        SET last_head_sha = ?, head_checked_at = ?
+                        WHERE repo = ? AND pr_number = ?
+                        """,
+                        (head_sha, now_iso, repo, int(pr_number)),
+                    )
+        return changed
+
+    def get_pr_head_observations(self, repo: str, pr_number: int) -> dict[str, datetime]:
+        """Head SHA → lower bound on when Gitcord first saw it pushed."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT head_sha, first_seen_after FROM pr_head_observations
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (repo, int(pr_number)),
+            ).fetchall()
+        return {row["head_sha"]: _parse_utc(row["first_seen_after"]) for row in rows}
+
+    def mark_pr_announcements_for_refresh(self, keys: Iterable[tuple[str, int]]) -> None:
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                UPDATE pr_channel_announcements SET needs_refresh = 1
+                WHERE repo = ? AND pr_number = ?
+                """,
+                [(repo, int(pr_number)) for repo, pr_number in keys],
+            )
+
+    def list_pr_announcements_needing_refresh(self, limit: int) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, pr_number, channel_id, message_id, status, pr_title,
+                       author_github, render_hash, refresh_failures
+                FROM pr_channel_announcements
+                WHERE needs_refresh = 1
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_pr_timeline_render(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        render_hash: str,
+        status: str,
+        pr_title: str | None,
+    ) -> None:
+        """Store what the post now shows and clear the refresh flag."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE pr_channel_announcements
+                SET render_hash = ?, status = ?, pr_title = COALESCE(?, pr_title),
+                    needs_refresh = 0, refresh_failures = 0, updated_at = ?
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (render_hash, status, pr_title, now, repo, int(pr_number)),
+            )
+
+    def clear_pr_announcement_refresh(self, repo: str, pr_number: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE pr_channel_announcements SET needs_refresh = 0, refresh_failures = 0
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (repo, int(pr_number)),
+            )
+
+    def record_pr_timeline_refresh_failure(
+        self, repo: str, pr_number: int, *, give_up_after: int
+    ) -> int:
+        """Count a failed refresh; stop retrying after ``give_up_after`` failures in a row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE pr_channel_announcements
+                SET refresh_failures = refresh_failures + 1,
+                    needs_refresh = CASE WHEN refresh_failures + 1 >= ? THEN 0 ELSE 1 END,
+                    updated_at = ?
+                WHERE repo = ? AND pr_number = ?
+                """,
+                (int(give_up_after), now, repo, int(pr_number)),
+            )
+            row = conn.execute(
+                "SELECT refresh_failures FROM pr_channel_announcements WHERE repo = ? AND pr_number = ?",
+                (repo, int(pr_number)),
+            ).fetchone()
+        return int(row["refresh_failures"]) if row else 0
+
     def save_issue_channel_announcement(
         self,
         *,
@@ -1338,6 +1490,28 @@ def _dedupe_contributions(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_contributions_dedupe_key "
         "ON contributions (dedupe_key)"
+    )
+
+
+_PR_TIMELINE_COLUMNS = (
+    "last_head_sha TEXT",
+    "head_checked_at TEXT",
+    "render_hash TEXT",
+    "needs_refresh INTEGER NOT NULL DEFAULT 0",
+    "refresh_failures INTEGER NOT NULL DEFAULT 0",
+)
+
+
+def _add_pr_timeline_columns(conn: sqlite3.Connection) -> None:
+    for column in _PR_TIMELINE_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE pr_channel_announcements ADD COLUMN {column}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pr_channel_announcements_refresh "
+        "ON pr_channel_announcements (needs_refresh)"
     )
 
 

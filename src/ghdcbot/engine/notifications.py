@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.interfaces import DiscordWriter, Storage
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent
+from ghdcbot.engine import pr_timeline as prt
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +220,14 @@ def send_pr_opened_channel_notification(
 
     dedupe_key = f"pr_opened_channel:{event.repo}:{event.payload.get('pr_number')}:{channel_id}"
 
-    message_built = _build_pr_opened_channel_message(
-        event, github_org, author_github, discord_user_id
-    )
+    if getattr(config, "pr_channel_timeline", False):
+        message_built = _build_pr_opened_timeline_message(
+            event, github_org, author_github, discord_user_id
+        )
+    else:
+        message_built = _build_pr_opened_channel_message(
+            event, github_org, author_github, discord_user_id
+        )
     if not message_built:
         return False
     message, embeds = message_built
@@ -299,6 +305,15 @@ def send_pr_opened_channel_notification(
                         status="open",
                         created_at=event.payload.get("created_at") or event.created_at,
                     )
+                    record_render = getattr(storage, "record_pr_timeline_render", None)
+                    if getattr(config, "pr_channel_timeline", False) and callable(record_render):
+                        record_render(
+                            event.repo,
+                            int(event.payload.get("pr_number")),
+                            render_hash=prt.render_fingerprint(message, embeds),
+                            status="open",
+                            pr_title=event.payload.get("title"),
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Failed to track pr_opened channel message for lifecycle edits",
@@ -1478,13 +1493,126 @@ def _build_pr_opened_channel_message(
             "color": _GITHUB_OPEN_YELLOW,
         }
     ]
-    content = ""
-    if not discord_user_id:
-        content = (
-            f"If you are `{author_github}`, please use `/link {author_github}` "
-            "to link your github account to your Discord account."
-        )
+    content = "" if discord_user_id else _pr_link_nudge(author_github)
     return content, embeds
+
+
+def _pr_link_nudge(author_github: str) -> str:
+    return (
+        f"If you are `{author_github}`, please use `/link {author_github}` "
+        "to link your github account to your Discord account."
+    )
+
+
+_PR_TIMELINE_STYLE = {
+    prt.STATUS_CREATED: ("⚪", 0xD0D7DE),
+    prt.STATUS_NOT_APPROVED: ("🟠", 0xFB8F44),
+    prt.STATUS_REVISED: ("🟡", _GITHUB_OPEN_YELLOW),
+    prt.STATUS_APPROVED: ("🟢", _GITHUB_MERGED_GREEN),
+    prt.STATUS_MERGED: ("🔵", 0x0969DA),
+    prt.STATUS_CLOSED: ("🔴", _GITHUB_CLOSED_RED),
+}
+_PR_TIMELINE_LABELS = {
+    prt.CREATED: "Created by",
+    prt.REVIEWED: "Reviewed by",
+    prt.CHANGES_REQUESTED: "Changes requested by",
+    prt.APPROVED: "Approved by",
+    prt.DISMISSED: "Reviewed by",
+    prt.REVISED: "Revised by",
+    prt.MERGED: "Merged by",
+    prt.CLOSED: "Closed by",
+    prt.REOPENED: "Reopened by",
+}
+PR_TIMELINE_MAX_LINES = 6
+
+
+def _pr_timeline_line(line: prt.TimelineLine, discord_ids: Mapping[str, str]) -> str:
+    when = f"<t:{int(line.at.timestamp())}:d>"
+    label = _PR_TIMELINE_LABELS[line.kind]
+    suffix = ""
+    if line.kind == prt.DISMISSED:
+        suffix += " (dismissed)"
+    if line.count > 1:
+        suffix += f" (×{line.count})"
+    shown = prt.display_login(line.actor)
+    if not shown:
+        return f"{label.removesuffix(' by')} on {when}{suffix}"
+    person = _format_github_at_person(shown, discord_ids.get(line.actor.lower()))
+    return f"{label} {person} on {when}{suffix}"
+
+
+def build_pr_timeline_channel_message(
+    timeline: prt.PRTimeline,
+    *,
+    github_org: str,
+    repo: str,
+    pr_number: int,
+    discord_ids: Mapping[str, str],
+) -> tuple[str, list[dict]]:
+    """PR channel post: status dot + newest-first review timeline.
+
+    ``discord_ids`` maps lowercase GitHub logins of verified users to Discord IDs.
+    """
+    dot, color = _PR_TIMELINE_STYLE[timeline.status]
+    header = f"{dot} " + _bruno_item_header(
+        kind="PR",
+        number=int(pr_number),
+        repo=repo,
+        title=_sanitize_discord_title(timeline.title or "Untitled"),
+        repo_url=f"https://github.com/{github_org}/{repo}",
+        item_url=f"https://github.com/{github_org}/{repo}/pull/{pr_number}",
+    )
+    if timeline.draft:
+        header += " · Draft"
+    lines = [_pr_timeline_line(line, discord_ids) for line in prt.collapse_timeline(timeline.entries)]
+    lines.reverse()
+    history, created = lines[:-1], lines[-1:]
+    if len(history) > PR_TIMELINE_MAX_LINES:
+        hidden = len(history) - PR_TIMELINE_MAX_LINES
+        plural = "s" if hidden != 1 else ""
+        lines = [*history[:PR_TIMELINE_MAX_LINES], f"… {hidden} earlier update{plural}", *created]
+    embeds = [{"description": "\n".join([header, *lines]), "color": color}]
+
+    author = timeline.author
+    is_open = timeline.status not in {prt.STATUS_MERGED, prt.STATUS_CLOSED}
+    needs_nudge = (
+        is_open
+        and author
+        and not _is_github_bot_login(author)
+        and author.lower() not in discord_ids
+    )
+    return (_pr_link_nudge(author) if needs_nudge else ""), embeds
+
+
+def _build_pr_opened_timeline_message(
+    event: ContributionEvent,
+    github_org: str,
+    author_github: str,
+    discord_user_id: str | None,
+) -> tuple[str, list[dict]] | None:
+    """First timeline post for a new PR (white, Created only)."""
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return None
+    created_at = (
+        prt.parse_github_time(event.payload.get("created_at"))
+        or event.created_at.astimezone(timezone.utc)
+    )
+    timeline = prt.PRTimeline(
+        status=prt.STATUS_CREATED,
+        draft=bool(event.payload.get("draft")),
+        author=author_github,
+        title=str(event.payload.get("title") or "Untitled"),
+        entries=[prt.TimelineEntry(prt.CREATED, author_github, created_at)],
+    )
+    discord_ids = {author_github.lower(): discord_user_id} if discord_user_id else {}
+    return build_pr_timeline_channel_message(
+        timeline,
+        github_org=github_org,
+        repo=event.repo,
+        pr_number=int(pr_number),
+        discord_ids=discord_ids,
+    )
 
 
 def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None:

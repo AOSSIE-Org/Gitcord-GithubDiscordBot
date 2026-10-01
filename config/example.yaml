@@ -66,6 +66,7 @@ discord:
   #   pr_opened_github_comment: false  # Comment on new PRs asking unverified authors to /link (needs invite_url)
   #   issue_opened_github_comment: false  # Same /link comment on new issues (needs invite_url)
   #   update_pr_channel_on_lifecycle: true
+  #   pr_channel_timeline: false       # PR posts show a status dot + review timeline (replaces the lifecycle edit)
   #   update_issue_channel_on_lifecycle: true  # Edit issue posts on assign/unassign/close/reopen
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
