@@ -428,12 +428,15 @@ def fetch_all_open_pr_health(
     coderabbit_bot_logins: list[str] | None = None,
     max_prs: int = PR_STATUS_MAX_PRS,
     skip: int = 0,
+    repo: str | None = None,
 ) -> tuple[list[PRHealthStatus], int]:
     """Fetch health for all open PRs in the configured org.
 
     Returns (health_list, total_open_count).
     """
     all_open_prs = list(github_adapter.list_open_pull_requests())
+    if repo:
+        all_open_prs = [pr for pr in all_open_prs if pr.get("repo") == repo]
     total = len(all_open_prs)
 
     # Apply pagination

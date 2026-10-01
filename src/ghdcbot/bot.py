@@ -588,6 +588,7 @@ class PRStatusView(discord.ui.View):
                 coderabbit_logins,
                 PR_STATUS_MAX_PRS,
                 skip,
+                self.repo,
             )
         except Exception:
             logging.getLogger("ghdcbot.bot").exception("Failed to fetch all open PR health")
