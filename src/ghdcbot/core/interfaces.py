@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Iterable, Protocol, Sequence
 
 from ghdcbot.core.models import (
     AssignmentPlan,
@@ -42,8 +41,8 @@ class GitHubReader(Protocol):
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict] | None:
-        """List pull requests for an author, or None on error."""
+    ) -> list[dict]:
+        """List pull requests for an author."""
 
 
 class GitHubWriter(Protocol):

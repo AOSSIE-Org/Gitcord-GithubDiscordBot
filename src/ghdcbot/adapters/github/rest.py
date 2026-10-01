@@ -197,9 +197,7 @@ class GitHubRestAdapter:
         for repo in self._list_repos():
             yield from self._list_repo_open_prs(repo)
 
-    def list_open_pull_requests_for_author(
-        self, github_user: str
-    ) -> list[dict] | None:
+    def list_open_pull_requests_for_author(self, github_user: str) -> list[dict]:
         """List open PRs by one author via Search API (avoids scanning every repo).
 
         Results are limited to the configured org and filtered by the active repo
@@ -214,7 +212,7 @@ class GitHubRestAdapter:
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict] | None:
+    ) -> list[dict]:
         """List recent PRs (open/merged/closed) for one author via Search API.
 
         Newest-updated first. Each item includes ``status``: open | merged | closed.
@@ -241,7 +239,7 @@ class GitHubRestAdapter:
         sort: str | None = None,
         order: str | None = None,
         repo: str | None = None,
-    ) -> list[dict] | None:
+    ) -> list[dict]:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -304,7 +302,7 @@ class GitHubRestAdapter:
                                 "log_label": log_label,
                             },
                         )
-                    return None
+                    break
                 payload = response.json()
                 items = payload.get("items") if isinstance(payload, dict) else None
                 if not isinstance(items, list) or not items:

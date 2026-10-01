@@ -11,7 +11,6 @@ from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.inactivity import (
     _lifecycle_lock,
     build_checkin_message,
-    build_mentor_alert_message,
     build_unassign_comment,
     build_unassign_dm_message,
     has_contributor_activity,
@@ -34,13 +33,52 @@ class MockStorage:
     def was_notification_sent(self, dedupe_key: str) -> bool:
         return dedupe_key in self.notifications_sent
 
-    def mark_notification_sent(self, dedupe_key: str, event: object, discord_user_id: str, channel_id: str | None, github_user: str) -> None:
+    def mark_notification_sent(
+        self,
+        dedupe_key: str,
+        event: object,
+        discord_user_id: str,
+        channel_id: str | None,
+        github_user: str,
+    ) -> None:
         self.notifications_sent.add(dedupe_key)
 
     def append_audit_event(self, event: dict) -> None:
         self.audit_events.append(event)
 
     def track_issue_assignment(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        assigned_at: datetime,
+        last_activity_at: datetime | None = None,
+    ) -> None:
+        key = (repo, issue_number, github_user)
+        existing = self.tracking.get(key)
+        if existing and existing.get("status") in {"unassigned", "resolved"}:
+            self.reset_issue_inactivity_tracking(
+                repo=repo,
+                issue_number=issue_number,
+                github_user=github_user,
+                assigned_at=assigned_at,
+                last_activity_at=last_activity_at,
+            )
+            return
+
+        if key not in self.tracking:
+            self.tracking[key] = {
+                "repo": repo,
+                "issue_number": issue_number,
+                "github_user": github_user,
+                "assigned_at": assigned_at.isoformat(),
+                "last_activity_at": (last_activity_at or assigned_at).isoformat(),
+                "status": "assigned",
+                "reminder_sent_at": None,
+                "escalated_at": None,
+            }
+
+    def reset_issue_inactivity_tracking(
         self,
         repo: str,
         issue_number: int,
@@ -106,6 +144,29 @@ class MockStorage:
     ) -> dict | None:
         return self.tracking.get((repo, issue_number, github_user))
 
+    def list_active_issue_inactivity_trackers(
+        self,
+        repo: str | None = None,
+    ) -> list[dict]:
+        results = [
+            rec for rec in self.tracking.values()
+            if rec.get("status") in {"assigned", "reminded"}
+        ]
+        if repo:
+            results = [rec for rec in results if rec.get("repo") == repo]
+        return results
+
+    def close_issue_inactivity_tracking(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str | None = None,
+        status: str = "resolved",
+    ) -> None:
+        for (r, num, user), rec in self.tracking.items():
+            if r == repo and num == issue_number and (github_user is None or user == github_user):
+                rec["status"] = status
+
 
 class TestInactivityConfigValidation:
     """Test configuration validation for inactivity settings."""
@@ -115,21 +176,20 @@ class TestInactivityConfigValidation:
         assert cfg.issue_inactivity_reminders is False
         assert cfg.issue_inactivity_days == 7
         assert cfg.issue_inactivity_escalate_days == 7
-        assert cfg.issue_inactivity_auto_unassign is True
+        assert cfg.issue_inactivity_auto_unassign is False
         assert cfg.issue_inactivity_comment_on_unassign is True
-        assert cfg.issue_inactivity_alert_channel_id is None
 
     def test_custom_valid_config(self) -> None:
         cfg = NotificationConfig(
             issue_inactivity_reminders=True,
             issue_inactivity_days=5,
             issue_inactivity_escalate_days=10,
-            issue_inactivity_alert_channel_id="123456",
+            issue_inactivity_auto_unassign=True,
         )
         assert cfg.issue_inactivity_reminders is True
         assert cfg.issue_inactivity_days == 5
         assert cfg.issue_inactivity_escalate_days == 10
-        assert cfg.issue_inactivity_alert_channel_id == "123456"
+        assert cfg.issue_inactivity_auto_unassign is True
 
     def test_invalid_days_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="inactivity"):
@@ -155,7 +215,10 @@ class TestMessageFormatting:
         assert "**Gitcord Check-in: Issue #42**" in msg
         assert "**Repository:** AOSSIE-Org/Gitcord" in msg
         assert "**Issue:** Refactor REST adapter error handling" in msg
-        assert "> Hey <@987654321>, you were assigned to this issue 7 days ago. Are you still actively working on it?" in msg
+        assert "> Hey <@987654321>, you were assigned to this issue 7 days ago" in msg
+        assert "**What counts as activity:**" in msg
+        assert "• Commenting on the issue with a progress update" in msg
+        assert "• Opening or linking a pull request referencing this issue" in msg
 
     def test_build_unassign_comment(self) -> None:
         comment = build_unassign_comment("alex", 14)
@@ -174,21 +237,6 @@ class TestMessageFormatting:
         )
         assert "**Gitcord Update: Issue #42**" in dm
         assert "> Hey <@987654321>, you were unassigned from this issue due to 14 days of inactivity" in dm
-
-    def test_build_mentor_alert_message(self) -> None:
-        alert = build_mentor_alert_message(
-            github_org="AOSSIE-Org",
-            repo="Gitcord",
-            issue_number=42,
-            issue_title="Refactor REST adapter error handling",
-            github_user="alex",
-            discord_user_id="987654321",
-            total_days=14,
-            action="unassigned",
-        )
-        assert "⚠️ **Inactive Issue Unassigned**" in alert
-        assert "Issue **#42**" in alert
-        assert "<@987654321> (`alex`)" in alert
 
 
 class TestActivityDetection:
@@ -261,17 +309,46 @@ class TestActivityDetection:
         assert has_act is False
         assert act_time is None
 
-    def test_recent_pr_by_assignee_counts_as_activity(self) -> None:
+    def test_recent_pr_referencing_issue_counts_as_activity(self) -> None:
         reader = MagicMock()
-        reader.get_issue_comments.return_value = []
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         pr_time = now - timedelta(days=1)
+        reader.get_issue_comments.return_value = []
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 105,
-                "title": "Fix #42 rest adapter handling",
+                "title": "Fix bug (#42)",
+                "body": "Closes #42",
                 "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == pr_time
+
+    def test_recent_pr_created_after_assignment_counts_as_activity(self) -> None:
+        reader = MagicMock()
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        pr_time = now - timedelta(days=2)
+        reader.get_issue_comments.return_value = []
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 106,
+                "title": "Some progress work",
+                "body": "WIP",
+                "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
             }
         ]
 
@@ -308,24 +385,6 @@ class TestActivityDetection:
         reader = MagicMock()
         reader.get_issue_comments.side_effect = RuntimeError("rate limit exceeded")
         reader.list_pull_requests_for_author.return_value = []
-        now = datetime.now(UTC)
-        since = now - timedelta(days=5)
-
-        has_act, act_time = has_contributor_activity(
-            github_reader=reader,
-            owner="AOSSIE-Org",
-            repo="Gitcord",
-            issue_number=42,
-            github_user="alex",
-            since=since,
-        )
-        assert has_act is None
-        assert act_time is None
-
-    def test_pr_fetch_failure_returns_none(self) -> None:
-        reader = MagicMock()
-        reader.get_issue_comments.return_value = []
-        reader.list_pull_requests_for_author.return_value = None
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
 
@@ -381,7 +440,6 @@ class TestInactivityLifecycleExecution:
             issue_inactivity_days=7,
             issue_inactivity_escalate_days=7,
             issue_inactivity_auto_unassign=True,
-            issue_inactivity_alert_channel_id="999999",
         )
         return github_reader, github_writer, discord_writer, storage, policy, config
 
@@ -458,14 +516,59 @@ class TestInactivityLifecycleExecution:
         args = discord_writer.send_dm.call_args[0]
         assert args[0] == "11223344"
         assert "Gitcord Check-in: Issue #42" in args[1]
-        assert "Hey <@11223344>, you were assigned to this issue 7 days ago." in args[1]
+        assert "What counts as activity:" in args[1]
 
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
         assert rec is not None
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
 
-    def test_stage_2_escalates_and_unassigns_at_14_days(
+    def test_activity_resets_reminder_and_delays_stage_1(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=10)
+        recent_comment_time = now - timedelta(days=2)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = [
+            {
+                "user": {"login": "alex"},
+                "created_at": recent_comment_time.isoformat(),
+                "body": "I am working on this!",
+            }
+        ]
+        github_reader.list_pull_requests_for_author.return_value = []
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec is not None
+        assert rec["last_activity_at"] == recent_comment_time.isoformat()
+        assert rec["status"] == "assigned"
+
+    def test_stage_2_escalates_and_unassigns_after_14_days(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
@@ -473,7 +576,6 @@ class TestInactivityLifecycleExecution:
         assigned_at = now - timedelta(days=15)
         reminded_at = now - timedelta(days=7, hours=2)
 
-        # Pre-seed reminder in storage
         storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
         storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", reminded_at)
 
@@ -488,8 +590,8 @@ class TestInactivityLifecycleExecution:
         ]
         github_reader.get_issue_comments.return_value = []
         github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.unassign_issue.return_value = True
         discord_writer.send_dm.return_value = True
-        discord_writer.send_message.return_value = True
 
         run_issue_inactivity_lifecycle(
             github_reader=github_reader,
@@ -515,12 +617,6 @@ class TestInactivityLifecycleExecution:
         dm_args = discord_writer.send_dm.call_args[0]
         assert dm_args[0] == "11223344"
         assert "Gitcord Update: Issue #42" in dm_args[1]
-
-        # Mentor alert channel message
-        discord_writer.send_message.assert_called_once()
-        alert_args = discord_writer.send_message.call_args[0]
-        assert alert_args[0] == "999999"
-        assert "⚠️ **Inactive Issue Unassigned**" in alert_args[1]
 
         # Storage updated
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
@@ -571,7 +667,6 @@ class TestInactivityLifecycleExecution:
         github_writer.unassign_issue.assert_not_called()
         github_writer.create_issue_comment.assert_not_called()
         discord_writer.send_dm.assert_not_called()
-        discord_writer.send_message.assert_not_called()
 
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
         assert rec is not None
@@ -638,49 +733,6 @@ class TestInactivityLifecycleExecution:
         assert rec["reminder_sent_at"] is None
         checkin_key = f"issue_inactivity_checkin:Gitcord:42:alex:{assigned_at.isoformat()}"
         assert not storage.was_notification_sent(checkin_key)
-
-    def test_minute_based_inactivity_lifecycle(
-        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
-    ) -> None:
-        github_reader, github_writer, discord_writer, storage, policy, _ = setup_env
-        config = NotificationConfig(
-            issue_inactivity_reminders=True,
-            issue_inactivity_minutes=1,
-            issue_inactivity_escalate_minutes=1,
-            issue_inactivity_auto_unassign=True,
-        )
-        now = datetime.now(UTC)
-        assigned_at = now - timedelta(seconds=65)
-
-        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
-
-        github_reader.list_open_issues.return_value = [
-            {
-                "repo": "Gitcord",
-                "number": 42,
-                "title": "Refactor error handling",
-                "assignees": [{"login": "alex"}],
-                "created_at": assigned_at.isoformat(),
-            }
-        ]
-        github_reader.get_issue_comments.return_value = []
-        github_reader.list_pull_requests_for_author.return_value = []
-        discord_writer.send_dm.return_value = True
-
-        run_issue_inactivity_lifecycle(
-            github_reader=github_reader,
-            github_writer=github_writer,
-            discord_writer=discord_writer,
-            storage=storage,
-            policy=policy,
-            config=config,
-            github_org="AOSSIE-Org",
-            now=now,
-        )
-
-        discord_writer.send_dm.assert_called_once()
-        args = discord_writer.send_dm.call_args[0]
-        assert "1 minute ago" in args[1]
 
     def test_newly_discovered_issue_starts_tracking_without_dm(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
@@ -761,29 +813,29 @@ class TestInactivityLifecycleExecution:
             )
         assert not _lifecycle_lock.locked()
 
-    def test_lifecycle_skips_stage_1_and_2_on_activity_fetch_failure(
+    def test_close_tracker_when_contributor_is_unassigned(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
+        """When contributor is no longer assigned on GitHub, active tracker is closed with 'unassigned'."""
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
         now = datetime.now(UTC)
-        assigned_at = now - timedelta(days=15)
-        reminded_at = now - timedelta(days=8)
 
-        # Pre-seed record that would qualify for both Stage 1 and Stage 2 escalation
-        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
-        storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", reminded_at)
+        # Pre-seed active tracking for alex on issue 42
+        storage.track_issue_assignment("Gitcord", 42, "alex", now - timedelta(days=3))
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec["status"] == "assigned"
 
+        # GitHub returns issue 42, but assignee is now bob (alex was unassigned)
         github_reader.list_open_issues.return_value = [
             {
                 "repo": "Gitcord",
                 "number": 42,
                 "title": "Refactor error handling",
-                "assignees": [{"login": "alex"}],
-                "created_at": assigned_at.isoformat(),
+                "assignees": [{"login": "bob"}],
+                "created_at": (now - timedelta(days=3)).isoformat(),
             }
         ]
-        # Simulate fetch failure on comments
-        github_reader.get_issue_comments.return_value = None
+        github_reader.get_issue_comments.return_value = []
         github_reader.list_pull_requests_for_author.return_value = []
 
         run_issue_inactivity_lifecycle(
@@ -797,41 +849,30 @@ class TestInactivityLifecycleExecution:
             now=now,
         )
 
-        # Stage 2 escalation must be skipped
-        github_writer.unassign_issue.assert_not_called()
-        github_writer.create_issue_comment.assert_not_called()
-        discord_writer.send_message.assert_not_called()
+        # Alex's tracker should be closed
+        alex_rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert alex_rec["status"] == "unassigned"
 
-        # Stage 1 checkin DM must be skipped
-        discord_writer.send_dm.assert_not_called()
+        # Bob's tracker should be initialized
+        bob_rec = storage.get_issue_inactivity_record("Gitcord", 42, "bob")
+        assert bob_rec is not None
+        assert bob_rec["status"] == "assigned"
 
-        # Status in storage should remain untouched
-        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
-        assert rec is not None
-        assert rec["status"] == "reminded"
-
-    def test_lifecycle_skips_stage_1_and_2_on_pr_fetch_exception(
+    def test_close_tracker_when_issue_closes(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
+        """When issue closes on GitHub, active tracker is closed with 'resolved'."""
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
         now = datetime.now(UTC)
-        assigned_at = now - timedelta(days=15)
-        reminded_at = now - timedelta(days=8)
 
-        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
-        storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", reminded_at)
+        # Pre-seed active tracking for alex on issue 42
+        storage.track_issue_assignment("Gitcord", 42, "alex", now - timedelta(days=3))
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec["status"] == "assigned"
 
-        github_reader.list_open_issues.return_value = [
-            {
-                "repo": "Gitcord",
-                "number": 42,
-                "title": "Refactor error handling",
-                "assignees": [{"login": "alex"}],
-                "created_at": assigned_at.isoformat(),
-            }
-        ]
-        github_reader.get_issue_comments.return_value = []
-        github_reader.list_pull_requests_for_author.side_effect = RuntimeError("503 Server Error")
+        # GitHub returns no open issues for Gitcord (issue 42 was closed)
+        github_reader.list_open_issues.return_value = []
+        github_reader.list_org_repo_names.return_value = ["Gitcord"]
 
         run_issue_inactivity_lifecycle(
             github_reader=github_reader,
@@ -844,14 +885,104 @@ class TestInactivityLifecycleExecution:
             now=now,
         )
 
-        github_writer.unassign_issue.assert_not_called()
-        github_writer.create_issue_comment.assert_not_called()
-        discord_writer.send_message.assert_not_called()
-        discord_writer.send_dm.assert_not_called()
+        # Tracker should be marked resolved
+        rec_after = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_after["status"] == "resolved"
+
+    def test_reassigned_contributor_resets_tracking_and_not_immediately_unassigned(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """A re-assigned contributor must have tracking reset fresh and not be immediately unassigned."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+
+        # Simulate alex was previously unassigned with old timestamps
+        old_assigned = now - timedelta(days=20)
+        old_reminded = now - timedelta(days=10)
+        old_escalated = now - timedelta(days=3)
+        storage.track_issue_assignment("Gitcord", 42, "alex", old_assigned)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", old_reminded)
+        storage.record_issue_inactivity_escalation("Gitcord", 42, "alex", old_escalated, status="unassigned")
 
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
-        assert rec is not None
-        assert rec["status"] == "reminded"
+        assert rec["status"] == "unassigned"
+        assert rec["reminder_sent_at"] is not None
+
+        # Maintainer re-assigns alex to issue 42 on GitHub
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": old_assigned.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+
+        # Run sync on the day they are re-assigned
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # Must NOT be unassigned immediately or receive check-in DM immediately!
+        github_writer.unassign_issue.assert_not_called()
+        discord_writer.send_dm.assert_not_called()
+
+        # Tracking must be reset to 'assigned' with clock starting at now
+        rec_reassigned = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_reassigned["status"] == "assigned"
+        assert rec_reassigned["assigned_at"] == now.isoformat()
+        assert rec_reassigned["last_activity_at"] == now.isoformat()
+        assert rec_reassigned["reminder_sent_at"] is None
+        assert rec_reassigned["escalated_at"] is None
+
+        # 7 days later: Stage 1 reminder DM is sent
+        day7 = now + timedelta(days=7, hours=1)
+        discord_writer.send_dm.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=day7,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        rec_day7 = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_day7["status"] == "reminded"
+        assert rec_day7["reminder_sent_at"] is not None
+
+        # 14 days later (7 days after DM): auto-unassign triggers
+        day14 = day7 + timedelta(days=7, hours=1)
+        github_writer.unassign_issue.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=day14,
+        )
+
+        github_writer.unassign_issue.assert_called_once_with("AOSSIE-Org", "Gitcord", 42, "alex")
+        rec_day14 = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_day14["status"] == "unassigned"
 
 
 class TestSqliteStorageInactivityMethods:
@@ -900,3 +1031,25 @@ class TestSqliteStorageInactivityMethods:
         active_after = storage.list_active_issue_inactivity_trackers()
         assert len(active_after) == 1
         assert active_after[0]["github_user"] == "bob"
+
+    def test_sqlite_reassignment_resets_unassigned_record(self, storage: SqliteStorage) -> None:
+        """When an unassigned contributor is tracked again, SQLite resets status and clears reminder."""
+        old_time = datetime.now(UTC) - timedelta(days=20)
+        storage.track_issue_assignment("Gitcord", 42, "alex", old_time)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", old_time + timedelta(days=7))
+        storage.record_issue_inactivity_escalation("Gitcord", 42, "alex", old_time + timedelta(days=14), status="unassigned")
+
+        rec_before = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_before["status"] == "unassigned"
+        assert rec_before["reminder_sent_at"] is not None
+        assert rec_before["escalated_at"] is not None
+
+        # Re-assign: track_issue_assignment should reset terminal status
+        new_time = datetime.now(UTC)
+        storage.track_issue_assignment("Gitcord", 42, "alex", new_time)
+
+        rec_after = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec_after["status"] == "assigned"
+        assert rec_after["reminder_sent_at"] is None
+        assert rec_after["escalated_at"] is None
+        assert rec_after["assigned_at"] == new_time.isoformat()

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Sequence
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
@@ -16,15 +15,10 @@ class SqliteStorage:
         self._db_path = Path(data_dir) / "state.db"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+        return conn
 
     def init_schema(self) -> None:
         with self._connect() as conn:
@@ -1212,7 +1206,7 @@ class SqliteStorage:
         """Upsert an issue assignment for inactivity tracking."""
         assigned_str = _ensure_utc(assigned_at).isoformat()
         act_str = _ensure_utc(last_activity_at or assigned_at).isoformat()
-        now_str = datetime.now(UTC).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1220,7 +1214,41 @@ class SqliteStorage:
                     (repo, issue_number, github_user, assigned_at, last_activity_at, last_checked_at, status)
                 VALUES (?, ?, ?, ?, ?, ?, 'assigned')
                 ON CONFLICT(repo, issue_number, github_user) DO UPDATE SET
-                    last_checked_at = excluded.last_checked_at
+                    last_checked_at = excluded.last_checked_at,
+                    assigned_at = CASE WHEN issue_inactivity_tracking.status IN ('unassigned', 'resolved') THEN excluded.assigned_at ELSE issue_inactivity_tracking.assigned_at END,
+                    last_activity_at = CASE WHEN issue_inactivity_tracking.status IN ('unassigned', 'resolved') THEN excluded.last_activity_at ELSE issue_inactivity_tracking.last_activity_at END,
+                    reminder_sent_at = CASE WHEN issue_inactivity_tracking.status IN ('unassigned', 'resolved') THEN NULL ELSE issue_inactivity_tracking.reminder_sent_at END,
+                    escalated_at = CASE WHEN issue_inactivity_tracking.status IN ('unassigned', 'resolved') THEN NULL ELSE issue_inactivity_tracking.escalated_at END,
+                    status = CASE WHEN issue_inactivity_tracking.status IN ('unassigned', 'resolved') THEN 'assigned' ELSE issue_inactivity_tracking.status END
+                """,
+                (repo, issue_number, github_user, assigned_str, act_str, now_str),
+            )
+
+    def reset_issue_inactivity_tracking(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        assigned_at: datetime,
+        last_activity_at: datetime | None = None,
+    ) -> None:
+        """Reset tracking for a re-assigned contributor."""
+        assigned_str = _ensure_utc(assigned_at).isoformat()
+        act_str = _ensure_utc(last_activity_at or assigned_at).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO issue_inactivity_tracking
+                    (repo, issue_number, github_user, assigned_at, last_activity_at, last_checked_at, reminder_sent_at, escalated_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'assigned')
+                ON CONFLICT(repo, issue_number, github_user) DO UPDATE SET
+                    assigned_at = excluded.assigned_at,
+                    last_activity_at = excluded.last_activity_at,
+                    last_checked_at = excluded.last_checked_at,
+                    reminder_sent_at = NULL,
+                    escalated_at = NULL,
+                    status = 'assigned'
                 """,
                 (repo, issue_number, github_user, assigned_str, act_str, now_str),
             )
@@ -1234,7 +1262,7 @@ class SqliteStorage:
     ) -> None:
         """Update last_activity_at when contributor activity is detected, resetting status to 'assigned'."""
         act_str = _ensure_utc(activity_at).isoformat()
-        now_str = datetime.now(UTC).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1257,7 +1285,7 @@ class SqliteStorage:
     ) -> None:
         """Record that a reminder DM has been sent."""
         rem_str = _ensure_utc(reminder_sent_at).isoformat()
-        now_str = datetime.now(UTC).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1280,7 +1308,7 @@ class SqliteStorage:
     ) -> None:
         """Record that an issue has been escalated / unassigned."""
         esc_str = _ensure_utc(escalated_at).isoformat()
-        now_str = datetime.now(UTC).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1349,7 +1377,7 @@ class SqliteStorage:
         status: str = "resolved",
     ) -> None:
         """Mark issue tracking as resolved/closed (e.g. when issue is closed or unassigned)."""
-        now_str = datetime.now(UTC).isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             if github_user:
                 conn.execute(

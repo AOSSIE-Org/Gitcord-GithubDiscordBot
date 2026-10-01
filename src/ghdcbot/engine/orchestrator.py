@@ -2,17 +2,11 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable
 
-from ghdcbot.config.models import (
-    BotConfig,
-    IdentityMapping,
-    MergeRoleRulesConfig,
-    RoleMappingConfig,
-)
+from ghdcbot.config.models import BotConfig, IdentityMapping, MergeRoleRulesConfig, RoleMappingConfig
 from ghdcbot.config.sync_safety import assert_sync_safe
 from ghdcbot.core.interfaces import (
     DiscordReader,
@@ -21,8 +15,8 @@ from ghdcbot.core.interfaces import (
     GitHubWriter,
     Storage,
 )
-from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
 from ghdcbot.engine.notifications import (
@@ -36,7 +30,7 @@ from ghdcbot.engine.notifications import (
     update_pr_channel_announcement_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
-from ghdcbot.engine.reporting import write_activity_report, write_reports
+from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.snapshots import write_snapshots_to_github
 from ghdcbot.logging.sync_context import SyncSession
 
@@ -63,7 +57,7 @@ class Orchestrator:
         assert_sync_safe(self.config)
         self.storage.init_schema()
 
-        period_end = datetime.now(UTC)
+        period_end = datetime.now(timezone.utc)
         period_start = period_end - timedelta(days=self.config.runtime.activity_period_days)
 
         identity_mappings = _resolve_identity_mappings(self.storage, self.config.identity_mappings)
