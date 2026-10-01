@@ -158,6 +158,29 @@ discord:
     channel_id: null                 # Optional fallback channel for notifications
 ```
 
+### 1.6.1 PR Channel Status Timeline (optional)
+
+With `notifications.pr_channel_timeline: true` (default `false`), each tracked PR channel post (from `pr_opened`) shows a status dot and a newest-first timeline, and is edited in place as the PR moves. It replaces the merge/close/reopen edit from `update_pr_channel_on_lifecycle`; it never posts new messages or sends DMs (review DMs are unchanged).
+
+| Dot | Status | When |
+| --- | --- | --- |
+| 🔴 | Closed | PR closed without merge |
+| 🔵 | Merged | PR merged |
+| 🟢 | Approved | Latest review is an approval |
+| 🟠 | Not approved | Latest review requested changes or only commented |
+| 🟡 | Revised | New commits (or a force-push / merge of main) after the latest review |
+| ⚪ | Created | No reviews yet |
+
+Rules: anyone's review counts (people and bots alike, no role assumptions); the author's own replies, pending reviews and dismissed reviews do not change the colour; commits from bot accounts and commits before the first review are not shown as revisions. Drafts keep their colour and get a `· Draft` label. Dates use Discord timestamps (each reader's local time); repeated steps collapse to `(×N)` and long histories show the 6 newest lines plus `Created`.
+
+Each sync, Gitcord records the head commit of open tracked PRs (to spot pushes), queues posts whose PR had new activity, rebuilds each queued post from GitHub (PR, issue timeline, commits; read-only) and edits it only if the rendered post changed. Posts are never rebuilt from partial GitHub data; a post that fails 5 times in a row stops retrying until its PR has new activity. Dry-run / observer modes log the edit instead of making it. Existing posts switch to the timeline style the next time their PR has activity.
+
+Preview the post for real PRs without editing anything:
+
+```bash
+ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDiscordBot --pr 106 --pr 107
+```
+
 ### 1.7 Main Code Areas
 
 | Area | Files | Responsibility |
@@ -175,6 +198,7 @@ discord:
 | Identity | `src/ghdcbot/engine/identity_linking.py`, `src/ghdcbot/adapters/github/identity.py` | GitHub account verification. |
 | Reports | `src/ghdcbot/engine/reporting.py`, `src/ghdcbot/engine/audit_export.py` | Audit report rendering and export. |
 | Notifications | `src/ghdcbot/engine/notifications.py` | GitHub-to-Discord notification logic. |
+| PR timeline | `src/ghdcbot/engine/pr_timeline.py`, `src/ghdcbot/engine/pr_timeline_refresh.py` | PR status/timeline rules and the per-sync PR channel post refresh. |
 | Snapshots | `src/ghdcbot/engine/snapshots.py` | GitHub-backed JSON snapshot export. |
 
 ---

@@ -30,6 +30,7 @@ from ghdcbot.engine.notifications import (
     update_pr_channel_announcement_for_event,
 )
 from ghdcbot.engine.planning import plan_discord_roles
+from ghdcbot.engine.pr_timeline_refresh import refresh_pr_channel_timelines, timeline_enabled
 from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.engine.snapshots import write_snapshots_to_github
 from ghdcbot.logging.sync_context import SyncSession
@@ -127,6 +128,23 @@ class Orchestrator:
                 github_writer=self.github_writer,
                 invite_url=invite_url,
             )
+            try:
+                refresh_pr_channel_timelines(
+                    contributions=contributions,
+                    open_prs=prs,
+                    storage=self.storage,
+                    github_reader=self.github_reader,
+                    discord_writer=self.discord_writer,
+                    policy=policy,
+                    config=notification_config,
+                    github_org=self.config.github.org,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PR timeline refresh failed (non-blocking)",
+                    exc_info=True,
+                    extra={"error": str(exc)},
+                )
             # CodeRabbit reminders: one reminder per PR for verified contributors (opt-in, non-blocking)
             if getattr(notification_config, "coderabbit_reminders", False):
                 try:
@@ -389,7 +407,7 @@ def _send_notifications_for_new_events(
                         "pr_author": event.payload.get("pr_author"),
                     },
                 )
-            if event.event_type in {"pr_merged", "pr_closed", "pr_reopened"}:
+            if event.event_type in {"pr_merged", "pr_closed", "pr_reopened"} and not timeline_enabled(config):
                 try:
                     if update_pr_channel_announcement_for_event(
                         event, storage, discord_writer, policy, config, github_org
