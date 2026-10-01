@@ -305,8 +305,9 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 ### Sync (mentor-only)
 
 - `/sync` - Manually sync GitHub events and send notifications
+- `/pr-channel set|remove|list` - Connect a repo to a channel or thread for new PR and issue posts, right from Discord (no config edit or restart). Routes layer on top of `gitcord.yaml`; only PRs and issues opened afterwards are posted. See [docs/DOCKER.md](docs/DOCKER.md#connect-repos-to-channels-from-discord-pr-channel).
 
-**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. The bot can also auto-detect PR URLs in configured channels and post passive previews.
+**Note:** `/sync` requires a mentor role configured in `discord.command_permissions`. `/pr-channel` uses `discord.command_permissions.pr-channel`, or the `sync` rule when that key is absent. The bot can also auto-detect PR URLs in configured channels and post passive previews.
 
 ---
 

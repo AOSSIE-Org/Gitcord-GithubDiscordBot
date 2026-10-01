@@ -19,6 +19,7 @@ from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
+from ghdcbot.engine.channel_routes import apply_stored_channel_routes
 from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
     send_issue_opened_channel_notification,
@@ -56,6 +57,9 @@ class Orchestrator:
     def _run_once_body(self, logger: logging.Logger, sync: SyncSession) -> None:
         assert_sync_safe(self.config)
         self.storage.init_schema()
+        routes = apply_stored_channel_routes(self.config, self.storage)
+        if routes:
+            logger.info("Applied Discord repo channel routes", extra={"count": len(routes)})
 
         period_end = datetime.now(timezone.utc)
         period_start = period_end - timedelta(days=self.config.runtime.activity_period_days)

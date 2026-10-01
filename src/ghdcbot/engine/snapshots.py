@@ -265,6 +265,7 @@ def _collect_snapshot_data(
                 "period_end": summary.period_end.isoformat(),
                 "issues_opened": summary.issues_opened,
                 "prs_opened": summary.prs_opened,
+                "prs_merged": summary.prs_merged,
                 "prs_reviewed": summary.prs_reviewed,
                 "comments": summary.comments,
                 "total_score": summary.total_score,

@@ -24,6 +24,18 @@ def _is_guild_member_like(user: object) -> bool:
     return hasattr(user, "roles") and hasattr(user, "guild_permissions")
 
 
+def permission_rule_name(config: BotConfig, command_name: str, fallback_command_name: str) -> str:
+    """Rule key to enforce for ``command_name``.
+
+    Uses ``command_name``'s rule when configured; otherwise borrows ``fallback_command_name``'s
+    rule if that one exists, so orgs need no extra config for a new mentor-only command.
+    """
+    perms = getattr(config.discord, "command_permissions", None) or {}
+    if command_name in perms or fallback_command_name not in perms:
+        return command_name
+    return fallback_command_name
+
+
 def slash_command_allowed(
     interaction: discord.Interaction,
     config: BotConfig,
@@ -66,12 +78,15 @@ def slash_command_allowed(
     return False
 
 
-def format_slash_command_permission_denied(config: BotConfig, command_name: str) -> str:
-    """User-facing message listing who may use the command."""
+def format_slash_command_permission_denied(
+    config: BotConfig, command_name: str, *, rule_name: str | None = None
+) -> str:
+    """User-facing message listing who may use the command (``rule_name`` defaults to it)."""
     perms = getattr(config.discord, "command_permissions", None)
+    rule_key = rule_name or command_name
     rule: SlashCommandPermissionRule | None = None
-    if perms and command_name in perms:
-        rule = perms[command_name]
+    if perms and rule_key in perms:
+        rule = perms[rule_key]
 
     if rule is None:
         mentor_roles = getattr(config, "assignments", None)

@@ -385,7 +385,7 @@ nohup ghdcbot --config config/config.yaml bot > bot.log 2>&1 &
 
 **Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/pr`, `/create-issue` (requires verified link and `github.permissions.write: true`), `/unlink`, `/connect-social`, `/disconnect-social`
 
-**Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`
+**Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`, `/pr-channel set|remove|list` (connect a repo to a channel/thread for PR and issue posts; uses the `sync` rule unless `pr-channel` is set — see [docs/DOCKER.md](docs/DOCKER.md#connect-repos-to-channels-from-discord-pr-channel))
 
 See [docs/TESTING_DISCORD.md](docs/TESTING_DISCORD.md) for a full test sequence.
 
@@ -533,7 +533,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 
 **Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member), `/open-prs`, `/pr`, `/unlink`, `/connect-social`, `/disconnect-social`
 
-**Mentors:** `/sync`
+**Mentors:** `/sync`, `/pr-channel set|remove|list`
 
 ### Next steps
 

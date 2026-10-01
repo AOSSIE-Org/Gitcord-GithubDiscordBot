@@ -228,6 +228,7 @@ discord:
 - Contribution metrics (`/summary`, `/open-prs`, `/pr`)
 - Passive PR URL previews in configured channels
 - Mentor-only sync (`/sync`)
+- Mentor-only repo → channel routing (`/pr-channel set|remove|list`): routes stored in SQLite (`repo_channel_routes`) and layered on top of `discord.pr_open_channels` / `github.repos` by `engine/channel_routes.py` at bot startup, after each change, and at the start of every `run-once`
 
 #### **Orchestrator (`src/ghdcbot/engine/orchestrator.py`)**
 - Core execution engine for `run-once` cycle
@@ -902,7 +903,7 @@ class MutationPolicy:
 - `meta.json` - Metadata (schema_version, generated_at, org, run_id, period_start, period_end)
 - `identities.json` - Array of `{discord_user_id, github_user}`
 - `scores.json` - Array of `{github_user, period_start, period_end, points}`
-- `contributors.json` - Array of `{github_user, period_start, period_end, issues_opened, prs_opened, prs_reviewed, comments, total_score}`
+- `contributors.json` - Array of `{github_user, period_start, period_end, issues_opened, prs_opened, prs_merged, prs_reviewed, comments, total_score}`
 - `roles.json` - Array of `{discord_user_id, roles: [string]}`
 - `issue_requests.json` - Array of `{request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, created_at, status}`
 - `notifications.json` - Array of `{dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at}`
@@ -1182,6 +1183,7 @@ discord:
       role_ids: []
       role_names: ["Mentor"]
       allow_discord_administrators: true
+    # pr-channel: optional; when omitted /pr-channel uses the sync rule above
   # TESTING ONLY: Allow any guild member to run restricted commands (default: false)
   unrestricted_slash_commands: false
   notifications:
