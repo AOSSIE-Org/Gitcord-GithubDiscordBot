@@ -18,6 +18,7 @@ from ghdcbot.core.interfaces import (
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.core.models import ContributionEvent, GitHubAssignmentPlan
 from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
+from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
 from ghdcbot.engine.channel_routes import apply_stored_channel_routes
 from ghdcbot.engine.notifications import (
     run_coderabbit_reminders,
@@ -159,6 +160,24 @@ class Orchestrator:
                 except Exception as exc:
                     logger.warning(
                         "CodeRabbit reminders failed (non-blocking)",
+                        exc_info=True,
+                        extra={"error": str(exc)},
+                    )
+            # Issue inactivity check-ins and escalation: 7d reminder, 14d escalation (opt-in, non-blocking)
+            if getattr(notification_config, "issue_inactivity_reminders", False):
+                try:
+                    run_issue_inactivity_lifecycle(
+                        github_reader=self.github_reader,
+                        github_writer=self.github_writer,
+                        discord_writer=self.discord_writer,
+                        storage=self.storage,
+                        policy=policy,
+                        config=notification_config,
+                        github_org=self.config.github.org,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Issue inactivity lifecycle check failed (non-blocking)",
                         exc_info=True,
                         extra={"error": str(exc)},
                     )
