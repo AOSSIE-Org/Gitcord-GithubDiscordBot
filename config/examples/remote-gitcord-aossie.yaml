@@ -103,8 +103,3 @@ assignments:
   issue_assignees: []
   issue_request_eligible_roles: []
 repo_contributor_roles: {}
-snapshots:
-  enabled: true
-  repo_path: AOSSIE-Org/.gitcord
-  branch: main
-  min_interval_hours: 24

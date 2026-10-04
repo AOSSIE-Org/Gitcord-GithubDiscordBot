@@ -68,12 +68,12 @@ Before starting, ensure you have:
 
 | Permission | Access level | Why |
 |------------|--------------|-----|
-| **Contents** | Read (Write if using snapshots) | Repo metadata; Write for GitHub snapshots |
+| **Contents** | Read | Repo metadata, remote `.github/gitcord.yaml` |
 | **Issues** | Read & Write | Issue assignment |
 | **Pull requests** | Read & Write | Review requests, merge status |
 | **Metadata** | Read | Required automatically by GitHub |
 
-For initial dry-run testing, **Read** on Contents/Issues/PRs is enough. Enable **Write** before active mode if you need assignments or snapshots.
+For initial dry-run testing, **Read** on Contents/Issues/PRs is enough. Enable **Write** on Issues/PRs before active mode if you need assignments or review requests.
 
 ### 1.4 Generate and Save Token
 
@@ -285,7 +285,7 @@ Start with defaults in the template:
 - `discord.permissions.write: false`
 - `github.permissions.write: false`
 
-Optional blocks (`notifications`, `snapshots`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
+Optional blocks (`notifications`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
 
 **Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample, remote bootstrap templates).
 
@@ -408,7 +408,7 @@ discord:
 
 github:
   permissions:
-    write: true   # if you use issue assignment or snapshots
+    write: true   # if you use issue assignment or review requests
 ```
 
 2. Run `run-once` again (Docker or local command from [§7.1](#71-one-time-sync-dry-run))
