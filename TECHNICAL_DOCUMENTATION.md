@@ -494,7 +494,7 @@ CREATE TABLE notifications_sent (
 
 Gitcord used to commit JSON snapshots (`roles.json`, `identities.json`, `notifications.json`, …) to the org's `.gitcord` repo after each sync. Those repos were public, so the snapshots published every Discord member's ID and roles (including people who never used Gitcord), Discord ↔ GitHub identity links, and per-user notification logs. Nothing consumed them, so the feature was removed: Gitcord no longer commits files to any repository, and a `snapshots:` config block is ignored (a warning is logged when `snapshots.enabled` is true).
 
-SQLite (`state.db` in `data_dir`) remains the only store; back it up with the handover script or a volume backup. Any future GitHub-backed persistence (the original "no Supabase, use GitHub" direction) must write to a private repository and must not include Discord member data or identity links.
+All persisted data now stays local in `data_dir`: SQLite (`state.db`, application state), the audit log (`audit_events.jsonl`) and generated reports (`reports/`). Back up the whole `data_dir` with the handover script or a volume backup. Any future GitHub-backed persistence (the original "no Supabase, use GitHub" direction) must write to a private repository and must not include Discord member data or identity links.
 
 ---
 
@@ -784,10 +784,11 @@ class MutationPolicy:
 
 ## 7. Current Limitations
 
-### 7.1 SQLite Is the Only Store
+### 7.1 Local Data Only
 
-- All state lives in SQLite (`state.db` in `data_dir`); losing it loses identity links, cursors and notification history.
-- Back it up with `./scripts/gitcord-handover pack` or a Docker volume backup before rebuilds.
+- Application state lives in SQLite (`state.db` in `data_dir`); losing it loses identity links, cursors and notification history.
+- The audit log (`audit_events.jsonl`) and reports (`reports/`) sit next to it in `data_dir`; reports are regenerated each run, the audit log is not.
+- `./scripts/gitcord-handover pack` and Docker volume backups copy the whole `data_dir` (database, audit log, reports); take one before rebuilds.
 - GitHub snapshots were removed (see §3.2), so there is no off-machine copy unless you make one.
 
 ---
