@@ -49,7 +49,7 @@ docker compose up -d bot
 src/ghdcbot/
   adapters/     # github, discord, storage
   config/       # models, loader, remote gitcord.yaml
-  engine/       # orchestrator, notifications, pr_list, snapshots
+  engine/       # orchestrator, notifications, pr_list, pr_timeline
   bot.py        # Discord slash commands
   cli.py        # validate / run-once / bot entry
 brand/          # logo, favicon, Brand.md

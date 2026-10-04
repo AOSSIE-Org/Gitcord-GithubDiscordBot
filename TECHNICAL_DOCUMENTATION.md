@@ -15,8 +15,7 @@
 5. [Safety & Policies](#5-safety--policies)
 6. [GitHub Integration](#6-github-integration)
 7. [Current Limitations](#7-current-limitations)
-8. [Migration Plan](#8-migration-plan)
-9. [Future Improvements](#9-future-improvements)
+8. [Future GitHub-Backed Persistence](#8-future-github-backed-persistence)
 
 ---
 
@@ -78,10 +77,10 @@ For a one-time sync, `src/ghdcbot/engine/orchestrator.py` coordinates the whole 
 4. It stores contribution events locally.
 5. It computes contributor scores for the configured activity window.
 6. It reads Discord member roles.
-7. It plans role changes, issue assignments, review requests, notifications, reports, and snapshots.
+7. It plans role changes, issue assignments, review requests, notifications, and reports.
 8. It applies GitHub or Discord changes only when the runtime mode and write permissions allow it.
 
-The default operating style is safe by design. In `dry-run` and `observer` modes, Gitcord reads data and writes audit reports, but it does not change GitHub or Discord. In `active` mode, it can assign issues, request reviews, add or remove Discord roles, send Discord messages, and write snapshots, but only if the relevant write permissions are enabled in config.
+The default operating style is safe by design. In `dry-run` and `observer` modes, Gitcord reads data and writes audit reports, but it does not change GitHub or Discord. In `active` mode, it can assign issues, request reviews, add or remove Discord roles, and send Discord messages, but only if the relevant write permissions are enabled in config.
 
 ### 1.4 Main Runtime Modes
 
@@ -114,7 +113,6 @@ The current codebase provides these major Gitcord features:
 - **Activity reports:** Gitcord writes a human-readable activity feed for mentor visibility.
 - **Audit event export:** CLI export supports JSON, CSV, and Markdown with filters for user, event type, and date range.
 - **SQLite local state:** Contributions, cursors, identity links, issue requests, notifications, social profiles, and audit events are stored locally.
-- **GitHub snapshots:** Optional snapshot writing exports identities, contributors, roles, issue requests, and notifications to a GitHub repository.
 - **Docker support:** The project includes Docker and Docker Compose files for deployment.
 
 ### 1.6 Notification Types (GitHub → Discord)
@@ -188,7 +186,7 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
 | CLI | `src/ghdcbot/cli.py`, `src/ghdcbot/__main__.py` | Command-line entry points and command routing. |
 | Config | `src/ghdcbot/config/loader.py`, `src/ghdcbot/config/models.py` | YAML loading, env expansion, Pydantic validation. |
 | Core models | `src/ghdcbot/core/models.py`, `src/ghdcbot/core/interfaces.py`, `src/ghdcbot/core/modes.py` | Shared dataclasses, protocols, and mutation policy. |
-| GitHub adapter | `src/ghdcbot/adapters/github/rest.py` | GitHub ingestion, assignments, review requests, snapshots file writes. |
+| GitHub adapter | `src/ghdcbot/adapters/github/rest.py` | GitHub ingestion, assignments, review requests. |
 | Discord adapter | `src/ghdcbot/adapters/discord/api.py` | Discord role reads/writes, DMs, channel messages. |
 | Storage | `src/ghdcbot/adapters/storage/sqlite.py` | SQLite schema and persistence methods. |
 | Orchestration | `src/ghdcbot/engine/orchestrator.py` | Main sync pipeline. |
@@ -199,8 +197,6 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
 | Reports | `src/ghdcbot/engine/reporting.py`, `src/ghdcbot/engine/audit_export.py` | Audit report rendering and export. |
 | Notifications | `src/ghdcbot/engine/notifications.py` | GitHub-to-Discord notification logic. |
 | PR timeline | `src/ghdcbot/engine/pr_timeline.py`, `src/ghdcbot/engine/pr_timeline_refresh.py` | PR status/timeline rules and the per-sync PR channel post refresh. |
-| Snapshots | `src/ghdcbot/engine/snapshots.py` | GitHub-backed JSON snapshot export. |
-
 ---
 
 ## 2. Architecture
@@ -232,7 +228,7 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      Storage Layer                          │
-│              SQLite (Primary) + GitHub Snapshots            │
+│                     SQLite (local state)                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -258,7 +254,6 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
 - Core execution engine for `run-once` cycle
 - Coordinates: ingestion → scoring → planning → reporting → mutation
 - Manages notification sending (verified-only)
-- Writes GitHub snapshots (additive, non-blocking)
 
 #### **Storage (`src/ghdcbot/adapters/storage/sqlite.py`)**
 - SQLite database for local state (`state.db`)
@@ -268,7 +263,7 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
 
 #### **GitHub Adapter (`src/ghdcbot/adapters/github/rest.py`)**
 - Reads: contributions, issues, PRs via REST API
-- Writes: issue assignments, review requests, file commits (snapshots)
+- Writes: issue assignments, review requests (never commits files to repos)
 - Handles pagination, rate limiting, error recovery
 - Filters repos based on config (`repos.mode`, `repos.names`)
 
@@ -276,12 +271,6 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
 - Reads: guild members, roles via REST API
 - Writes: role additions/removals, DMs, channel messages
 - Handles permission degradation gracefully
-
-#### **Snapshot Engine (`src/ghdcbot/engine/snapshots.py`)**
-- Writes periodic snapshots to GitHub repo as JSON files
-- Additive-only: timestamped directories, never overwrites
-- Non-blocking: failures don't stop `run-once`
-- Schema versioned (`SCHEMA_VERSION = "1.0.0"`)
 
 ### 2.3 Data Flow During `run-once`
 
@@ -329,11 +318,6 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
    └─> Apply Discord role plans (add/remove)
    └─> Apply GitHub assignment plans (assign issues, request reviews)
    └─> All gated by MutationPolicy
-
-9. Write Snapshots (additive, non-blocking)
-   └─> Collect: identities, scores, contributors, roles, issue_requests, notifications
-   └─> Write to GitHub repo: `snapshots/YYYY-MM-DDTHH-MM-SS-runid/*.json`
-   └─> Never blocks run-once completion
 ```
 
 ### 2.4 Discord Commands Interaction
@@ -406,7 +390,7 @@ CREATE TABLE contributions (
 );
 ```
 
-**Purpose:** Historical record of all GitHub activity. Used for scoring, reports, and snapshots.
+**Purpose:** Historical record of all GitHub activity. Used for scoring and reports.
 
 **Indexes:** None (queries filter by `created_at` range).
 
@@ -506,98 +490,11 @@ CREATE TABLE notifications_sent (
 - `idx_notifications_sent_github_user`
 - `idx_notifications_sent_discord_user`
 
-### 3.2 GitHub Snapshots
+### 3.2 GitHub Snapshots (removed)
 
-#### **What is Written**
+Gitcord used to commit JSON snapshots (`roles.json`, `identities.json`, `notifications.json`, …) to the org's `.gitcord` repo after each sync. Those repos were public, so the snapshots published every Discord member's ID and roles (including people who never used Gitcord), Discord ↔ GitHub identity links, and per-user notification logs. Nothing consumed them, so the feature was removed: Gitcord no longer commits files to any repository, and a `snapshots:` config block is ignored (a warning is logged when `snapshots.enabled` is true).
 
-Snapshots are written to a GitHub repository (configured via `snapshots.repo_path`) as JSON files in timestamped directories:
-
-```
-snapshots/
-  └─ 2026-02-16T23-20-25-abc12345/
-      ├─ meta.json              # Schema version, timestamps, run_id
-      ├─ identities.json        # Verified Discord ↔ GitHub mappings
-      ├─ scores.json            # Current scores per user
-      ├─ contributors.json      # Contribution summaries (counts + scores)
-      ├─ roles.json             # Discord member roles
-      ├─ issue_requests.json    # Pending issue requests
-      └─ notifications.json     # Recent sent notifications (last 1000)
-```
-
-#### **When Snapshots are Created**
-
-- After `run-once` completes successfully (all processing done)
-- Only if `snapshots.enabled = true` in config
-- Non-blocking: failures are logged but don't stop `run-once`
-- Each snapshot gets a unique `run_id` (UUID) for traceability
-
-#### **Snapshot Structure**
-
-All snapshot files follow this schema:
-
-```json
-{
-  "schema_version": "1.0.0",
-  "generated_at": "2026-02-16T23:20:25.123456+00:00",
-  "org": "example-org",
-  "run_id": "abc12345-def6-7890-ghij-klmnopqrstuv",
-  "period_start": "2026-01-17T23:20:25+00:00",
-  "period_end": "2026-02-16T23:20:25+00:00",
-  "data": [ /* array of records */ ]
-}
-```
-
-**Example: `identities.json`**
-```json
-{
-  "schema_version": "1.0.0",
-  "generated_at": "2026-02-16T23:20:25+00:00",
-  "org": "example-org",
-  "run_id": "abc12345...",
-  "data": [
-    {
-      "discord_user_id": "123456789",
-      "github_user": "alice"
-    }
-  ]
-}
-```
-
-**Example: `scores.json`**
-```json
-{
-  "schema_version": "1.0.0",
-  "generated_at": "2026-02-16T23:20:25+00:00",
-  "org": "example-org",
-  "run_id": "abc12345...",
-  "data": [
-    {
-      "github_user": "alice",
-      "period_start": "2026-01-17T23:20:25+00:00",
-      "period_end": "2026-02-16T23:20:25+00:00",
-      "points": 42
-    }
-  ]
-}
-```
-
-#### **Why Snapshots are Additive**
-
-1. **Never overwrite:** Each snapshot is in a unique timestamped directory
-2. **Historical record:** All snapshots remain accessible for analysis
-3. **Org Explorer compatibility:** External tools can consume snapshots without SQLite
-4. **GitHub as source of truth:** Aligns with Bruno's requirement (no Supabase)
-
-#### **How This Aligns with Bruno's Requirement**
-
-Bruno's requirement: **"No Supabase, use GitHub for data persistence"**
-
-Gitcord's approach:
-- ✅ SQLite remains primary source of truth (for now)
-- ✅ Snapshots are **additive** (Phase 1: write-only)
-- ✅ Future phases will migrate to GitHub-first (see Migration Plan)
-- ✅ No external databases required
-- ✅ All data eventually backed to GitHub repo
+All persisted data now stays local in `data_dir`: SQLite (`state.db`, application state), the audit log (`audit_events.jsonl`) and generated reports (`reports/`). Back up the whole `data_dir` with the handover script or a volume backup. Any future GitHub-backed persistence (the original "no Supabase, use GitHub" direction) must write to a private repository and must not include Discord member data or identity links.
 
 ---
 
@@ -721,7 +618,7 @@ When `discord.pr_preview_channels` is configured, the bot monitors those channel
 
 ### 4.6 Legacy Storage (`issue_requests`)
 
-The `issue_requests` SQLite table remains for historical data and snapshots. Discord slash commands for issue requests (`/request-issue`, `/issue-requests`) were removed. The `/assign-issue` command allows authorized Discord members to directly assign issues on GitHub.
+The `issue_requests` SQLite table remains for historical data. Discord slash commands for issue requests (`/request-issue`, `/issue-requests`) were removed. The `/assign-issue` command allows authorized Discord members to directly assign issues on GitHub.
 
 ### 4.7 Audit Logs
 
@@ -737,8 +634,8 @@ The `issue_requests` SQLite table remains for historical data and snapshots. Dis
 - `issue_request_approved`
 - `issue_request_rejected`
 - `issue_assigned_from_discord`
-- `snapshot_written`
 - `report_generated`
+- `snapshot_written` (older logs only; snapshots were removed)
 
 **Format:**
 ```json
@@ -757,25 +654,6 @@ The `issue_requests` SQLite table remains for historical data and snapshots. Dis
 **Export:**
 - CLI: `ghdcbot --config config.yaml export-audit --format json|csv|md`
 - Filters: `--user`, `--event-type`, `--from`, `--to`
-
-### 4.8 Snapshot System
-
-**Purpose:** Write Gitcord state to GitHub repo for external consumption (Org Explorer).
-
-**When:** After `run-once` completes successfully
-
-**What:** 7 JSON files per snapshot:
-1. `meta.json` - Schema version, timestamps, run_id
-2. `identities.json` - Verified Discord ↔ GitHub mappings
-3. `scores.json` - Current scores per user
-4. `contributors.json` - Contribution summaries (counts + scores)
-5. `roles.json` - Discord member roles
-6. `issue_requests.json` - Pending issue requests
-7. `notifications.json` - Recent notifications (last 1000)
-
-**Non-Blocking:** Failures are logged but don't stop `run-once`
-
-**Schema Versioning:** `SCHEMA_VERSION = "1.0.0"` (increment on breaking changes)
 
 ---
 
@@ -902,259 +780,26 @@ class MutationPolicy:
 - Config: `repos.names` (list of repo names)
 - Applied before ingestion
 
-### 6.2 File Writing (Snapshots)
-
-**API Used:**
-- `GET /repos/{owner}/{repo}/contents/{path}` - Check if file exists (get SHA)
-- `PUT /repos/{owner}/{repo}/contents/{path}` - Create/update file
-
-**Process:**
-1. Check if file exists (get SHA for update)
-2. Base64 encode content
-3. Create commit with message
-4. Use default branch if not specified
-
-**Error Handling:**
-- Network errors → log warning, return False
-- Permission errors → log warning, return False
-- Never raises exceptions (non-blocking)
-
-### 6.3 Snapshot Schema
-
-**Current Schema Version:** `1.0.0`
-
-**Files:**
-- `meta.json` - Metadata (schema_version, generated_at, org, run_id, period_start, period_end)
-- `identities.json` - Array of `{discord_user_id, github_user}`
-- `scores.json` - Array of `{github_user, period_start, period_end, points}`
-- `contributors.json` - Array of `{github_user, period_start, period_end, issues_opened, prs_opened, prs_merged, prs_reviewed, comments, total_score}`
-- `roles.json` - Array of `{discord_user_id, roles: [string]}`
-- `issue_requests.json` - Array of `{request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, created_at, status}`
-- `notifications.json` - Array of `{dedupe_key, event_type, github_user, discord_user_id, repo, target, channel_id, sent_at}`
-
-**Schema Evolution:**
-- Increment `SCHEMA_VERSION` on breaking changes
-- Consumers should check `schema_version` before parsing
-- Additive changes (new fields) don't require version bump
-
 ---
 
 ## 7. Current Limitations
 
-### 7.1 What is Not Yet Implemented
+### 7.1 Local Data Only
 
-**Raw Event History in Snapshots:**
-- Snapshots contain aggregated data (scores, summaries)
-- **Not included:** Raw `contributions` table events
-- **Reason:** File size concerns (could be large)
-- **Future:** Optional raw event export (see Future Improvements)
-
-**SQLite Still Primary Source of Truth:**
-- Snapshots are additive (write-only)
-- SQLite remains authoritative for reads
-- **Future:** Dual-write phase, then gradual SQLite downgrade (see Migration Plan)
-
-**No Event Replay:**
-- Cannot rebuild state from snapshots alone
-- Requires SQLite for full history
-- **Future:** Snapshot-based state reconstruction
-
-**Limited Snapshot Frequency:**
-- Snapshots written once per `run-once`
-- No configurable frequency (e.g., hourly, daily)
-- **Future:** Configurable snapshot schedule
-
-### 7.2 Raw Event History Missing from Snapshots
-
-**Current State:**
-- Snapshots contain: identities, scores, contributors (aggregated), roles, issue_requests, notifications
-- **Missing:** Raw `contributions` events (issue_opened, pr_opened, pr_merged, etc.)
-
-**Impact:**
-- Cannot reconstruct full event timeline from snapshots
-- Cannot analyze event patterns without SQLite
-- Org Explorer cannot show detailed activity feed
-
-**Why:**
-- File size concerns (could be thousands of events per snapshot)
-- Schema not yet designed for event export
-- Prioritized aggregated data for initial use case
-
-### 7.3 SQLite Still Primary Source of Truth
-
-**Current State:**
-- All reads come from SQLite (`state.db`)
-- Snapshots are write-only (additive)
-- No read path from GitHub snapshots
-
-**Impact:**
-- System requires SQLite for operation
-- Cannot run Gitcord from snapshot-only data
-- Migration to GitHub-first requires code changes
-
-**Why:**
-- Incremental migration strategy (see Migration Plan)
-- SQLite provides fast local queries
-- Snapshots are Phase 1 (additive)
+- Application state lives in SQLite (`state.db` in `data_dir`); losing it loses identity links, cursors and notification history.
+- The audit log (`audit_events.jsonl`) and reports (`reports/`) sit next to it in `data_dir`; reports are regenerated each run, the audit log is not.
+- `./scripts/gitcord-handover pack` and Docker volume backups copy the whole `data_dir` (database, audit log, reports); take one before rebuilds.
+- GitHub snapshots were removed (see §3.2), so there is no off-machine copy unless you make one.
 
 ---
 
-## 8. Migration Plan
+## 8. Future GitHub-Backed Persistence
 
-### 8.1 Phase 1: Additive Snapshots (Current)
+The earlier plan (snapshots → dual-write → GitHub as primary store) stopped at its first phase when snapshots were removed for publishing member data. If GitHub-backed persistence is revisited, it must:
 
-**Status:** ✅ Implemented
-
-**What:**
-- Snapshots written after each `run-once`
-- Never overwrite previous snapshots
-- SQLite remains primary source of truth
-- Snapshots are audit output, not input
-
-**Goal:**
-- Establish snapshot schema
-- Build Org Explorer compatibility
-- Validate snapshot format
-
-### 8.2 Phase 2: Dual-Write
-
-**Status:** 🔄 Planned
-
-**What:**
-- Continue writing to SQLite (backward compatibility)
-- **Also** write to GitHub snapshots (additive)
-- Reads still from SQLite
-- Snapshots become authoritative for external tools
-
-**Goal:**
-- Validate snapshot reliability
-- Ensure no data loss
-- Build confidence in GitHub-backed storage
-
-**Implementation:**
-- No code changes needed (already dual-write)
-- Focus on validation and monitoring
-
-### 8.3 Phase 3: Gradual SQLite Downgrade
-
-**Status:** 🔮 Future
-
-**What:**
-- Option 1: Read from latest snapshot, fallback to SQLite
-- Option 2: Reconstruct SQLite from snapshots on startup
-- Option 3: Remove SQLite entirely, read from GitHub API
-
-**Goal:**
-- GitHub becomes primary source of truth
-- SQLite becomes optional cache
-- Eventually: SQLite-free operation
-
-**Challenges:**
-- Performance (GitHub API rate limits)
-- Offline operation (requires cache)
-- State reconstruction (from snapshots)
-
-**Timeline:**
-- TBD based on Phase 2 validation
-
----
-
-## 9. Future Improvements
-
-### 9.1 Raw Event Export
-
-**Description:**
-- Add optional raw event export to snapshots
-- Include all `contributions` events in snapshot directory
-- Format: `events.jsonl` (JSON Lines, one event per line)
-
-**Benefits:**
-- Full event timeline in GitHub
-- Org Explorer can show detailed activity feed
-- Enables event replay and state reconstruction
-
-**Challenges:**
-- File size (could be large)
-- Schema design (event format, deduplication)
-- Performance (writing large files)
-
-**Priority:** Medium
-
-### 9.2 Org Explorer Compatibility
-
-**Description:**
-- Ensure snapshot schema matches Org Explorer expectations
-- Add metadata fields for Org Explorer consumption
-- Document snapshot format for external tools
-
-**Benefits:**
-- Seamless integration with Org Explorer
-- Standardized data format
-- External tool compatibility
-
-**Challenges:**
-- Schema coordination with Org Explorer
-- Versioning strategy
-- Backward compatibility
-
-**Priority:** High (if Org Explorer is target consumer)
-
-### 9.3 Snapshot Schema Stabilization
-
-**Description:**
-- Finalize snapshot schema (v1.0.0 → v1.0.0 stable)
-- Document all fields and types
-- Establish versioning policy
-
-**Benefits:**
-- Stable API for consumers
-- Clear migration path for schema changes
-- Reduced breaking changes
-
-**Challenges:**
-- Balancing flexibility vs. stability
-- Handling schema migrations
-- Consumer coordination
-
-**Priority:** Medium
-
-### 9.4 Configurable Snapshot Frequency
-
-**Description:**
-- Allow snapshots on schedule (hourly, daily) vs. per-run
-- Config: `snapshots.frequency: "per-run" | "hourly" | "daily"`
-- Skip snapshots if no changes since last snapshot
-
-**Benefits:**
-- Reduced snapshot volume
-- More predictable snapshot timing
-- Better for external tool consumption
-
-**Challenges:**
-- Change detection (what counts as "change"?)
-- Scheduling (requires daemon or cron)
-- Deduplication logic
-
-**Priority:** Low
-
-### 9.5 Snapshot-Based State Reconstruction
-
-**Description:**
-- Reconstruct SQLite state from snapshots
-- Command: `ghdcbot --config config.yaml rebuild-from-snapshots`
-- Useful for disaster recovery or migration
-
-**Benefits:**
-- Disaster recovery (if SQLite lost)
-- Migration to new instance
-- Validation of snapshot completeness
-
-**Challenges:**
-- Handling missing snapshots (gaps)
-- Event ordering (if raw events added)
-- Performance (processing many snapshots)
-
-**Priority:** Low
+- write only to a private repository,
+- exclude Discord member IDs/roles and Discord ↔ GitHub identity links, and
+- have a concrete consumer before anything is written.
 
 ---
 
@@ -1269,11 +914,6 @@ repo_contributor_roles:
 identity:
   unlink_cooldown_hours: 24
   verified_max_age_days: null  # null = no stale check; or set days (e.g., 90)
-
-snapshots:
-  enabled: true
-  repo_path: "org/gitcord-data"
-  branch: "main"
 ```
 
 ---
@@ -1292,7 +932,6 @@ snapshots:
 - **Plan:** Precomputed change (role add/remove, issue assignment)
 - **Quality Adjustments:** Optional scoring bonuses/penalties for PR reviews, helpful comments, reverted PRs, and failed CI merges.
 - **Repo Contributor Roles:** Discord roles granted when a user has a PR merged in a specific repository.
-- **Snapshot:** GitHub-backed JSON state export
 - **Verified User:** Discord user with verified GitHub link
 
 ---
