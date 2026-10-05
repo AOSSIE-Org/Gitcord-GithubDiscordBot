@@ -12,12 +12,17 @@ from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 
 class SqliteStorage:
-    def __init__(self, data_dir: str) -> None:
+    def __init__(self, data_dir: str, *, read_only: bool = False) -> None:
         self._db_path = Path(data_dir) / "state.db"
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
+        if not read_only:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        if self._read_only:
+            conn = sqlite3.connect(f"{self._db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+        else:
+            conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 

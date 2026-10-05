@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.models import DigestConfig
@@ -332,3 +337,78 @@ def test_digest_config_defaults_in_discord_config() -> None:
     assert discord.digest.channel_id is None
     assert discord.digest.weekday_utc == 6
     assert discord.digest.hour_utc == 12
+
+
+def test_read_only_storage_rejects_writes_and_missing_db(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    ro = SqliteStorage(str(tmp_path), read_only=True)
+    assert ro.count_pr_channel_announcements() == 0
+    with pytest.raises(sqlite3.OperationalError):
+        ro.save_pr_channel_announcement(repo="R", pr_number=1, channel_id="c", message_id="m")
+
+    missing = tmp_path / "missing"
+    with pytest.raises(sqlite3.OperationalError):
+        SqliteStorage(str(missing), read_only=True).count_pr_channel_announcements()
+    assert not missing.exists()
+
+
+def _preview_config(tmp_path, data_dir) -> str:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        f"""
+runtime:
+  mode: dry-run
+  log_level: WARNING
+  data_dir: {data_dir}
+  github_adapter: ghdcbot.adapters.github.rest:GitHubRestAdapter
+  discord_adapter: ghdcbot.adapters.discord.api:DiscordApiAdapter
+  storage_adapter: ghdcbot.adapters.storage.sqlite:SqliteStorage
+github:
+  org: Org
+  token: dummy
+  api_base: https://api.github.com
+discord:
+  guild_id: "1"
+  token: dummy
+scoring:
+  period_days: 30
+  weights: {{}}
+role_mappings: []
+""",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def _run_cli(monkeypatch, config_path: str) -> None:
+    from ghdcbot.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["ghdcbot", "--config", config_path, "digest-preview"])
+    main()
+
+
+def test_digest_preview_cli_does_not_modify_database(tmp_path, monkeypatch, capsys) -> None:
+    data_dir = tmp_path / "data"
+    storage = SqliteStorage(str(data_dir))
+    storage.init_schema()
+    storage.record_contributions(
+        [_ev("alice", "pr_merged", "RepoA", datetime.now(UTC) - timedelta(days=1), pr_number=1)]
+    )
+    db = data_dir / "state.db"
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    files_before = sorted(p.name for p in data_dir.iterdir())
+
+    _run_cli(monkeypatch, _preview_config(tmp_path, data_dir))
+
+    assert "1. `alice` — 1 merged" in capsys.readouterr().out
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+    assert sorted(p.name for p in data_dir.iterdir()) == files_before
+
+
+def test_digest_preview_cli_missing_db_creates_nothing(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "absent"
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, _preview_config(tmp_path, data_dir))
+    assert exc.value.code == 1
+    assert not data_dir.exists()

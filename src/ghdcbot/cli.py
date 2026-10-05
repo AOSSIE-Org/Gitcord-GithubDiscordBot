@@ -152,15 +152,15 @@ def main() -> None:
                 )
             )
         elif args.command == "digest-preview":
+            from ghdcbot.adapters.storage.sqlite import SqliteStorage
             from ghdcbot.engine.digest import preview_weekly_digest
 
             config = load_config(args.config)
             configure_logging(config.runtime.log_level)
-            storage_adapter = build_adapter(
-                config.runtime.storage_adapter,
-                data_dir=config.runtime.data_dir,
-            )
-            storage_adapter.init_schema()
+            db_path = Path(config.runtime.data_dir) / "state.db"
+            if not db_path.is_file():
+                raise ConfigError(f"No database at {db_path}; run a sync first")
+            storage_adapter = SqliteStorage(config.runtime.data_dir, read_only=True)
             print(
                 preview_weekly_digest(
                     storage=storage_adapter,
