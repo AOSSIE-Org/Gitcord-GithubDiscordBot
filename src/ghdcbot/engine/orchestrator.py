@@ -73,11 +73,11 @@ class Orchestrator:
         contributions = list(self.github_reader.list_contributions(prior_cursor))
         stored = self.storage.record_contributions(contributions)
         cursor_after = prior_cursor
+        new_cursor = prior_cursor
         if contributions:
-            new_cursor = max(event.created_at for event in contributions)
-            if new_cursor > prior_cursor:
-                self.storage.set_cursor("github", new_cursor)
-                cursor_after = new_cursor
+            computed_cursor = max(event.created_at for event in contributions)
+            if computed_cursor > prior_cursor:
+                new_cursor = computed_cursor
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
         recent = self.storage.list_contributions(period_start)
@@ -168,28 +168,29 @@ class Orchestrator:
             )
 
         if policy.mode in {RunMode.DRY_RUN, RunMode.OBSERVER}:
-            # Generate audit reports before any mutations are attempted.
+            merge_role_rules = getattr(self.config, "merge_role_rules", None)
+            repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
+            if member_roles_available:
+                discord_plans = plan_discord_roles(
+                    member_roles,
+                    [],
+                    identity_mappings,
+                    [],
+                    storage=self.storage,
+                    period_start=period_start,
+                    period_end=period_end,
+                    merge_role_rules=merge_role_rules,
+                    repo_contributor_roles=repo_contributor_roles,
+                )
+            else:
+                discord_plans = []
+                logger.info(
+                    "Skipping Discord role planning; member data unavailable"
+                )
+            github_plans = _to_github_assignment_plans(issue_plans, review_plans)
+
+            # Generate audit reports before any mutations are attempted (best-effort; failures do not block sync).
             try:
-                merge_role_rules = getattr(self.config, "merge_role_rules", None)
-                repo_contributor_roles = getattr(self.config, "repo_contributor_roles", None)
-                if member_roles_available:
-                    discord_plans = plan_discord_roles(
-                        member_roles,
-                        [],
-                        identity_mappings,
-                        [],
-                        storage=self.storage,
-                        period_start=period_start,
-                        period_end=period_end,
-                        merge_role_rules=merge_role_rules,
-                        repo_contributor_roles=repo_contributor_roles,
-                    )
-                else:
-                    discord_plans = []
-                    logger.info(
-                        "Skipping Discord role planning; member data unavailable"
-                    )
-                github_plans = _to_github_assignment_plans(issue_plans, review_plans)
                 # Pass difficulty_weights if available (optional parameter, backward compatible)
                 list_summaries = getattr(self.storage, "list_contribution_summaries", None)
                 if callable(list_summaries):
@@ -269,6 +270,12 @@ class Orchestrator:
                 "snapshots.enabled is set but GitHub snapshot publishing was removed; ignoring",
                 extra={"repo_path": snapshot_config.repo_path},
             )
+
+        # Advance the GitHub ingestion cursor only after all critical downstream steps
+        # (notifications, plan execution, and role application) have completed without error.
+        if new_cursor > prior_cursor:
+            self.storage.set_cursor("github", new_cursor)
+            cursor_after = new_cursor
 
         repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))
         requests_total = int(getattr(self.github_reader, "sync_request_count", 0))
