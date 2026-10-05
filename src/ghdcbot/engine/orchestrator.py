@@ -281,7 +281,7 @@ class Orchestrator:
                     policy=policy,
                     org=self.config.github.org,
                     digest_config=digest_cfg,
-                    identity_mappings=identity_mappings,
+                    guild_id=self.config.discord.guild_id,
                 )
         except Exception as digest_exc:
             logger.warning(

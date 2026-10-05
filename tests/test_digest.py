@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
-from ghdcbot.config.models import DigestConfig, IdentityMapping
+from ghdcbot.config.models import DigestConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.digest import (
@@ -17,6 +17,7 @@ from ghdcbot.engine.digest import (
     format_digest_embed,
     is_bot_login,
     maybe_post_weekly_digest,
+    preview_weekly_digest,
 )
 
 
@@ -119,7 +120,6 @@ def test_build_digest_report_quiet_week_and_bot_filter(tmp_path) -> None:
         period_start=start,
         period_end=end,
         top_n=5,
-        identity_mappings=[IdentityMapping(github_user="alice", discord_user_id="111")],
     )
     # Bot merge counts in pulse but quiet_week is False because of the merge
     assert report.pulse.prs_merged == 1
@@ -149,9 +149,11 @@ def test_quiet_week_message(tmp_path) -> None:
     assert "Quiet week" in desc
 
 
-def test_top_contributors_with_discord_mention(tmp_path) -> None:
+def test_top_contributors_show_github_login_only(tmp_path) -> None:
     storage = SqliteStorage(tmp_path / "state.db")
     storage.init_schema()
+    storage.create_identity_claim("999", "alice", "tok", datetime.now(UTC) + timedelta(hours=1))
+    storage.mark_identity_verified("999", "alice")
     end = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     start = end - timedelta(days=7)
     mid = end - timedelta(hours=1)
@@ -168,17 +170,82 @@ def test_top_contributors_with_discord_mention(tmp_path) -> None:
         period_start=start,
         period_end=end,
         top_n=5,
-        identity_mappings=[
-            IdentityMapping(github_user="alice", discord_user_id="999"),
-        ],
     )
-    assert len(report.top_contributors) == 2
-    assert report.top_contributors[0].github_user == "alice"
-    assert report.top_contributors[0].prs_merged == 2
-    assert report.top_contributors[0].discord_user_id == "999"
+    assert [(c.github_user, c.prs_merged) for c in report.top_contributors] == [
+        ("alice", 2),
+        ("bob", 1),
+    ]
     desc = format_digest_embed(report)["description"]
-    assert "`alice` (<@999>)" in desc
-    assert "`bob`" in desc
+    assert "1. `alice` — 2 merged" in desc
+    assert "2. `bob` — 1 merged" in desc
+    assert "<@" not in desc
+    assert "999" not in desc
+
+
+def test_oldest_open_prs_listed_with_links(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    end = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    for number, days_old in [(10, 3), (11, 30), (12, 1), (13, 12), (14, 8), (15, 20)]:
+        storage.save_pr_channel_announcement(
+            repo="Agora",
+            pr_number=number,
+            channel_id="chan",
+            message_id=f"msg{number}",
+            pr_title=f"PR {number}",
+            created_at=end - timedelta(days=days_old),
+        )
+    storage.save_pr_channel_announcement(
+        repo="Agora",
+        pr_number=99,
+        channel_id="chan",
+        message_id="msg99",
+        status="merged",
+        created_at=end - timedelta(days=90),
+    )
+    storage.save_pr_channel_announcement(
+        repo="Agora",
+        pr_number=98,
+        channel_id="chan",
+        message_id="msg98",
+        pr_title="chore(deps): bump react",
+        author_github="dependabot[bot]",
+        created_at=end - timedelta(days=60),
+    )
+    report = build_digest_report(
+        storage,
+        org="AOSSIE-Org",
+        period_start=end - timedelta(days=7),
+        period_end=end,
+        top_n=5,
+    )
+    assert report.attention.open_tracked_prs == 7
+    assert [pr.pr_number for pr in report.attention.oldest_open] == [11, 15, 13, 14, 10]
+    desc = format_digest_embed(report, guild_id="g1")["description"]
+    assert "**Oldest open PRs**" in desc
+    assert (
+        "• [Agora #11](https://github.com/AOSSIE-Org/Agora/pull/11) PR 11 — open 30 days"
+        " · [post](https://discord.com/channels/g1/chan/msg11)"
+    ) in desc
+    assert "#12" not in desc
+    assert "#99" not in desc
+    assert "#98" not in desc
+    no_guild = format_digest_embed(report)["description"]
+    assert "[post]" not in no_guild
+
+
+def test_preview_renders_without_posting_or_claiming(tmp_path) -> None:
+    storage = SqliteStorage(tmp_path / "state.db")
+    storage.init_schema()
+    now = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)  # Monday: not due
+    storage.record_contributions(
+        [_ev("alice", "pr_merged", "RepoA", now - timedelta(days=1), pr_number=1)]
+    )
+    cfg = DigestConfig(enabled=False, channel_id=None)
+    text = preview_weekly_digest(storage=storage, org="Org", digest_config=cfg, now=now)
+    assert "Weekly Digest — Org" in text
+    assert "1. `alice` — 1 merged" in text
+    assert storage.was_notification_sent(digest_week_key("Org", now)) is False
 
 
 def test_maybe_post_skips_midweek_and_dedupes(tmp_path) -> None:

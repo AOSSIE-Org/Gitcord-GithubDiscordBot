@@ -519,6 +519,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 | Validate setup | `docker compose run --rm bot --config /app/config/config.yaml validate` | `ghdcbot --config config/config.yaml validate` |
 | Identity status | `docker compose run --rm bot --config /app/config/config.yaml identity status --discord-user-id ID` | `ghdcbot --config config/config.yaml identity status --discord-user-id ID` |
 | Preview PR timeline post | `docker compose run --rm bot --config /app/config/config.yaml preview-pr-timeline --repo REPO --pr N` | `ghdcbot --config config/config.yaml preview-pr-timeline --repo REPO --pr N` |
+| Preview weekly digest | `docker compose run --rm bot --config /app/config/config.yaml digest-preview` | `ghdcbot --config config/config.yaml digest-preview` |
 
 ### Config files
 

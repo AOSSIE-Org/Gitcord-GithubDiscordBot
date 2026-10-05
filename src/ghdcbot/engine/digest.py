@@ -2,6 +2,8 @@
 
 Built from SQLite contributions + tracked PR announcements. No slash command.
 Distinct from discord.activity_channel_id (per-sync activity.md dump).
+Contributors are shown by GitHub login only; the digest never reveals
+which Discord account is linked to which GitHub account.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ghdcbot.config.models import DigestConfig, IdentityMapping
+from ghdcbot.config.models import DigestConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.metrics import UserMetrics, get_contribution_metrics, rank_by_activity
 
@@ -23,6 +25,8 @@ logger = logging.getLogger("ghdcbot.engine.digest")
 
 # Neutral info color (not Bruno yellow/green/red lifecycle colors).
 _DIGEST_EMBED_COLOR = 0x2F81F7
+DIGEST_ATTENTION_LIMIT = 5
+_TITLE_MAX = 60
 
 _BOT_LOGINS = frozenset(
     {
@@ -54,13 +58,23 @@ class DigestPulse:
 class DigestContributor:
     github_user: str
     prs_merged: int
-    discord_user_id: str | None
+
+
+@dataclass(frozen=True)
+class DigestOpenPR:
+    repo: str
+    pr_number: int
+    title: str
+    opened_at: datetime
+    channel_id: str
+    message_id: str
 
 
 @dataclass(frozen=True)
 class DigestAttention:
     open_tracked_prs: int
     new_prs_still_open: int
+    oldest_open: tuple[DigestOpenPR, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,7 +145,6 @@ def build_digest_pulse(events: Sequence[ContributionEvent]) -> DigestPulse:
 
 def build_top_contributors(
     metrics: Sequence[UserMetrics],
-    identity_by_github: dict[str, str],
     top_n: int,
 ) -> tuple[DigestContributor, ...]:
     ranked = [
@@ -139,17 +152,10 @@ def build_top_contributors(
         for m in rank_by_activity(list(metrics))
         if not is_bot_login(m.github_user) and m.prs_merged > 0
     ]
-    out: list[DigestContributor] = []
-    for m in ranked[:top_n]:
-        discord_id = identity_by_github.get(m.github_user.lower())
-        out.append(
-            DigestContributor(
-                github_user=m.github_user,
-                prs_merged=m.prs_merged,
-                discord_user_id=discord_id,
-            )
-        )
-    return tuple(out)
+    return tuple(
+        DigestContributor(github_user=m.github_user, prs_merged=m.prs_merged)
+        for m in ranked[:top_n]
+    )
 
 
 def count_new_prs_still_open(events: Sequence[ContributionEvent]) -> int:
@@ -179,6 +185,31 @@ def count_open_tracked_prs(storage: Storage) -> int:
     return 0
 
 
+def list_oldest_open_prs(storage: Storage, limit: int) -> tuple[DigestOpenPR, ...]:
+    """Oldest open tracked PRs by human authors (unknown authors are kept)."""
+    list_fn = getattr(storage, "list_oldest_open_pr_announcements", None)
+    if not callable(list_fn):
+        return ()
+    out: list[DigestOpenPR] = []
+    for row in list_fn():
+        author = row.get("author_github")
+        if author and is_bot_login(author):
+            continue
+        out.append(
+            DigestOpenPR(
+                repo=row["repo"],
+                pr_number=int(row["pr_number"]),
+                title=row.get("pr_title") or "",
+                opened_at=row["created_at"],
+                channel_id=str(row["channel_id"]),
+                message_id=str(row["message_id"]),
+            )
+        )
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+
 def build_digest_report(
     storage: Storage,
     *,
@@ -186,29 +217,16 @@ def build_digest_report(
     period_start: datetime,
     period_end: datetime,
     top_n: int,
-    identity_mappings: Sequence[IdentityMapping] | None = None,
 ) -> DigestReport:
     events = list(storage.list_contributions(period_start))
     in_window = _events_in_window(events, period_start, period_end)
     pulse = build_digest_pulse(in_window)
     metrics = get_contribution_metrics(storage, period_start, period_end)
-    identity_by_github: dict[str, str] = {}
-    if identity_mappings is None:
-        list_fn = getattr(storage, "list_verified_identity_mappings", None)
-        mappings = list_fn() if callable(list_fn) else []
-    else:
-        mappings = identity_mappings
-    for m in mappings:
-        gh = getattr(m, "github_user", None) or (m.get("github_user") if isinstance(m, dict) else None)
-        did = getattr(m, "discord_user_id", None) or (
-            m.get("discord_user_id") if isinstance(m, dict) else None
-        )
-        if gh and did:
-            identity_by_github[str(gh).lower()] = str(did)
-    top = build_top_contributors(metrics, identity_by_github, top_n)
+    top = build_top_contributors(metrics, top_n)
     attention = DigestAttention(
         open_tracked_prs=count_open_tracked_prs(storage),
         new_prs_still_open=count_new_prs_still_open(in_window),
+        oldest_open=list_oldest_open_prs(storage, DIGEST_ATTENTION_LIMIT),
     )
     quiet = pulse.prs_merged == 0 and pulse.issues_closed == 0
     return DigestReport(
@@ -222,13 +240,27 @@ def build_digest_report(
     )
 
 
-def _format_person(c: DigestContributor) -> str:
-    if c.discord_user_id:
-        return f"`{c.github_user}` (<@{c.discord_user_id}>)"
-    return f"`{c.github_user}`"
+def _short_title(title: str) -> str:
+    title = " ".join(title.replace("`", "'").split())
+    if len(title) > _TITLE_MAX:
+        return title[: _TITLE_MAX - 1] + "…"
+    return title
 
 
-def format_digest_embed(report: DigestReport) -> dict[str, Any]:
+def _format_open_pr(pr: DigestOpenPR, *, org: str, guild_id: str | None, now: datetime) -> str:
+    days = max(0, (now - pr.opened_at).days)
+    age = f"open {days} day{'s' if days != 1 else ''}"
+    url = f"https://github.com/{org}/{pr.repo}/pull/{pr.pr_number}"
+    line = f"• [{pr.repo} #{pr.pr_number}]({url})"
+    if pr.title:
+        line += f" {_short_title(pr.title)}"
+    line += f" — {age}"
+    if guild_id:
+        line += f" · [post](https://discord.com/channels/{guild_id}/{pr.channel_id}/{pr.message_id})"
+    return line
+
+
+def format_digest_embed(report: DigestReport, *, guild_id: str | None = None) -> dict[str, Any]:
     """Single Discord embed dict (no title field — description carries the header)."""
     start = report.period_start.date().isoformat()
     end = report.period_end.date().isoformat()
@@ -249,24 +281,50 @@ def format_digest_embed(report: DigestReport) -> dict[str, Any]:
     lines.append("**Top contributors (by merges)**")
     if report.top_contributors:
         for i, c in enumerate(report.top_contributors, start=1):
-            lines.append(f"{i}. {_format_person(c)} — {c.prs_merged} merged")
+            lines.append(f"{i}. `{c.github_user}` — {c.prs_merged} merged")
     else:
         lines.append("No merges by human contributors in this period.")
     lines.append("")
     lines.append("**Needs attention**")
-    if report.attention.open_tracked_prs == 0 and report.attention.new_prs_still_open == 0:
+    attention = report.attention
+    if attention.open_tracked_prs == 0 and attention.new_prs_still_open == 0:
         lines.append("• Nothing flagged — no open tracked PRs and no new still-open PRs this week.")
     else:
-        lines.append(
-            f"• **{report.attention.open_tracked_prs}** open PRs Gitcord is tracking"
-        )
-        lines.append(
-            f"• **{report.attention.new_prs_still_open}** new PRs still open this week"
-        )
+        lines.append(f"• **{attention.open_tracked_prs}** open PRs Gitcord is tracking")
+        lines.append(f"• **{attention.new_prs_still_open}** new PRs still open this week")
+        if attention.oldest_open:
+            lines.append("")
+            lines.append("**Oldest open PRs**")
+            for pr in attention.oldest_open:
+                lines.append(
+                    _format_open_pr(pr, org=report.org, guild_id=guild_id, now=report.period_end)
+                )
     description = "\n".join(lines)
     if len(description) > 3900:
         description = description[:3897] + "..."
     return {"description": description, "color": _DIGEST_EMBED_COLOR}
+
+
+def preview_weekly_digest(
+    *,
+    storage: Storage,
+    org: str,
+    digest_config: DigestConfig,
+    guild_id: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Render the digest as it would be posted now (read-only; no Discord, no dedupe claim)."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    report = build_digest_report(
+        storage,
+        org=org,
+        period_start=now - timedelta(days=digest_config.lookback_days),
+        period_end=now,
+        top_n=digest_config.top_n,
+    )
+    return format_digest_embed(report, guild_id=guild_id)["description"]
 
 
 def maybe_post_weekly_digest(
@@ -276,7 +334,7 @@ def maybe_post_weekly_digest(
     policy: MutationPolicy,
     org: str,
     digest_config: DigestConfig,
-    identity_mappings: Sequence[IdentityMapping] | None = None,
+    guild_id: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     """Post the weekly digest if due and not yet sent this ISO week.
@@ -335,9 +393,8 @@ def maybe_post_weekly_digest(
             period_start=period_start,
             period_end=period_end,
             top_n=digest_config.top_n,
-            identity_mappings=identity_mappings,
         )
-        embed = format_digest_embed(report)
+        embed = format_digest_embed(report, guild_id=guild_id)
         create_msg = getattr(discord_writer, "create_message", None)
         if callable(create_msg):
             message_id = create_msg(channel_id, "", embeds=[embed])

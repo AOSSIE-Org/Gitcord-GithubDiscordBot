@@ -109,6 +109,10 @@ def main() -> None:
         "--pr", dest="pr_numbers", type=int, action="append", required=True,
         help="PR number (repeat for several)",
     )
+    sub.add_parser(
+        "digest-preview",
+        help="Print the weekly digest as it would be posted now (read-only, no Discord post)",
+    )
     export_p = sub.add_parser("export-audit", help="Export append-only audit events (JSON, CSV, or Markdown)")
     export_p.add_argument("--format", choices=("json", "csv", "md"), default="json", help="Output format")
     export_p.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
@@ -145,6 +149,24 @@ def main() -> None:
                     github_reader=orchestrator.github_reader,
                     storage=orchestrator.storage,
                     github_org=orchestrator.config.github.org,
+                )
+            )
+        elif args.command == "digest-preview":
+            from ghdcbot.engine.digest import preview_weekly_digest
+
+            config = load_config(args.config)
+            configure_logging(config.runtime.log_level)
+            storage_adapter = build_adapter(
+                config.runtime.storage_adapter,
+                data_dir=config.runtime.data_dir,
+            )
+            storage_adapter.init_schema()
+            print(
+                preview_weekly_digest(
+                    storage=storage_adapter,
+                    org=config.github.org,
+                    digest_config=config.discord.digest,
+                    guild_id=config.discord.guild_id,
                 )
             )
         elif args.command == "export-audit":

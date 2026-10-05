@@ -249,6 +249,18 @@ discord:
 
 Requires `runtime.mode: active` and `discord.permissions.write: true`. Default is **off** until you set a channel.
 
+What it contains (built from the local SQLite only — no extra GitHub calls):
+
+- **Pulse:** PRs merged, issues closed/opened, active repos in the window.
+- **Top contributors:** by merged PRs, bots excluded. Shown by **GitHub login only** — no Discord mentions, so the post never reveals which Discord account is linked to which GitHub account.
+- **Needs attention:** open tracked PRs, new PRs still open, and the 5 oldest open PRs by human authors (link to GitHub + the Gitcord post).
+
+Preview the exact post before enabling it (read-only; nothing is sent and the weekly dedupe is not touched):
+
+```bash
+docker compose run --rm bot --config /app/config/config.yaml digest-preview
+```
+
 ### Manual one-off
 
 ```bash
