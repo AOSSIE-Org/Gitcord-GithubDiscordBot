@@ -100,6 +100,19 @@ def main() -> None:
     identity_status_p.add_argument("--discord-user-id", required=True, help="Discord user ID (numeric)")
     identity_sub.add_parser("list", help="List all verified contributors (Discord ID ↔ GitHub username)")
     sub.add_parser("bot", help="Run Discord bot with /link and /verify-link slash commands")
+    preview_p = sub.add_parser(
+        "preview-pr-timeline",
+        help="Print PR channel timeline posts from live GitHub data (read-only, no Discord edits)",
+    )
+    preview_p.add_argument("--repo", required=True, help="Repository name in the org")
+    preview_p.add_argument(
+        "--pr", dest="pr_numbers", type=int, action="append", required=True,
+        help="PR number (repeat for several)",
+    )
+    sub.add_parser(
+        "digest-preview",
+        help="Print the weekly digest as it would be posted now (read-only, no Discord post)",
+    )
     export_p = sub.add_parser("export-audit", help="Export append-only audit events (JSON, CSV, or Markdown)")
     export_p.add_argument("--format", choices=("json", "csv", "md"), default="json", help="Output format")
     export_p.add_argument("--output", type=str, default=None, help="Output file (default: stdout)")
@@ -126,6 +139,36 @@ def main() -> None:
         elif args.command == "bot":
             from ghdcbot.bot import main as bot_main
             bot_main(args.config)
+        elif args.command == "preview-pr-timeline":
+            from ghdcbot.engine.pr_timeline_refresh import preview_pr_posts
+
+            orchestrator = build_orchestrator(args.config)
+            print(
+                preview_pr_posts(
+                    [(args.repo, number) for number in args.pr_numbers],
+                    github_reader=orchestrator.github_reader,
+                    storage=orchestrator.storage,
+                    github_org=orchestrator.config.github.org,
+                )
+            )
+        elif args.command == "digest-preview":
+            from ghdcbot.adapters.storage.sqlite import SqliteStorage
+            from ghdcbot.engine.digest import preview_weekly_digest
+
+            config = load_config(args.config)
+            configure_logging(config.runtime.log_level)
+            db_path = Path(config.runtime.data_dir) / "state.db"
+            if not db_path.is_file():
+                raise ConfigError(f"No database at {db_path}; run a sync first")
+            storage_adapter = SqliteStorage(config.runtime.data_dir, read_only=True)
+            print(
+                preview_weekly_digest(
+                    storage=storage_adapter,
+                    org=config.github.org,
+                    digest_config=config.discord.digest,
+                    guild_id=config.discord.guild_id,
+                )
+            )
         elif args.command == "export-audit":
             from datetime import datetime as dt
             from ghdcbot.engine.audit_export import (

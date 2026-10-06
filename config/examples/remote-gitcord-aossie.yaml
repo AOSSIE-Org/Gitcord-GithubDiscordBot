@@ -64,6 +64,7 @@ discord:
       - Mentor
       allow_discord_administrators: true
   activity_channel_id: null
+  # Weekly digest (opt-in): discord.digest.enabled + channel_id — distinct from activity_channel_id.
   pr_preview_channels: []
   pr_open_channels:
     Agora-Blockchain: '1331983948175380581'
@@ -103,8 +104,3 @@ assignments:
   issue_assignees: []
   issue_request_eligible_roles: []
 repo_contributor_roles: {}
-snapshots:
-  enabled: true
-  repo_path: AOSSIE-Org/.gitcord
-  branch: main
-  min_interval_hours: 24

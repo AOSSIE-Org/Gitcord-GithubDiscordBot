@@ -8,7 +8,7 @@ Gitcord reads secrets from a `.env` file in the project root (local CLI) or via 
 
 | Variable | Required | Default | Where used | Description |
 |----------|----------|---------|------------|-------------|
-| `GITHUB_TOKEN` | **Yes** | none | `github.token` in config YAML | Fine-grained GitHub personal access token. Needs read access to org repos; write access for issue assignment, review requests, and snapshots. |
+| `GITHUB_TOKEN` | **Yes** | none | `github.token` in config YAML | Fine-grained GitHub personal access token. Needs read access to org repos; write access for issue assignment and review requests. |
 | `DISCORD_TOKEN` | **Yes** | none | `discord.token` in config YAML | Discord bot token from the [Developer Portal](https://discord.com/developers/applications) → Bot → Reset Token. |
 
 If either variable is missing, startup fails with:

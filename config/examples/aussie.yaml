@@ -44,6 +44,7 @@ discord:
       role_names: ["Mentor"]
       allow_discord_administrators: true
   activity_channel_id: null
+  # Weekly digest (opt-in): discord.digest.enabled + channel_id — distinct from activity_channel_id.
   pr_preview_channels: []
   # Verified GitHub → Discord DMs (or channel if channel_id is set). Requires linked users (/link + /verify-link).
   # Each notification type can be independently enabled/disabled to control notification volume.
