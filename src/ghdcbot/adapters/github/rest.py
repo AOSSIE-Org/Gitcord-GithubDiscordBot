@@ -472,9 +472,15 @@ class GitHubRestAdapter:
             return False
         org = owner or self._org
         perm = self.check_user_permission(org, repo, user)
-        if perm is None:
+        if perm in {"admin", "maintain", "write"}:
+            return True
+        # Check org membership
+        org_resp = self._request("GET", f"/orgs/{org}/members/{user}")
+        if org_resp is not None and org_resp.status_code == 204:
+            return True
+        if perm is None or org_resp is None or org_resp.status_code != 404:
             return None
-        return perm in {"admin", "maintain", "write"}
+        return False
 
 
     def create_issue(

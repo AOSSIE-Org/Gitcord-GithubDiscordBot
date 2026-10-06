@@ -1572,3 +1572,26 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = MagicMock(side_effect=mock_request)
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is True
 
+    def test_has_write_access_returns_false_when_not_collaborator_or_member(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        def mock_request(method: str, path: str, **kwargs):
+            resp = MagicMock()
+            if "collaborators" in path or "members" in path:
+                resp.status_code = 404
+            return resp
+
+        adapter._request = MagicMock(side_effect=mock_request)
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "external_contributor") is False
+
+    def test_has_write_access_returns_none_on_api_error(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 502
+        adapter._request = MagicMock(return_value=mock_resp)
+
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "someone") is None
+
