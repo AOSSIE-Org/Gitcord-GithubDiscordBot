@@ -647,14 +647,21 @@ def run_issue_inactivity_lifecycle(
                                 discord_user_id=discord_user_id,
                                 time_label=total_time_label,
                             )
+                            sent = False
                             if escalation_channel_id or discord_user_id:
-                                _send_discord_notification(
+                                sent = _send_discord_notification(
                                     discord_writer=discord_writer,
                                     discord_user_id=discord_user_id or "",
                                     message=msg,
                                     channel_id=escalation_channel_id,
                                     policy=policy,
                                 )
+                            if not sent:
+                                logger.warning(
+                                    "Escalation notification not delivered; will retry next run",
+                                    extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                                )
+                                continue
 
                             esc_fn = getattr(storage, "record_issue_inactivity_escalation", None)
                             if callable(esc_fn):
