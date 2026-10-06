@@ -49,6 +49,7 @@ discord:
       role_names: ["Mentor"]
       allow_discord_administrators: true
   activity_channel_id: null
+  # Weekly digest (opt-in): set discord.digest.enabled + channel_id when ready (≠ activity_channel_id).
   pr_preview_channels: []
   pr_open_channels:
     # #projects forum threads — repo short name → thread ID.
@@ -96,9 +97,3 @@ assignments:
   issue_request_eligible_roles: []
 
 repo_contributor_roles: {}
-
-snapshots:
-  enabled: true
-  repo_path: "AOSSIE-Org/.gitcord"
-  branch: "main"
-  min_interval_hours: 24

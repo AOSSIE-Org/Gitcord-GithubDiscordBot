@@ -38,7 +38,7 @@ class RuntimeConfig(BaseModel):
     github_adapter: str
     discord_adapter: str
     storage_adapter: str
-    # Activity window for ingestion reports, snapshots, and merge-based role rules.
+    # Activity window for ingestion reports and merge-based role rules.
     activity_period_days: int = 30
     # When false, skip applying Discord role add/remove (notifications unaffected).
     enable_discord_role_updates: bool = True
@@ -103,6 +103,10 @@ class NotificationConfig(BaseModel):
     # Edit the tracked PR-opened channel message when that PR is later merged/closed.
     # Only applies to announcements posted after this feature is deployed (no backfill).
     update_pr_channel_on_lifecycle: bool = True
+    # Keep tracked PR channel posts updated with a status dot and review timeline
+    # (created / reviewed / revised / approved / merged / closed). Replaces the
+    # merge/close-only edits above for tracked posts. No backfill of older posts.
+    pr_channel_timeline: bool = False
     # Edit tracked issue channel messages on assign / unassign / close / reopen
     # (open: Opened by + assignees; closed: Closed by only; reopen restores open lines).
     update_issue_channel_on_lifecycle: bool = True
@@ -120,6 +124,46 @@ class NotificationConfig(BaseModel):
         return value
 
 
+class DigestConfig(BaseModel):
+    """Auto-only weekly maintainer digest (posted after sync; no slash command)."""
+
+    enabled: bool = False
+    channel_id: str | None = None
+    # 0=Monday … 6=Sunday (datetime.weekday()). Default Sunday.
+    weekday_utc: int = 6
+    hour_utc: int = 12
+    lookback_days: int = 7
+    top_n: int = 5
+
+    @field_validator("weekday_utc")
+    @classmethod
+    def validate_weekday_utc(cls, value: int) -> int:
+        if value < 0 or value > 6:
+            raise ValueError("digest.weekday_utc must be 0–6 (Mon–Sun)")
+        return value
+
+    @field_validator("hour_utc")
+    @classmethod
+    def validate_hour_utc(cls, value: int) -> int:
+        if value < 0 or value > 23:
+            raise ValueError("digest.hour_utc must be 0–23")
+        return value
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("digest.lookback_days must be positive")
+        return value
+
+    @field_validator("top_n")
+    @classmethod
+    def validate_top_n(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("digest.top_n must be positive")
+        return value
+
+
 class DiscordConfig(BaseModel):
     guild_id: str
     token: str
@@ -128,6 +172,8 @@ class DiscordConfig(BaseModel):
     invite_url: str | None = None
     # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
     activity_channel_id: str | None = None
+    # Optional: weekly maintainer digest (opt-in; distinct from activity_channel_id).
+    digest: DigestConfig = Field(default_factory=DigestConfig)
     # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
     pr_preview_channels: list[str] = Field(default_factory=list)
     # Repo short name → Discord channel/thread ID for pr_opened / issue_opened channel posts.
@@ -213,21 +259,12 @@ class IdentityConfig(BaseModel):
 
 
 class SnapshotConfig(BaseModel):
-    """Configuration for GitHub-backed JSON snapshots."""
-    enabled: bool = False
-    repo_path: str = ""  # Format: "owner/repo" (e.g., "AOSSIE-Org/gitcord")
-    # Optional: branch to write to (default: main/master)
-    branch: str | None = None
-    # Minimum hours between snapshot writes (0 = every successful sync).
-    # Sync can still run every 2h; snapshots can be daily with min_interval_hours: 24.
-    min_interval_hours: int = 0
+    """Removed feature: GitHub snapshots published member data to public repos.
 
-    @field_validator("min_interval_hours")
-    @classmethod
-    def validate_min_interval_hours(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("snapshots.min_interval_hours must be >= 0")
-        return value
+    Still parsed so existing configs load; the orchestrator only warns when enabled.
+    """
+    enabled: bool = False
+    repo_path: str = ""
 
 
 class RemoteConfigSettings(BaseModel):
@@ -261,7 +298,7 @@ class BotConfig(BaseModel):
     identity_mappings: list[IdentityMapping] = Field(default_factory=list)
     identity: IdentityConfig | None = None
     merge_role_rules: MergeRoleRulesConfig | None = None
-    # Optional: GitHub snapshot storage
+    # Ignored (feature removed); kept so configs with a snapshots block still load.
     snapshots: SnapshotConfig | None = None
     # Optional: load org settings from GitHub (.github/gitcord.yaml); secrets stay local
     remote_config: RemoteConfigSettings | None = None

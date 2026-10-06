@@ -29,9 +29,10 @@ from ghdcbot.engine.notifications import (
     update_issue_channel_announcement_for_event,
     update_pr_channel_announcement_for_event,
 )
+from ghdcbot.engine.digest import maybe_post_weekly_digest
 from ghdcbot.engine.planning import plan_discord_roles
+from ghdcbot.engine.pr_timeline_refresh import refresh_pr_channel_timelines, timeline_enabled
 from ghdcbot.engine.reporting import write_reports, write_activity_report
-from ghdcbot.engine.snapshots import write_snapshots_to_github
 from ghdcbot.logging.sync_context import SyncSession
 
 
@@ -127,6 +128,23 @@ class Orchestrator:
                 github_writer=self.github_writer,
                 invite_url=invite_url,
             )
+            try:
+                refresh_pr_channel_timelines(
+                    contributions=contributions,
+                    open_prs=prs,
+                    storage=self.storage,
+                    github_reader=self.github_reader,
+                    discord_writer=self.discord_writer,
+                    policy=policy,
+                    config=notification_config,
+                    github_org=self.config.github.org,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PR timeline refresh failed (non-blocking)",
+                    exc_info=True,
+                    extra={"error": str(exc)},
+                )
             # CodeRabbit reminders: one reminder per PR for verified contributors (opt-in, non-blocking)
             if getattr(notification_config, "coderabbit_reminders", False):
                 try:
@@ -246,44 +264,31 @@ class Orchestrator:
         else:
             logger.info("Discord role updates disabled by config (enable_discord_role_updates: false)")
         
-        # Write GitHub snapshots (additive, non-blocking)
-        # This happens AFTER all processing completes successfully
-        # Skip snapshot writing when member roles are unavailable to avoid
-        # publishing an empty roles.json that downstream consumers would
-        # misinterpret as a valid empty guild.
-        if not member_roles_available:
-            logger.info(
-                "Skipping snapshot writing; member roles data unavailable"
+        snapshot_config = getattr(self.config, "snapshots", None)
+        if snapshot_config is not None and snapshot_config.enabled:
+            logger.warning(
+                "snapshots.enabled is set but GitHub snapshot publishing was removed; ignoring",
+                extra={"repo_path": snapshot_config.repo_path},
             )
-        else:
-            try:
-                # Compute contribution summaries for snapshot if not already computed
-                contribution_summaries_for_snapshot = None
-                list_summaries = getattr(self.storage, "list_contribution_summaries", None)
-                if callable(list_summaries):
-                    try:
-                        contribution_summaries_for_snapshot = list_summaries(
-                            period_start,
-                            period_end,
-                        )
-                    except Exception:
-                        # If summaries can't be computed, snapshot will have empty contributors data
-                        pass
-                
-                write_snapshots_to_github(
+
+        # Weekly maintainer digest (opt-in; once per ISO week; ≠ activity_channel_id)
+        try:
+            digest_cfg = getattr(self.config.discord, "digest", None)
+            if digest_cfg is not None:
+                maybe_post_weekly_digest(
                     storage=self.storage,
-                    config=self.config,
-                    github_writer=self.github_writer,
-                    identity_mappings=identity_mappings,
-                    scores=[],
-                    member_roles=member_roles,
-                    period_start=period_start,
-                    period_end=period_end,
-                    contribution_summaries=contribution_summaries_for_snapshot,
+                    discord_writer=self.discord_writer,
+                    policy=policy,
+                    org=self.config.github.org,
+                    digest_config=digest_cfg,
+                    guild_id=self.config.discord.guild_id,
                 )
-            except Exception as exc:
-                # Never block run-once completion
-                logger.warning("Snapshot writing failed (non-blocking)", exc_info=True, extra={"error": str(exc)})
+        except Exception as digest_exc:
+            logger.warning(
+                "Weekly digest failed (non-blocking)",
+                exc_info=True,
+                extra={"error": str(digest_exc)},
+            )
 
         repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))
         requests_total = int(getattr(self.github_reader, "sync_request_count", 0))
@@ -389,7 +394,7 @@ def _send_notifications_for_new_events(
                         "pr_author": event.payload.get("pr_author"),
                     },
                 )
-            if event.event_type in {"pr_merged", "pr_closed", "pr_reopened"}:
+            if event.event_type in {"pr_merged", "pr_closed", "pr_reopened"} and not timeline_enabled(config):
                 try:
                     if update_pr_channel_announcement_for_event(
                         event, storage, discord_writer, policy, config, github_org
