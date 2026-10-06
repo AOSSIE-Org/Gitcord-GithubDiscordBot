@@ -148,6 +148,11 @@ class Orchestrator:
             # Issue inactivity check-ins and escalation: 7d reminder, 14d escalation (opt-in, non-blocking)
             if getattr(notification_config, "issue_inactivity_reminders", False):
                 try:
+                    mentor_gh_users = set()
+                    assignments_cfg = getattr(self.config, "assignments", None)
+                    if assignments_cfg:
+                        for m_role in (getattr(assignments_cfg, "issue_assignees", []) or []):
+                            mentor_gh_users.update(role_to_github.get(m_role, []))
                     run_issue_inactivity_lifecycle(
                         github_reader=self.github_reader,
                         github_writer=self.github_writer,
@@ -156,6 +161,8 @@ class Orchestrator:
                         policy=policy,
                         config=notification_config,
                         github_org=self.config.github.org,
+                        open_issues=issues,
+                        mentor_github_users=mentor_gh_users,
                     )
                 except Exception as exc:
                     logger.warning(

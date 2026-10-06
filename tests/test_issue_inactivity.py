@@ -177,7 +177,7 @@ class TestInactivityConfigValidation:
         assert cfg.issue_inactivity_days == 7
         assert cfg.issue_inactivity_escalate_days == 7
         assert cfg.issue_inactivity_auto_unassign is False
-        assert cfg.issue_inactivity_comment_on_unassign is True
+        assert cfg.issue_inactivity_comment_on_unassign is False
 
     def test_custom_valid_config(self) -> None:
         cfg = NotificationConfig(
@@ -336,7 +336,7 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == pr_time
 
-    def test_recent_pr_created_after_assignment_counts_as_activity(self) -> None:
+    def test_recent_pr_not_mentioning_issue_does_not_count_as_activity(self) -> None:
         reader = MagicMock()
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
@@ -345,8 +345,8 @@ class TestActivityDetection:
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 106,
-                "title": "Some progress work",
-                "body": "WIP",
+                "title": "Some unrelated work",
+                "body": "WIP on different thing",
                 "created_at": pr_time.isoformat(),
                 "updated_at": pr_time.isoformat(),
             }
@@ -360,8 +360,8 @@ class TestActivityDetection:
             github_user="alex",
             since=since,
         )
-        assert has_act is True
-        assert act_time == pr_time
+        assert has_act is False
+        assert act_time is None
 
     def test_comment_fetch_failure_returns_none(self) -> None:
         reader = MagicMock()
@@ -572,6 +572,7 @@ class TestInactivityLifecycleExecution:
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        config.issue_inactivity_comment_on_unassign = True
         now = datetime.now(UTC)
         assigned_at = now - timedelta(days=15)
         reminded_at = now - timedelta(days=7, hours=2)
@@ -624,10 +625,52 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "unassigned"
         assert rec["escalated_at"] is not None
 
-    def test_stage_2_escalates_without_unassigning_when_auto_unassign_disabled(
+    def test_stage_2_unassigns_without_comment_when_comment_on_unassign_disabled(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
-        """When auto_unassign is False in active mode, sends escalation notification with non-dry-run audit."""
+        """When issue_inactivity_comment_on_unassign is False (default), no GitHub comment is posted."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        assert config.issue_inactivity_comment_on_unassign is False
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+        reminded_at = now - timedelta(days=7, hours=2)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "alex", reminded_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.unassign_issue.return_value = True
+        discord_writer.send_dm.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        github_writer.unassign_issue.assert_called_once_with("AOSSIE-Org", "Gitcord", 42, "alex")
+        github_writer.create_issue_comment.assert_not_called()
+        discord_writer.send_dm.assert_called_once()
+
+    def test_stage_2_does_nothing_when_auto_unassign_disabled(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When auto_unassign is False, no escalation message or unassignment is performed; just the 7d DM."""
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
         config.issue_inactivity_auto_unassign = False
         config.channel_id = "channel-mentors"
@@ -665,24 +708,15 @@ class TestInactivityLifecycleExecution:
         github_writer.unassign_issue.assert_not_called()
         github_writer.create_issue_comment.assert_not_called()
 
-        # Channel notification must be sent
-        discord_writer.send_message.assert_called_once()
-        ch_id, msg = discord_writer.send_message.call_args[0]
-        assert ch_id == "channel-mentors"
-        assert "Gitcord Inactivity Escalation: Issue #42" in msg
-        assert "Attention needed from maintainers/mentors" in msg
+        # No escalation message to channel or DM
+        discord_writer.send_message.assert_not_called()
+        discord_writer.send_dm.assert_not_called()
 
-        # Storage updated with status="escalated"
+        # Storage status remains reminded (no escalation record)
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
         assert rec is not None
-        assert rec["status"] == "escalated"
-        assert rec["escalated_at"] is not None
-
-        # Audit event has non-dry-run action
-        assert any(
-            isinstance(e, dict) and e.get("action") == "issue_inactivity_escalated"
-            for e in storage.audit_events
-        )
+        assert rec["status"] == "reminded"
+        assert rec["escalated_at"] is None
 
     def test_dry_run_mode_does_not_mutate(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
@@ -1285,6 +1319,120 @@ class TestInactivityLifecycleExecution:
         assert rec43["status"] == "reminded"
         assert rec43["reminder_sent_at"] is not None
 
+    def test_run_issue_inactivity_uses_passed_open_issues(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When open_issues is provided, list_open_issues is not called again."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=10)
+
+        prefetched_issues = [
+            {
+                "repo": "Gitcord",
+                "number": 99,
+                "title": "Prefetched issue",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+        storage.track_issue_assignment("Gitcord", 99, "alex", assigned_at)
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+            open_issues=prefetched_issues,
+        )
+
+        # list_open_issues must NOT be called because open_issues was passed
+        github_reader.list_open_issues.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 99, "alex")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+
+    def test_maintainer_assignee_skipped_from_reminders_and_unassignment(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Assignees with write access / maintainers are skipped and never reminded or unassigned."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="maintainer_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        # Simulate maintainer has write access
+        github_reader.has_write_access.return_value = True
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 50,
+                "title": "Maintainer task",
+                "assignees": [{"login": "maintainer_dev"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # Must NOT send reminder DM or unassign
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        # Not tracked in storage
+        rec = storage.get_issue_inactivity_record("Gitcord", 50, "maintainer_dev")
+        assert rec is None
+
+    def test_mentor_in_mentor_github_users_is_skipped(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Assignees in mentor_github_users set are skipped from reminders and unassignment."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 51,
+                "title": "Lead task",
+                "assignees": [{"login": "mentor_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+            mentor_github_users={"mentor_bob"},
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 51, "mentor_bob")
+        assert rec is None
+
 
 
 class TestSqliteStorageInactivityMethods:
@@ -1355,3 +1503,72 @@ class TestSqliteStorageInactivityMethods:
         assert rec_after["reminder_sent_at"] is None
         assert rec_after["escalated_at"] is None
         assert rec_after["assigned_at"] == new_time.isoformat()
+
+
+class TestGitHubRestAdapterInactivityHelpers:
+    """Test helper methods on GitHubRestAdapter for inactivity and permission checks."""
+
+    def test_get_author_prs_for_inactivity_success(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "items": [
+                {
+                    "number": 101,
+                    "title": "Fix #42",
+                    "body": "Resolves issue #42",
+                    "user": {"login": "alex"},
+                    "created_at": "2026-07-10T10:00:00Z",
+                    "updated_at": "2026-07-11T12:00:00Z",
+                    "html_url": "https://github.com/AOSSIE-Org/Gitcord/pull/101",
+                }
+            ]
+        }
+        adapter._request = MagicMock(return_value=mock_resp)
+
+        prs = adapter.get_author_prs_for_inactivity("alex", repo="Gitcord")
+        assert prs is not None
+        assert len(prs) == 1
+        assert prs[0]["number"] == 101
+        assert prs[0]["body"] == "Resolves issue #42"
+
+    def test_get_author_prs_for_inactivity_failure_returns_none(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 502
+        adapter._request = MagicMock(return_value=mock_resp)
+
+        prs = adapter.get_author_prs_for_inactivity("alex", repo="Gitcord")
+        assert prs is None
+
+    def test_has_write_access_via_collaborator_permission(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"permission": "admin"}
+        adapter._request = MagicMock(return_value=mock_resp)
+
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "mentor_lead") is True
+
+    def test_has_write_access_via_org_membership(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        def mock_request(method: str, path: str, **kwargs):
+            resp = MagicMock()
+            if "collaborators" in path:
+                resp.status_code = 404
+            elif "members" in path:
+                resp.status_code = 204
+            return resp
+
+        adapter._request = MagicMock(side_effect=mock_request)
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is True
+

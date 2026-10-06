@@ -114,7 +114,7 @@ class NotificationConfig(BaseModel):
     issue_inactivity_days: int = 7  # Inactivity threshold in days before sending first DM check-in
     issue_inactivity_escalate_days: int = 7  # Additional days of inactivity after reminder before escalation/unassignment
     issue_inactivity_auto_unassign: bool = False  # Auto-unassign after escalate_days if still inactive
-    issue_inactivity_comment_on_unassign: bool = True  # Post explanatory comment on GitHub issue when unassigning
+    issue_inactivity_comment_on_unassign: bool = False  # Post explanatory comment on GitHub issue when unassigning
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
 

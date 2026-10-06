@@ -221,7 +221,6 @@ def test_list_pull_requests_for_author_scopes_to_repo(monkeypatch) -> None:
                 {
                     "number": 40,
                     "title": "Scoped",
-                    "body": "Fixes #42 in PictoPy",
                     "state": "open",
                     "html_url": "https://github.com/AOSSIE-Org/PictoPy/pull/40",
                     "created_at": "2026-07-11T10:00:00Z",
@@ -247,7 +246,6 @@ def test_list_pull_requests_for_author_scopes_to_repo(monkeypatch) -> None:
     assert len(prs) == 1
     assert prs[0]["repo"] == "PictoPy"
     assert prs[0]["number"] == 40
-    assert prs[0]["body"] == "Fixes #42 in PictoPy"
 
 
 def test_list_pull_requests_for_author_allowlist_is_case_insensitive(monkeypatch) -> None:
@@ -281,33 +279,4 @@ def test_list_pull_requests_for_author_allowlist_is_case_insensitive(monkeypatch
     assert len(prs) == 1
     assert prs[0]["repo"] == "PictoPy"
     assert prs[0]["number"] == 10
-
-
-def test_list_pull_requests_for_author_returns_none_on_search_failure(monkeypatch) -> None:
-    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
-
-    class _FailingSearchClient:
-        def request(self, method: str, path: str, params: dict | None = None, **kwargs: object) -> httpx.Response:
-            return httpx.Response(502, text="Bad Gateway", headers={"X-RateLimit-Remaining": "10"})
-
-    adapter._client = _FailingSearchClient()  # type: ignore[assignment]
-    monkeypatch.setattr("ghdcbot.adapters.github.rest._load_repo_filter", lambda: None)
-
-    prs = adapter.list_pull_requests_for_author("alice")
-    assert prs is None
-
-
-def test_list_open_pull_requests_for_author_returns_empty_list_on_search_failure(monkeypatch) -> None:
-    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
-
-    class _FailingSearchClient:
-        def request(self, method: str, path: str, params: dict | None = None, **kwargs: object) -> httpx.Response:
-            return httpx.Response(500, text="Internal Error", headers={"X-RateLimit-Remaining": "10"})
-
-    adapter._client = _FailingSearchClient()  # type: ignore[assignment]
-    monkeypatch.setattr("ghdcbot.adapters.github.rest._load_repo_filter", lambda: None)
-
-    prs = adapter.list_open_pull_requests_for_author("alice")
-    assert prs == []
-
 

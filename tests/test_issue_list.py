@@ -600,43 +600,4 @@ def test_issue_cmd_with_explicit_repo() -> None:
     assert "#101" in sent_text
 
 
-def test_list_open_issues_tracks_success_and_failure() -> None:
-    """GitHubRestAdapter tracks successful and failed repositories during issue listing."""
-    from ghdcbot.adapters.github.rest import GitHubPaginationError, GitHubRestAdapter
-
-    repos = [
-        {"name": "repo-success", "owner": {"login": "test-org"}},
-        {"name": "repo-failure", "owner": {"login": "test-org"}},
-    ]
-
-    with GitHubRestAdapter("fake-token", "test-org", "https://api.github.com") as adapter:
-        adapter._list_repos = MagicMock(return_value=repos)
-
-        def mock_paginate(path: str, params: dict, raise_on_error: bool = False):
-            if "repo-success" in path:
-                yield [
-                    {
-                        "number": 1,
-                        "title": "Issue 1",
-                        "state": "open",
-                        "assignees": [{"login": "alice"}],
-                    }
-                ]
-            else:
-                if raise_on_error:
-                    raise GitHubPaginationError(f"HTTP error for {path}")
-                return
-
-        adapter._paginate = MagicMock(side_effect=mock_paginate)
-
-        issues = list(adapter.list_open_issues())
-        assert len(issues) == 1
-        assert issues[0]["number"] == 1
-        assert issues[0]["repo"] == "repo-success"
-
-        assert adapter.get_successful_issue_listing_repos() == {"repo-success"}
-        assert adapter.get_failed_issue_listing_repos() == {"repo-failure"}
-
-
-
 

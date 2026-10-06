@@ -230,23 +230,21 @@ class GitHubRestAdapter:
         Results are limited to the configured org and filtered by the active repo
         allowlist/denylist when present. Shape matches ``list_open_pull_requests``.
         """
-        prs = self._search_pull_requests_for_author(
+        return self._search_pull_requests_for_author(
             github_user,
             query_extra="is:open",
             include_status=False,
             log_label="open PRs",
         )
-        return prs if prs is not None else []
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict] | None:
+    ) -> list[dict]:
         """List recent PRs (open/merged/closed) for one author via Search API.
 
         Newest-updated first. Each item includes ``status``: open | merged | closed.
         Scoped to the configured org and active repo allowlist/denylist.
         When ``repo`` is set, search is limited to that repository name.
-        Returns None if any search page fails.
         """
         return self._search_pull_requests_for_author(
             github_user,
@@ -268,7 +266,7 @@ class GitHubRestAdapter:
         sort: str | None = None,
         order: str | None = None,
         repo: str | None = None,
-    ) -> list[dict] | None:
+    ) -> list[dict]:
         author = (github_user or "").strip()
         if not author:
             return []
@@ -331,7 +329,7 @@ class GitHubRestAdapter:
                                 "log_label": log_label,
                             },
                         )
-                    return None
+                    break
                 payload = response.json()
                 items = payload.get("items") if isinstance(payload, dict) else None
                 if not isinstance(items, list) or not items:
@@ -357,7 +355,6 @@ class GitHubRestAdapter:
                         "number": item.get("number"),
                         "author": user.get("login") or author,
                         "title": item.get("title"),
-                        "body": item.get("body"),
                         "html_url": item.get("html_url"),
                         "created_at": item.get("created_at"),
                         "updated_at": item.get("updated_at"),
@@ -369,6 +366,120 @@ class GitHubRestAdapter:
                     break
                 page += 1
         return results
+
+    def get_author_prs_for_inactivity(
+        self, github_user: str, *, repo: str
+    ) -> list[dict] | None:
+        """Fetch PRs by author in a repo with title and body for inactivity checks.
+
+        Returns list[dict] with 'number', 'title', 'body', 'created_at', 'updated_at',
+        or None if GitHub search fails (to prevent false-positive inactivity flags).
+        """
+        author = (github_user or "").strip()
+        repo_name = (repo or "").strip()
+        if not author or not repo_name:
+            return []
+
+        query = f"is:pr author:{author} repo:{self._org}/{repo_name}"
+        page = 1
+        results: list[dict] = []
+        seen: set[int] = set()
+
+        while page <= _GITHUB_SEARCH_MAX_PAGES:
+            params: dict[str, str | int] = {
+                "q": query,
+                "sort": "updated",
+                "order": "desc",
+                "per_page": 100,
+                "page": page,
+            }
+            response = self._request("GET", "/search/issues", params=params)
+            if response is None or response.status_code != 200:
+                if response is not None:
+                    self._logger.warning(
+                        "GitHub search failed for author PRs in inactivity check",
+                        extra={
+                            "status_code": response.status_code,
+                            "github_user": author,
+                            "repo": repo_name,
+                            "org": self._org,
+                        },
+                    )
+                return None
+            payload = response.json()
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                pr_num = item.get("number")
+                if pr_num is None or pr_num in seen:
+                    continue
+                seen.add(pr_num)
+                user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                results.append({
+                    "repo": repo_name,
+                    "number": pr_num,
+                    "author": user.get("login") or author,
+                    "title": item.get("title") or "",
+                    "body": item.get("body") or "",
+                    "html_url": item.get("html_url"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                })
+            if len(items) < 100:
+                break
+            page += 1
+        return results
+
+    def check_user_permission(self, owner: str | None, repo: str, username: str) -> str | None:
+        """Check a user's permission level in a repository.
+
+        Returns 'admin', 'maintain', 'write', 'triage', 'read', 'none', or None on error.
+        """
+        user = (username or "").strip()
+        repo_name = (repo or "").strip()
+        if not user or not repo_name:
+            return None
+        org = owner or self._org
+        response = self._request(
+            "GET",
+            f"/repos/{org}/{repo_name}/collaborators/{user}/permission",
+        )
+        if response is None:
+            return None
+        if response.status_code == 200:
+            payload = response.json()
+            if isinstance(payload, dict):
+                perm = payload.get("permission")
+                if isinstance(perm, str):
+                    return perm.lower()
+                user_info = payload.get("user")
+                if isinstance(user_info, dict):
+                    perms = user_info.get("permissions") or {}
+                    for p in ("admin", "maintain", "push", "triage", "pull"):
+                        if perms.get(p):
+                            return "write" if p == "push" else p
+        elif response.status_code == 404:
+            return "none"
+        return None
+
+    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool:
+        """Check if user has write/maintainer access to repository or org."""
+        user = (username or "").strip()
+        if not user:
+            return False
+        org = owner or self._org
+        perm = self.check_user_permission(org, repo, user)
+        if perm in {"admin", "maintain", "write"}:
+            return True
+        # Check org membership
+        org_resp = self._request("GET", f"/orgs/{org}/members/{user}")
+        if org_resp is not None and org_resp.status_code == 204:
+            return True
+        return False
+
 
     def create_issue(
         self, owner: str, repo: str, title: str, body: str = "", labels: list[str] | None = None

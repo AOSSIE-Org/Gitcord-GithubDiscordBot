@@ -41,8 +41,16 @@ class GitHubReader(Protocol):
 
     def list_pull_requests_for_author(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict] | None:
+    ) -> list[dict]:
         """List pull requests for an author."""
+
+    def get_author_prs_for_inactivity(
+        self, github_user: str, *, repo: str
+    ) -> list[dict] | None:
+        """Fetch PRs by author in a repo with title and body for inactivity check."""
+
+    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool:
+        """Check if user has write/maintainer access to repository or org."""
 
     def get_successful_issue_listing_repos(self) -> set[str]:
         """Return repository names whose open issues were listed successfully."""

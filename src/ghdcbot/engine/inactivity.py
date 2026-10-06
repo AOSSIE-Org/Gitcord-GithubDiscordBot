@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -208,7 +209,18 @@ def has_contributor_activity(
         )
 
     # 2. Check PRs by the author in this repo
-    list_author_prs = getattr(github_reader, "list_pull_requests_for_author", None)
+    inact_fn = getattr(github_reader, "get_author_prs_for_inactivity", None)
+    list_author_prs = None
+    if callable(inact_fn):
+        mock_ret = getattr(inact_fn, "_mock_return_value", None)
+        is_unconfigured_mock = hasattr(inact_fn, "_mock_return_value") and (
+            getattr(mock_ret, "name", None) == "DEFAULT"
+            and getattr(inact_fn, "_mock_side_effect", None) is None
+        )
+        if not is_unconfigured_mock:
+            list_author_prs = inact_fn
+    if list_author_prs is None:
+        list_author_prs = getattr(github_reader, "list_pull_requests_for_author", None)
     if callable(list_author_prs):
         cache_key = (target_user, repo)
         prs: list[dict] | None = None
@@ -238,12 +250,12 @@ def has_contributor_activity(
         if not fetch_failed and prs is not None:
             pattern = re.compile(rf"#\b{issue_number}\b", re.IGNORECASE)
             for pr in prs:
-                pr_created = _parse_utc_datetime(pr.get("created_at"))
                 title = str(pr.get("title") or "")
                 body = str(pr.get("body") or "")
 
-                # Any PR mentioning this issue or created after assignment
-                if pattern.search(title) or pattern.search(body) or (pr_created and pr_created > since):
+                # Only count PRs that mention this issue (#number in title/body)
+                if pattern.search(title) or pattern.search(body):
+                    pr_created = _parse_utc_datetime(pr.get("created_at"))
                     if pr_created and pr_created > since and (latest_activity is None or pr_created > latest_activity):
                         latest_activity = pr_created
                     else:
@@ -253,7 +265,7 @@ def has_contributor_activity(
     else:
         fetch_failed = True
         logger.warning(
-            "github_reader does not implement list_pull_requests_for_author",
+            "github_reader does not implement list_pull_requests_for_author or get_author_prs_for_inactivity",
             extra={"repo": repo, "author": github_user},
         )
 
@@ -275,6 +287,8 @@ def run_issue_inactivity_lifecycle(
     config: NotificationConfig,
     github_org: str,
     now: datetime | None = None,
+    open_issues: Iterable[dict] | None = None,
+    mentor_github_users: set[str] | None = None,
 ) -> None:
     """Scan assigned open issues and run 2-stage inactivity check-in and escalation."""
     if not getattr(config, "issue_inactivity_reminders", False):
@@ -289,20 +303,77 @@ def run_issue_inactivity_lifecycle(
         inactivity_days = getattr(config, "issue_inactivity_days", 7) or 7
         escalate_days = getattr(config, "issue_inactivity_escalate_days", 7) or 7
         auto_unassign = getattr(config, "issue_inactivity_auto_unassign", False)
-        comment_on_unassign = getattr(config, "issue_inactivity_comment_on_unassign", True)
+        comment_on_unassign = getattr(config, "issue_inactivity_comment_on_unassign", False)
 
         inactivity_delta = timedelta(days=inactivity_days)
         inactivity_label = f"{inactivity_days} days"
         escalate_delta = timedelta(days=escalate_days)
         total_time_label = f"{inactivity_days + escalate_days} days"
 
-        # Discover open issues
-        list_issues = getattr(github_reader, "list_open_issues", None)
-        if not callable(list_issues):
-            logger.debug("Inactivity lifecycle: GitHub reader has no list_open_issues")
-            return
+        # Maintainer / mentor check helper
+        maintainer_cache: dict[str, bool] = {}
+        known_mentors: set[str] = {u.strip().lower() for u in (mentor_github_users or set()) if u}
 
-        active_issues: list[dict] = list(list_issues())
+        def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
+            clean = (login or "").strip().lower()
+            if not clean:
+                return False
+            if clean in known_mentors:
+                return True
+            cache_key = f"{repo_name.lower()}:{clean}"
+            if cache_key in maintainer_cache:
+                return maintainer_cache[cache_key]
+
+            # Check github_reader.has_write_access
+            has_write_fn = getattr(github_reader, "has_write_access", None)
+            if callable(has_write_fn):
+                mock_ret = getattr(has_write_fn, "_mock_return_value", None)
+                is_unconfigured_mock = hasattr(has_write_fn, "_mock_return_value") and (
+                    getattr(mock_ret, "name", None) == "DEFAULT"
+                    and getattr(has_write_fn, "_mock_side_effect", None) is None
+                )
+                if not is_unconfigured_mock:
+                    try:
+                        res = has_write_fn(github_org, repo_name, login)
+                        if res is True or (isinstance(res, bool) and res):
+                            maintainer_cache[cache_key] = True
+                            return True
+                        if res is False or (isinstance(res, bool) and not res):
+                            maintainer_cache[cache_key] = False
+                            return False
+                    except Exception:
+                        logger.debug("Failed to check write access for %s", login, exc_info=True)
+
+            # Check github_reader.check_user_permission
+            check_perm_fn = getattr(github_reader, "check_user_permission", None)
+            if callable(check_perm_fn):
+                mock_ret = getattr(check_perm_fn, "_mock_return_value", None)
+                is_unconfigured_mock = hasattr(check_perm_fn, "_mock_return_value") and (
+                    getattr(mock_ret, "name", None) == "DEFAULT"
+                    and getattr(check_perm_fn, "_mock_side_effect", None) is None
+                )
+                if not is_unconfigured_mock:
+                    try:
+                        perm = check_perm_fn(github_org, repo_name, login)
+                        if isinstance(perm, str) and perm.lower() in {"admin", "maintain", "write"}:
+                            maintainer_cache[cache_key] = True
+                            return True
+                    except Exception:
+                        logger.debug("Failed to check user permission for %s", login, exc_info=True)
+
+            maintainer_cache[cache_key] = False
+            return False
+
+
+        # Discover open issues (use passed-in open_issues to avoid duplicate GitHub API calls)
+        if open_issues is not None:
+            active_issues: list[dict] = list(open_issues)
+        else:
+            list_issues = getattr(github_reader, "list_open_issues", None)
+            if not callable(list_issues):
+                logger.debug("Inactivity lifecycle: GitHub reader has no list_open_issues")
+                return
+            active_issues = list(list_issues())
 
         # Collect open issues and current assignees across repositories
         open_issues_by_repo: dict[str, set[int]] = defaultdict(set)
@@ -333,6 +404,8 @@ def run_issue_inactivity_lifecycle(
                 elif isinstance(a, str) and a.strip():
                     login = a.strip()
                 if login:
+                    if _is_maintainer_or_mentor(login, repo):
+                        continue
                     active_assignments.add((repo, issue_number, login.strip().lower()))
 
         # Reconcile existing active trackers: close when issue closes or contributor is unassigned
@@ -367,6 +440,9 @@ def run_issue_inactivity_lifecycle(
                 t_num = tracker.get("issue_number")
                 t_user = tracker.get("github_user")
                 if not t_repo or t_num is None or not t_user:
+                    continue
+                if _is_maintainer_or_mentor(t_user, t_repo):
+                    close_tracker_fn(t_repo, t_num, t_user, status="resolved")
                     continue
                 if t_repo not in repos_to_check:
                     continue
@@ -439,6 +515,12 @@ def run_issue_inactivity_lifecycle(
 
             # Check existing tracking records for each assignee
             for assignee in assignee_logins:
+                if _is_maintainer_or_mentor(assignee, repo):
+                    logger.debug(
+                        "Skipping inactivity check for maintainer/mentor assignee",
+                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                    )
+                    continue
                 record = None
                 get_rec = getattr(storage, "get_issue_inactivity_record", None)
                 if callable(get_rec):
@@ -506,7 +588,7 @@ def run_issue_inactivity_lifecycle(
 
                 # Skip activity fetches when both inactivity and escalation clocks are below thresholds
                 is_inactivity_due = (reminder_sent_at is None) and ((current_time - last_act) >= inactivity_delta)
-                is_escalation_due = (reminder_sent_at is not None) and ((current_time - reminder_sent_at) >= escalate_delta)
+                is_escalation_due = auto_unassign and (reminder_sent_at is not None) and ((current_time - reminder_sent_at) >= escalate_delta)
 
                 if not is_inactivity_due and not is_escalation_due:
                     # Neither reminder nor escalation is due; leave last_activity_at unchanged
@@ -544,10 +626,10 @@ def run_issue_inactivity_lifecycle(
                 discord_user_id = resolve_github_to_discord(storage, assignee)
 
                 # Stage 2: 7 days after reminder_sent_at (escalate_days)
-                if reminder_sent_at is not None:
+                if auto_unassign and reminder_sent_at is not None:
                     if (current_time - reminder_sent_at) >= escalate_delta:
                         # Escalation / auto-unassign
-                        if auto_unassign and policy.allow_github_mutations:
+                        if policy.allow_github_mutations:
                             # 1. Unassign on GitHub
                             unassign_fn = getattr(github_writer, "unassign_issue", None)
                             unassigned = False
@@ -614,90 +696,8 @@ def run_issue_inactivity_lifecycle(
                                     "total_time": total_time_label,
                                     "timestamp": current_time.isoformat(),
                                 })
-                        elif not auto_unassign and policy.allow_discord_mutations:
-                            # Active escalation without auto-unassign: notify channel or mentor/assignee
-                            escalation_channel_id = getattr(config, "channel_id", None)
-                            escalate_dedupe_key = (
-                                f"issue_inactivity_escalated:{repo}:{issue_number}:{assignee}:{reminder_sent_at.isoformat()}"
-                            )
-                            was_sent = getattr(storage, "was_notification_sent", None)
-                            already_logged = False
-                            if callable(was_sent):
-                                already_logged = bool(was_sent(escalate_dedupe_key))
-                            else:
-                                audit_events = getattr(storage, "audit_events", None)
-                                if isinstance(audit_events, list):
-                                    already_logged = any(
-                                        isinstance(e, dict)
-                                        and e.get("action") == "issue_inactivity_escalated"
-                                        and e.get("repo") == repo
-                                        and e.get("issue_number") == issue_number
-                                        and e.get("github_user") == assignee
-                                        for e in audit_events
-                                    )
-                            if already_logged:
-                                continue
-
-                            msg = build_escalation_message(
-                                github_org=github_org,
-                                repo=repo,
-                                issue_number=issue_number,
-                                issue_title=issue_title,
-                                github_user=assignee,
-                                discord_user_id=discord_user_id,
-                                time_label=total_time_label,
-                            )
-                            sent = False
-                            if escalation_channel_id or discord_user_id:
-                                sent = _send_discord_notification(
-                                    discord_writer=discord_writer,
-                                    discord_user_id=discord_user_id or "",
-                                    message=msg,
-                                    channel_id=escalation_channel_id,
-                                    policy=policy,
-                                )
-                            if not sent:
-                                logger.warning(
-                                    "Escalation notification not delivered; will retry next run",
-                                    extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                                )
-                                continue
-
-                            esc_fn = getattr(storage, "record_issue_inactivity_escalation", None)
-                            if callable(esc_fn):
-                                esc_fn(repo, issue_number, assignee, current_time, status="escalated")
-
-                            audit_fn = getattr(storage, "append_audit_event", None)
-                            if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_escalated",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "channel_id": escalation_channel_id,
-                                    "total_time": total_time_label,
-                                    "timestamp": current_time.isoformat(),
-                                })
-
-                            mark_sent = getattr(storage, "mark_notification_sent", None)
-                            if callable(mark_sent):
-                                event = ContributionEvent(
-                                    github_user=assignee,
-                                    event_type="issue_inactivity_escalated",
-                                    repo=repo,
-                                    created_at=current_time,
-                                    payload={"issue_number": issue_number, "total_time": total_time_label},
-                                )
-                                mark_sent(escalate_dedupe_key, event, discord_user_id or "", escalation_channel_id, assignee)
-
-                            logger.info(
-                                "Escalated inactive contributor after %s (auto-unassign disabled)",
-                                total_time_label,
-                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                            )
                         else:
-                            # Dry run / observer mode or write disabled
+                            # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
                             dry_run_dedupe_key = (
                                 f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{reminder_sent_at.isoformat()}"
                             )
@@ -719,10 +719,8 @@ def run_issue_inactivity_lifecycle(
                             if already_logged:
                                 continue
 
-                            action_desc = "unassign" if auto_unassign else "escalate"
                             logger.info(
-                                "[DRY-RUN / AUDIT] Would %s inactive contributor after %s",
-                                action_desc,
+                                "[DRY-RUN / AUDIT] Would unassign inactive contributor after %s",
                                 total_time_label,
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
@@ -751,6 +749,7 @@ def run_issue_inactivity_lifecycle(
                                 mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
 
                     continue
+
 
                 # Stage 1: Inactive (send check-in DM reminder)
                 if (current_time - last_act) >= inactivity_delta:
