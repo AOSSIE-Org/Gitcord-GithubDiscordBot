@@ -902,6 +902,28 @@ class TestFetchAllOpenPRHealth:
         assert len(results) == 1
         assert results[0].repo == "b"
 
+    def test_repo_filter_case_insensitive(self) -> None:
+        """Repo filter is case-insensitive and strips whitespace."""
+        adapter = MagicMock()
+        adapter.list_open_pull_requests.return_value = [
+            {"repo": "Gitcord-Bot", "number": 1},
+            {"repo": "Other-Repo", "number": 2},
+        ]
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = []
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        # Test lowercase with whitespace matches "Gitcord-Bot"
+        results, total = fetch_all_open_pr_health(adapter, "org", repo="  gitcord-bot  ")
+        assert total == 1
+        assert len(results) == 1
+
+        # Test uppercase with whitespace matches "Other-Repo"
+        results, total = fetch_all_open_pr_health(adapter, "org", repo=" OTHER-REPO ")
+        assert total == 1
+        assert len(results) == 1
+
 
 # ===================================================================
 # Format: single PR

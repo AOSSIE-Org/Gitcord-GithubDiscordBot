@@ -436,7 +436,11 @@ def fetch_all_open_pr_health(
     """
     all_open_prs = list(github_adapter.list_open_pull_requests())
     if repo:
-        all_open_prs = [pr for pr in all_open_prs if pr.get("repo") == repo]
+        clean_repo = repo.strip().lower()
+        all_open_prs = [
+            pr for pr in all_open_prs 
+            if pr.get("repo") and str(pr.get("repo")).strip().lower() == clean_repo
+        ]
     total = len(all_open_prs)
 
     # Apply pagination
