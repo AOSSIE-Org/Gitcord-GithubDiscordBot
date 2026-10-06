@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 import string
 from dataclasses import dataclass
@@ -8,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 
 from ghdcbot.adapters.github.identity import GitHubIdentityReader, VerificationMatch
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
+
+# Letters, digits and hyphens only. Hyphen placement is deliberately not checked:
+# some older GitHub accounts have leading, trailing or doubled hyphens.
+_GITHUB_LOGIN_RE = re.compile(r"[A-Za-z0-9-]{1,39}")
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,7 @@ class IdentityLinkService:
         self._ttl = timedelta(minutes=ttl_minutes)
 
     def create_claim(self, discord_user_id: str, github_user: str, *, max_age_days: int | None = None) -> LinkClaim:
+        github_user = normalize_github_login(github_user)
         code = _generate_verification_code()
         expires_at = datetime.now(timezone.utc) + self._ttl
         # Ensure schema exists for identity_links before writing.
@@ -73,6 +79,7 @@ class IdentityLinkService:
         )
 
     def verify_claim(self, discord_user_id: str, github_user: str) -> tuple[bool, str | None]:
+        github_user = normalize_github_login(github_user)
         row = self._storage.get_identity_link(discord_user_id, github_user)
         if not row:
             raise ValueError("No identity claim found for this Discord user and GitHub user")
@@ -170,6 +177,21 @@ class IdentityLinkService:
                 "unlinked_at": info["unlinked_at"],
             },
         )
+
+
+def normalize_github_login(github_user: str) -> str:
+    """Return a GitHub login safe to use in API paths, or raise ValueError.
+
+    Strips surrounding whitespace and one leading ``@``. Anything other than
+    1-39 letters, digits and hyphens is rejected, so input such as
+    ``victim/../attacker`` cannot redirect ``/users/{login}`` to another account.
+    """
+    login = (github_user or "").strip().removeprefix("@")
+    if not _GITHUB_LOGIN_RE.fullmatch(login):
+        raise ValueError(
+            "Invalid GitHub username. Use 1-39 letters, numbers or hyphens (e.g. octocat)."
+        )
+    return login
 
 
 def _generate_verification_code(length: int = 10) -> str:
