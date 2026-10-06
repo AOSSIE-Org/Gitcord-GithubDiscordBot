@@ -73,11 +73,13 @@ class Orchestrator:
 
         contributions = list(self.github_reader.list_contributions(prior_cursor))
         stored = self.storage.record_contributions(contributions)
+        # Compute the new cursor position but do not persist it yet.
+        # The cursor is saved after notifications complete so that a
+        # mid-sync crash does not permanently skip unsent notifications.
         cursor_after = prior_cursor
         if contributions:
             new_cursor = max(event.created_at for event in contributions)
             if new_cursor > prior_cursor:
-                self.storage.set_cursor("github", new_cursor)
                 cursor_after = new_cursor
         logger.info("Stored GitHub contributions", extra={"count": stored})
 
@@ -162,6 +164,12 @@ class Orchestrator:
                         exc_info=True,
                         extra={"error": str(exc)},
                     )
+
+        # Persist the GitHub cursor now that notifications have been dispatched.
+        # If the sync crashed during notifications above, the cursor stays at
+        # prior_cursor and the next run will re-fetch and re-notify those events.
+        if cursor_after > prior_cursor:
+            self.storage.set_cursor("github", cursor_after)
 
         if not issues and not prs and not contributions:
             logging.getLogger("Planning").info(
