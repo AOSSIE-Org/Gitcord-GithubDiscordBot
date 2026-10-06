@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -18,13 +20,18 @@ class SqliteStorage:
         if not read_only:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         if self._read_only:
             conn = sqlite3.connect(f"{self._db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
         else:
             conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def init_schema(self) -> None:
         with self._connect() as conn:
