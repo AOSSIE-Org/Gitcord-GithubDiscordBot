@@ -8,7 +8,7 @@ normally upon successful sync completion.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -83,6 +83,7 @@ def _make_config(tmp_path, *, notifications_enabled: bool = True) -> BotConfig:
             permissions=PermissionConfig(write=True),
             notifications=NotificationConfig(
                 enabled=notifications_enabled,
+                pr_opened=True,
                 verified_only=True,
             ),
         ),
@@ -122,7 +123,8 @@ def _make_orchestrator(
 def test_cursor_not_advanced_when_notifications_crash(tmp_path) -> None:
     """When notification dispatch raises an exception, the ingestion cursor
     must NOT advance, so events are re-evaluated on the next sync cycle."""
-    event_time = datetime(2026, 10, 6, 12, 0, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
+    event_time = now - timedelta(hours=1)
     event = ContributionEvent(
         github_user="alice",
         event_type="pr_opened",
@@ -149,8 +151,10 @@ def test_cursor_not_advanced_when_notifications_crash(tmp_path) -> None:
 
 def test_cursor_advanced_on_successful_sync(tmp_path) -> None:
     """When sync and notification dispatch succeed, the cursor must advance
-    to the timestamp of the latest contribution event."""
-    event_time = datetime(2026, 10, 6, 12, 0, 0, tzinfo=UTC)
+    to the timestamp of the latest contribution event. Also verifies that
+    the cursor remains unchanged while notification dispatch is in progress."""
+    now = datetime.now(UTC)
+    event_time = now - timedelta(hours=1)
     event = ContributionEvent(
         github_user="alice",
         event_type="pr_opened",
@@ -161,16 +165,33 @@ def test_cursor_advanced_on_successful_sync(tmp_path) -> None:
 
     orch, storage = _make_orchestrator(tmp_path, [event], notifications_enabled=True)
 
-    orch.run_once()
+    cursor_during_dispatch: datetime | None = None
 
-    # Cursor should have advanced to event_time
+    from ghdcbot.engine.orchestrator import _send_notifications_for_new_events as real_send
+
+    def spy_send(*args, **kwargs):
+        nonlocal cursor_during_dispatch
+        cursor_during_dispatch = storage.get_cursor("github")
+        return real_send(*args, **kwargs)
+
+    with patch(
+        "ghdcbot.engine.orchestrator._send_notifications_for_new_events",
+        side_effect=spy_send,
+    ):
+        orch.run_once()
+
+    # Cursor must NOT have advanced while notifications were in progress
+    assert cursor_during_dispatch is None
+
+    # Cursor should have advanced to event_time after notifications completed
     saved_cursor = storage.get_cursor("github")
     assert saved_cursor == event_time
 
 
 def test_cursor_unchanged_when_no_new_contributions(tmp_path) -> None:
     """When there are no new contributions, cursor remains at its prior state."""
-    prior_time = datetime(2026, 10, 5, 0, 0, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
+    prior_time = now - timedelta(days=2)
     orch, storage = _make_orchestrator(tmp_path, [], notifications_enabled=True)
     storage.set_cursor("github", prior_time)
 
