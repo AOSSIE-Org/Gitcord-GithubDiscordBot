@@ -844,6 +844,13 @@ discord:
     write: true
   # Optional: Channel ID for activity feed summary (default: null)
   activity_channel_id: null
+  # Optional: weekly maintainer digest (auto-only, once per ISO week; default off).
+  # Distinct from activity_channel_id (per-sync dump). See docs/DOCKER.md.
+  # digest:
+  #   enabled: true
+  #   channel_id: "..."
+  #   weekday_utc: 6
+  #   hour_utc: 12
   # Optional: Channel names where PR URLs trigger passive preview (requires message content intent)
   pr_preview_channels: []
   # Optional: Per-command permission rules (if omitted, falls back to assignments.issue_assignees)

@@ -285,7 +285,7 @@ Start with defaults in the template:
 - `discord.permissions.write: false`
 - `github.permissions.write: false`
 
-Optional blocks (`notifications`, `repos` filter) are commented in `config/example.yaml` — enable only when needed.
+Optional blocks (`notifications`, `repos` filter, weekly `discord.digest`) are commented in `config/example.yaml` — enable only when needed. The weekly digest is auto-only (no slash command) and is **not** the same as `activity_channel_id`; see [docs/DOCKER.md](docs/DOCKER.md#weekly-maintainer-digest-optional).
 
 **Reference configs** (not used automatically): `config/examples/` (e.g. AOSSIE sample, remote bootstrap templates).
 
@@ -519,6 +519,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 | Validate setup | `docker compose run --rm bot --config /app/config/config.yaml validate` | `ghdcbot --config config/config.yaml validate` |
 | Identity status | `docker compose run --rm bot --config /app/config/config.yaml identity status --discord-user-id ID` | `ghdcbot --config config/config.yaml identity status --discord-user-id ID` |
 | Preview PR timeline post | `docker compose run --rm bot --config /app/config/config.yaml preview-pr-timeline --repo REPO --pr N` | `ghdcbot --config config/config.yaml preview-pr-timeline --repo REPO --pr N` |
+| Preview weekly digest | `docker compose run --rm bot --config /app/config/config.yaml digest-preview` | `ghdcbot --config config/config.yaml digest-preview` |
 
 ### Config files
 

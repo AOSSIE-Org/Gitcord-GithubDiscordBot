@@ -29,6 +29,7 @@ from ghdcbot.engine.notifications import (
     update_issue_channel_announcement_for_event,
     update_pr_channel_announcement_for_event,
 )
+from ghdcbot.engine.digest import maybe_post_weekly_digest
 from ghdcbot.engine.planning import plan_discord_roles
 from ghdcbot.engine.pr_timeline_refresh import refresh_pr_channel_timelines, timeline_enabled
 from ghdcbot.engine.reporting import write_reports, write_activity_report
@@ -268,6 +269,25 @@ class Orchestrator:
             logger.warning(
                 "snapshots.enabled is set but GitHub snapshot publishing was removed; ignoring",
                 extra={"repo_path": snapshot_config.repo_path},
+            )
+
+        # Weekly maintainer digest (opt-in; once per ISO week; ≠ activity_channel_id)
+        try:
+            digest_cfg = getattr(self.config.discord, "digest", None)
+            if digest_cfg is not None:
+                maybe_post_weekly_digest(
+                    storage=self.storage,
+                    discord_writer=self.discord_writer,
+                    policy=policy,
+                    org=self.config.github.org,
+                    digest_config=digest_cfg,
+                    guild_id=self.config.discord.guild_id,
+                )
+        except Exception as digest_exc:
+            logger.warning(
+                "Weekly digest failed (non-blocking)",
+                exc_info=True,
+                extra={"error": str(digest_exc)},
             )
 
         repos_processed = int(getattr(self.github_reader, "sync_repos_processed", repos_total))

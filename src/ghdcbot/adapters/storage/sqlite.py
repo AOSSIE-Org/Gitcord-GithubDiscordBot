@@ -12,12 +12,17 @@ from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
 
 
 class SqliteStorage:
-    def __init__(self, data_dir: str) -> None:
+    def __init__(self, data_dir: str, *, read_only: bool = False) -> None:
         self._db_path = Path(data_dir) / "state.db"
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
+        if not read_only:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        if self._read_only:
+            conn = sqlite3.connect(f"{self._db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+        else:
+            conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -1016,6 +1021,43 @@ class SqliteStorage:
                 (repo, int(pr_number)),
             ).fetchone()
         return int(row["refresh_failures"]) if row else 0
+
+    def count_pr_channel_announcements(self, status: str = "open") -> int:
+        """Count tracked PR channel announcements with the given lifecycle status."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM pr_channel_announcements
+                WHERE status = ?
+                """,
+                (status,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
+    def list_oldest_open_pr_announcements(self) -> list[dict]:
+        """Open tracked PR announcements, oldest PR first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, pr_number, pr_title, author_github, channel_id, message_id, created_at
+                FROM pr_channel_announcements
+                WHERE status = 'open'
+                ORDER BY created_at ASC, repo ASC, pr_number ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "repo": row["repo"],
+                "pr_number": int(row["pr_number"]),
+                "pr_title": row["pr_title"],
+                "author_github": row["author_github"],
+                "channel_id": row["channel_id"],
+                "message_id": row["message_id"],
+                "created_at": _parse_utc(row["created_at"]),
+            }
+            for row in rows
+        ]
 
     def save_issue_channel_announcement(
         self,
