@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Gitcord easy handover — one file in, one file out (local Docker only).
 #
-# OLD PC:   ./scripts/gitcord-handover pack
+# OLD PC:   ./scripts/gitcord-handover pack [--encrypt]
 #           → creates ONE file on Desktop/Downloads (copy via USB)
 #
 # NEW PC:   git clone … && cd Gitcord-GithubDiscordBot
-#           ./scripts/gitcord-handover restore /path/to/gitcord-handover-*.tar.gz
+#           ./scripts/gitcord-handover restore /path/to/gitcord-handover-*.tar.gz[.gpg]
 #
 # Check:    ./scripts/gitcord-handover check
 set -euo pipefail
@@ -18,10 +18,48 @@ SN_VOL=gitcord-stability_gitcord_stability_data
 DEFAULT_PEM="${HOME}/privateKeys/gitcordapp.pem"
 PEM_COMPOSE_LINE='- ${GITCORD_PEM_HOST:?Set GITCORD_PEM_HOST to the host path of the GitHub App PEM}:/secrets/gitcordapp.pem:ro'
 FORCE=0
+ENCRYPT=0
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 ok() { echo "✓ $*"; }
 info() { echo "→ $*"; }
+
+is_encrypted() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+
+  # Gzip magic is 1f 8b. If gzip, it is not encrypted.
+  local b1="" b2="" rest=""
+  if command -v od >/dev/null 2>&1; then
+    local hex
+    hex="$(od -N 2 -An -t x1 "$f" 2>/dev/null | tr -d '\r\n' || true)"
+    read -r b1 b2 rest <<<"$hex"
+    if [[ "$b1" == "1f" && "$b2" == "8b" ]]; then
+      return 1
+    fi
+  fi
+
+  # Extension hint (.gpg or .pgp)
+  if [[ "$f" == *.gpg || "$f" == *.pgp ]]; then
+    return 0
+  fi
+
+  # Content inspection with 'file' command if available
+  if command -v file >/dev/null 2>&1; then
+    local desc
+    desc="$(file -b "$f" 2>/dev/null || true)"
+    if [[ "$desc" =~ (PGP|GPG|OpenPGP|gpg) ]]; then
+      return 0
+    fi
+  fi
+
+  # OpenPGP binary packet header byte: MSB is always 1 (0x80 - 0xFF)
+  if [[ -n "$b1" && "$b1" =~ ^[89a-fA-F] ]]; then
+    return 0
+  fi
+
+  return 1
+}
 
 confirm() {
   local prompt="$1"
@@ -167,6 +205,9 @@ install_pem() {
 
 cmd_pack() {
   need_docker
+  if [[ "$ENCRYPT" -eq 1 ]]; then
+    command -v gpg >/dev/null 2>&1 || die "gpg is not installed. Install GnuPG to use --encrypt, or omit --encrypt."
+  fi
   [[ -f .env ]] || die "Missing .env — is this the machine that already runs Gitcord?"
   [[ -f .env.stability-nexus ]] || die "Missing .env.stability-nexus"
   [[ -f config/config.yaml ]] || die "Missing config/config.yaml"
@@ -181,21 +222,30 @@ cmd_pack() {
   confirm "Pack will briefly STOP both bots so the database copy is consistent. Continue?" \
     || die "Pack cancelled."
 
-  local out_dir stamp work archive pack_need_restart=0
+  local out_dir stamp work archive raw_tar="" pack_need_restart=0 pack_done=0
   out_dir="${1:-$(pick_out_dir)}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   umask 077
   work="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-handover.XXXXXX")"
-  archive="${out_dir}/gitcord-handover-${stamp}.tar.gz"
+  if [[ "$ENCRYPT" -eq 1 ]]; then
+    archive="${out_dir}/gitcord-handover-${stamp}.tar.gz.gpg"
+  else
+    archive="${out_dir}/gitcord-handover-${stamp}.tar.gz"
+  fi
   mkdir -p "$out_dir" "$work/bundle/volumes"
 
   pack_cleanup() {
-    rm -rf "$work"
+    if [[ -n "${work:-}" ]]; then
+      rm -rf "$work"
+    fi
+    if [[ "${pack_done:-0}" -eq 0 && -n "${archive:-}" && -f "$archive" ]]; then
+      rm -f "$archive"
+    fi
     if [[ "${pack_need_restart:-0}" -eq 1 ]]; then
       info "Pack did not finish — restarting bots on this PC…"
-      ensure_pem_host_in_env "$pem" .env || true
-      ensure_pem_host_in_env "$pem" .env.stability-nexus || true
-      start_stacks "$pem" || info "Could not auto-restart bots — start them manually."
+      ensure_pem_host_in_env "${pem:-}" .env || true
+      ensure_pem_host_in_env "${pem:-}" .env.stability-nexus || true
+      start_stacks "${pem:-}" || info "Could not auto-restart bots — start them manually."
     fi
   }
   trap pack_cleanup EXIT INT TERM
@@ -226,18 +276,29 @@ cmd_pack() {
 
   cat >"$work/bundle/README.txt" <<EOF
 Gitcord handover bundle (${stamp})
-Give this .tar.gz to the next person with Discord + GitHub App access.
+Give this file to the next person with Discord + GitHub App access.
 
 On their PC:
   1. Install Docker and start it
   2. git clone https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot.git
   3. cd Gitcord-GithubDiscordBot
-  4. ./scripts/gitcord-handover restore /path/to/this-file.tar.gz
+  4. ./scripts/gitcord-handover restore /path/to/this-file
 EOF
 
-  tar -czf "$archive" -C "$work/bundle" .
+  if [[ "$ENCRYPT" -eq 1 ]]; then
+    raw_tar="$work/gitcord-handover-${stamp}.tar.gz"
+    tar -czf "$raw_tar" -C "$work/bundle" .
+    info "Encrypting archive with gpg (AES-256)…"
+    if ! gpg ${GPG_EXTRA_ARGS:-} --symmetric --cipher-algo AES256 --output "$archive" "$raw_tar"; then
+      die "Encryption failed."
+    fi
+    rm -f "$raw_tar"
+  else
+    tar -czf "$archive" -C "$work/bundle" .
+  fi
   chmod 600 "$archive" 2>/dev/null || true
 
+  pack_done=1
   pack_need_restart=0
   trap - EXIT INT TERM
   rm -rf "$work"
@@ -250,15 +311,28 @@ EOF
   ok "DONE — one file created:"
   echo "    $archive"
   echo
-  info "SECURITY NOTICE:"
-  echo "  • This archive contains sensitive secrets (.env tokens, config,"
-  echo "    GitHub App private key, and databases) in PLAINTEXT."
-  echo "  • Only transfer it over a trusted, secure channel (e.g. encrypted USB or direct copy)."
-  echo "  • Delete this archive after a successful restore on the new computer."
-  echo "  • Do NOT upload this file to public GitHub or untrusted storage."
+  if [[ "$ENCRYPT" -eq 1 ]]; then
+    info "SECURITY NOTICE:"
+    echo "  • This archive is encrypted with AES-256 (passphrase-protected)."
+    echo "  • Keep the passphrase separate from the archive file when transferring."
+    echo "  • Only transfer over a trusted channel."
+    echo "  • Delete this archive after a successful restore on the new computer."
+    echo "  • Do NOT upload this file to public GitHub or untrusted storage."
+  else
+    info "SECURITY NOTICE:"
+    echo "  • This archive contains sensitive secrets (.env tokens, config,"
+    echo "    GitHub App private key, and databases) in PLAINTEXT."
+    echo "  • Only transfer it over a trusted, secure channel (e.g. encrypted USB or direct copy)."
+    echo "  • Delete this archive after a successful restore on the new computer."
+    echo "  • Do NOT upload this file to public GitHub or untrusted storage."
+  fi
   echo
   echo "Next:"
-  echo "  1) Copy that file to a USB (or send encrypted)."
+  if [[ "$ENCRYPT" -eq 1 ]]; then
+    echo "  1) Copy that file to a USB (or send over secure channel)."
+  else
+    echo "  1) Copy that file to a USB (or send encrypted)."
+  fi
   echo "  2) On the new PC run:  ./scripts/gitcord-handover restore <that-file>"
   echo "  3) After Discord works there, stop bots on THIS PC:"
   echo "       ./scripts/gitcord-handover stop-old"
@@ -267,15 +341,28 @@ EOF
 cmd_restore() {
   need_docker
   local archive="${1:-}"
-  [[ -n "$archive" ]] || die "Usage: ./scripts/gitcord-handover restore [--force] /path/to/gitcord-handover-*.tar.gz"
+  [[ -n "$archive" ]] || die "Usage: ./scripts/gitcord-handover restore [--force] /path/to/gitcord-handover-*.tar.gz[.gpg]"
   [[ -f "$archive" ]] || die "File not found: $archive"
 
   local work pem_host
   umask 077
   work="$(mktemp -d "${TMPDIR:-/tmp}/gitcord-restore.XXXXXX")"
-  trap 'rm -rf "$work"' EXIT INT TERM
-  info "Opening handover file…"
-  tar -xzf "$archive" -C "$work"
+  trap '[[ -n "${work:-}" ]] && rm -rf "$work"' EXIT INT TERM
+
+  if is_encrypted "$archive"; then
+    command -v gpg >/dev/null 2>&1 || die "Archive is encrypted, but gpg is not installed. Install GnuPG to restore."
+    info "Encrypted handover file detected. Decrypting with gpg…"
+    local decrypted_tar="$work/decrypted.tar.gz"
+    if ! gpg ${GPG_EXTRA_ARGS:-} --decrypt --output "$decrypted_tar" "$archive"; then
+      die "Decryption failed (incorrect passphrase or corrupt archive)."
+    fi
+    info "Opening decrypted handover file…"
+    tar -xzf "$decrypted_tar" -C "$work"
+    rm -f "$decrypted_tar"
+  else
+    info "Opening handover file…"
+    tar -xzf "$archive" -C "$work"
+  fi
 
   [[ -f "$work/aossie.env" ]] || die "Bad handover file (missing aossie.env)."
   [[ -f "$work/stability-nexus.env" ]] || die "Bad handover file (missing stability-nexus.env)."
@@ -376,12 +463,14 @@ usage() {
   cat <<EOF
 Gitcord easy handover (local PC → local PC)
 
-  ./scripts/gitcord-handover pack [--force]              Create ONE handover file (USB this)
-  ./scripts/gitcord-handover restore [--force] FILE.tar.gz   Install on a new PC and start bots
-  ./scripts/gitcord-handover check                       See if bots are running
-  ./scripts/gitcord-handover stop-old                    Stop bots on this PC (after move)
+  ./scripts/gitcord-handover pack [--force] [--encrypt] [OUT_DIR]
+                                                        Create ONE handover file (USB this)
+  ./scripts/gitcord-handover restore [--force] FILE     Install on a new PC and start bots
+  ./scripts/gitcord-handover check                      See if bots are running
+  ./scripts/gitcord-handover stop-old                   Stop bots on this PC (after move)
 
-  --force   Skip y/N confirms (for AI / non-interactive use)
+  --encrypt  Encrypt archive with gpg symmetric AES-256 (pack only; restore auto-detects)
+  --force    Skip y/N confirms (for AI / non-interactive use)
 
 Need help? Open HANDOVER-EASY.txt or docs/HANDOVER.md
 AI users: paste docs/HANDOVER_AI_PROMPT.md into Cursor
@@ -394,6 +483,7 @@ main() {
   for arg in "$@"; do
     case "$arg" in
       --force) FORCE=1 ;;
+      --encrypt) ENCRYPT=1 ;;
       *) args+=("$arg") ;;
     esac
   done
