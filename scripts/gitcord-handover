@@ -242,6 +242,7 @@ cmd_pack() {
       rm -f "$archive"
     fi
     if [[ "${pack_need_restart:-0}" -eq 1 ]]; then
+      pack_need_restart=0
       info "Pack did not finish — restarting bots on this PC…"
       ensure_pem_host_in_env "${pem:-}" .env || true
       ensure_pem_host_in_env "${pem:-}" .env.stability-nexus || true
@@ -274,6 +275,11 @@ cmd_pack() {
     -v "$work/bundle/volumes:/out" \
     alpine tar czf /out/stability-data.tgz -C /data .
 
+  pack_need_restart=0
+  ensure_pem_host_in_env "$pem" .env
+  ensure_pem_host_in_env "$pem" .env.stability-nexus
+  start_stacks "$pem" || info "Could not auto-restart bots — start them manually if needed."
+
   cat >"$work/bundle/README.txt" <<EOF
 Gitcord handover bundle (${stamp})
 Give this file to the next person with Discord + GitHub App access.
@@ -299,13 +305,8 @@ EOF
   chmod 600 "$archive" 2>/dev/null || true
 
   pack_done=1
-  pack_need_restart=0
   trap - EXIT INT TERM
   rm -rf "$work"
-
-  ensure_pem_host_in_env "$pem" .env
-  ensure_pem_host_in_env "$pem" .env.stability-nexus
-  start_stacks "$pem" || info "Could not auto-restart bots — start them manually if needed."
 
   echo
   ok "DONE — one file created:"
