@@ -130,31 +130,6 @@ def build_unassign_dm_message(
     )
 
 
-def build_escalation_message(
-    github_org: str,
-    repo: str,
-    issue_number: int,
-    issue_title: str,
-    github_user: str,
-    discord_user_id: str | None = None,
-    time_label: str | int = "14 days",
-    total_days: str | int | None = None,
-) -> str:
-    """Build escalation notice sent to channel or mentor/assignee."""
-    display_name = f"<@{discord_user_id}>" if discord_user_id else f"@{github_user}"
-    title_str = issue_title.strip() if issue_title else f"Issue #{issue_number}"
-    repo_full = f"{github_org}/{repo}" if github_org else repo
-    raw_time = total_days if total_days is not None else time_label
-    time_str = f"{raw_time} days" if isinstance(raw_time, int) else str(raw_time)
-    return (
-        f"**Gitcord Inactivity Escalation: Issue #{issue_number}**\n"
-        f"**Repository:** {repo_full}\n"
-        f"**Issue:** {title_str}\n"
-        f"> {display_name} has been inactive on this issue for {time_str} "
-        f"with no updates after a reminder was sent. Attention needed from maintainers/mentors."
-    )
-
-
 def has_contributor_activity(
     github_reader: Any,
     owner: str,
@@ -209,17 +184,8 @@ def has_contributor_activity(
         )
 
     # 2. Check PRs by the author in this repo
-    inact_fn = getattr(github_reader, "get_author_prs_for_inactivity", None)
-    list_author_prs = None
-    if callable(inact_fn):
-        mock_ret = getattr(inact_fn, "_mock_return_value", None)
-        is_unconfigured_mock = hasattr(inact_fn, "_mock_return_value") and (
-            getattr(mock_ret, "name", None) == "DEFAULT"
-            and getattr(inact_fn, "_mock_side_effect", None) is None
-        )
-        if not is_unconfigured_mock:
-            list_author_prs = inact_fn
-    if list_author_prs is None:
+    list_author_prs = getattr(github_reader, "get_author_prs_for_inactivity", None)
+    if not callable(list_author_prs):
         list_author_prs = getattr(github_reader, "list_pull_requests_for_author", None)
     if callable(list_author_prs):
         cache_key = (target_user, repo)
@@ -326,39 +292,27 @@ def run_issue_inactivity_lifecycle(
             # Check github_reader.has_write_access
             has_write_fn = getattr(github_reader, "has_write_access", None)
             if callable(has_write_fn):
-                mock_ret = getattr(has_write_fn, "_mock_return_value", None)
-                is_unconfigured_mock = hasattr(has_write_fn, "_mock_return_value") and (
-                    getattr(mock_ret, "name", None) == "DEFAULT"
-                    and getattr(has_write_fn, "_mock_side_effect", None) is None
-                )
-                if not is_unconfigured_mock:
-                    try:
-                        res = has_write_fn(github_org, repo_name, login)
-                        if res is True or (isinstance(res, bool) and res):
-                            maintainer_cache[cache_key] = True
-                            return True
-                        if res is False or (isinstance(res, bool) and not res):
-                            maintainer_cache[cache_key] = False
-                            return False
-                    except Exception:
-                        logger.debug("Failed to check write access for %s", login, exc_info=True)
+                try:
+                    res = has_write_fn(github_org, repo_name, login)
+                    if res is True or (isinstance(res, bool) and res):
+                        maintainer_cache[cache_key] = True
+                        return True
+                    if res is False or (isinstance(res, bool) and not res):
+                        maintainer_cache[cache_key] = False
+                        return False
+                except Exception:
+                    logger.debug("Failed to check write access for %s", login, exc_info=True)
 
             # Check github_reader.check_user_permission
             check_perm_fn = getattr(github_reader, "check_user_permission", None)
             if callable(check_perm_fn):
-                mock_ret = getattr(check_perm_fn, "_mock_return_value", None)
-                is_unconfigured_mock = hasattr(check_perm_fn, "_mock_return_value") and (
-                    getattr(mock_ret, "name", None) == "DEFAULT"
-                    and getattr(check_perm_fn, "_mock_side_effect", None) is None
-                )
-                if not is_unconfigured_mock:
-                    try:
-                        perm = check_perm_fn(github_org, repo_name, login)
-                        if isinstance(perm, str) and perm.lower() in {"admin", "maintain", "write"}:
-                            maintainer_cache[cache_key] = True
-                            return True
-                    except Exception:
-                        logger.debug("Failed to check user permission for %s", login, exc_info=True)
+                try:
+                    perm = check_perm_fn(github_org, repo_name, login)
+                    if isinstance(perm, str) and perm.lower() in {"admin", "maintain", "write"}:
+                        maintainer_cache[cache_key] = True
+                        return True
+                except Exception:
+                    logger.debug("Failed to check user permission for %s", login, exc_info=True)
 
             maintainer_cache[cache_key] = False
             return False
@@ -403,8 +357,6 @@ def run_issue_inactivity_lifecycle(
                 elif isinstance(a, str) and a.strip():
                     login = a.strip()
                 if login:
-                    if _is_maintainer_or_mentor(login, repo):
-                        continue
                     active_assignments.add((repo, issue_number, login.strip().lower()))
 
         # Reconcile existing active trackers: close when issue closes or contributor is unassigned
@@ -439,9 +391,6 @@ def run_issue_inactivity_lifecycle(
                 t_num = tracker.get("issue_number")
                 t_user = tracker.get("github_user")
                 if not t_repo or t_num is None or not t_user:
-                    continue
-                if _is_maintainer_or_mentor(t_user, t_repo):
-                    close_tracker_fn(t_repo, t_num, t_user, status="resolved")
                     continue
                 if t_repo not in repos_to_check:
                     continue
@@ -514,12 +463,6 @@ def run_issue_inactivity_lifecycle(
 
             # Check existing tracking records for each assignee
             for assignee in assignee_logins:
-                if _is_maintainer_or_mentor(assignee, repo):
-                    logger.debug(
-                        "Skipping inactivity check for maintainer/mentor assignee",
-                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                    )
-                    continue
                 record = None
                 get_rec = getattr(storage, "get_issue_inactivity_record", None)
                 if callable(get_rec):
@@ -592,6 +535,14 @@ def run_issue_inactivity_lifecycle(
                 if not is_inactivity_due and not is_escalation_due:
                     # Neither reminder nor escalation is due; leave last_activity_at unchanged
                     # and continue using it as since on the next check.
+                    continue
+
+                # Skip assignees who are maintainers/mentors (checked only when reminder or unassign is due)
+                if _is_maintainer_or_mentor(assignee, repo):
+                    logger.debug(
+                        "Skipping inactivity check for maintainer/mentor assignee",
+                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                    )
                     continue
 
                 # Check for recent contributor activity (resets timer)

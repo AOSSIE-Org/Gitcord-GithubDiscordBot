@@ -242,10 +242,15 @@ class TestMessageFormatting:
 class TestActivityDetection:
     """Test detection of contributor activity on GitHub."""
 
-    def test_no_activity_returns_false(self) -> None:
-        reader = MagicMock()
-        reader.get_issue_comments.return_value = []
-        reader.list_pull_requests_for_author.return_value = []
+    @pytest.fixture
+    def reader(self) -> MagicMock:
+        r = MagicMock()
+        r.get_issue_comments.return_value = []
+        r.list_pull_requests_for_author.return_value = []
+        r.get_author_prs_for_inactivity = r.list_pull_requests_for_author
+        return r
+
+    def test_no_activity_returns_false(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
 
@@ -260,8 +265,7 @@ class TestActivityDetection:
         assert has_act is False
         assert act_time is None
 
-    def test_recent_comment_by_assignee_counts_as_activity(self) -> None:
-        reader = MagicMock()
+    def test_recent_comment_by_assignee_counts_as_activity(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         comment_time = now - timedelta(days=2)
@@ -272,7 +276,6 @@ class TestActivityDetection:
                 "body": "Working on a fix for this!",
             }
         ]
-        reader.list_pull_requests_for_author.return_value = []
 
         has_act, act_time = has_contributor_activity(
             github_reader=reader,
@@ -285,8 +288,7 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == comment_time
 
-    def test_other_user_comment_does_not_count(self) -> None:
-        reader = MagicMock()
+    def test_other_user_comment_does_not_count(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         reader.get_issue_comments.return_value = [
@@ -296,7 +298,6 @@ class TestActivityDetection:
                 "body": "Any updates?",
             }
         ]
-        reader.list_pull_requests_for_author.return_value = []
 
         has_act, act_time = has_contributor_activity(
             github_reader=reader,
@@ -309,12 +310,10 @@ class TestActivityDetection:
         assert has_act is False
         assert act_time is None
 
-    def test_recent_pr_referencing_issue_counts_as_activity(self) -> None:
-        reader = MagicMock()
+    def test_recent_pr_referencing_issue_counts_as_activity(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         pr_time = now - timedelta(days=1)
-        reader.get_issue_comments.return_value = []
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 105,
@@ -336,13 +335,11 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == pr_time
 
-    def test_recent_pr_updated_more_recently_uses_updated_at(self) -> None:
-        reader = MagicMock()
+    def test_recent_pr_updated_more_recently_uses_updated_at(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         created_time = now - timedelta(days=3)
         updated_time = now - timedelta(days=1)
-        reader.get_issue_comments.return_value = []
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 105,
@@ -364,13 +361,11 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == updated_time
 
-    def test_pr_created_before_since_but_updated_after_counts_as_activity(self) -> None:
-        reader = MagicMock()
+    def test_pr_created_before_since_but_updated_after_counts_as_activity(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         created_time = now - timedelta(days=10)
         updated_time = now - timedelta(days=1)
-        reader.get_issue_comments.return_value = []
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 105,
@@ -392,12 +387,10 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == updated_time
 
-    def test_recent_pr_not_mentioning_issue_does_not_count_as_activity(self) -> None:
-        reader = MagicMock()
+    def test_recent_pr_not_mentioning_issue_does_not_count_as_activity(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         pr_time = now - timedelta(days=2)
-        reader.get_issue_comments.return_value = []
         reader.list_pull_requests_for_author.return_value = [
             {
                 "number": 106,
@@ -419,10 +412,8 @@ class TestActivityDetection:
         assert has_act is False
         assert act_time is None
 
-    def test_comment_fetch_failure_returns_none(self) -> None:
-        reader = MagicMock()
+    def test_comment_fetch_failure_returns_none(self, reader: MagicMock) -> None:
         reader.get_issue_comments.return_value = None
-        reader.list_pull_requests_for_author.return_value = []
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
 
@@ -437,10 +428,8 @@ class TestActivityDetection:
         assert has_act is None
         assert act_time is None
 
-    def test_comment_exception_returns_none(self) -> None:
-        reader = MagicMock()
+    def test_comment_exception_returns_none(self, reader: MagicMock) -> None:
         reader.get_issue_comments.side_effect = RuntimeError("rate limit exceeded")
-        reader.list_pull_requests_for_author.return_value = []
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
 
@@ -455,9 +444,7 @@ class TestActivityDetection:
         assert has_act is None
         assert act_time is None
 
-    def test_pr_exception_returns_none(self) -> None:
-        reader = MagicMock()
-        reader.get_issue_comments.return_value = []
+    def test_pr_exception_returns_none(self, reader: MagicMock) -> None:
         reader.list_pull_requests_for_author.side_effect = RuntimeError("network error")
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
@@ -480,6 +467,9 @@ class TestInactivityLifecycleExecution:
     @pytest.fixture
     def setup_env(self) -> tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]:
         github_reader = MagicMock()
+        github_reader.has_write_access.return_value = False
+        github_reader.check_user_permission.return_value = "none"
+        github_reader.get_author_prs_for_inactivity = github_reader.list_pull_requests_for_author
         github_writer = MagicMock()
         discord_writer = MagicMock()
         storage = MockStorage()
@@ -1426,6 +1416,7 @@ class TestInactivityLifecycleExecution:
 
         # Simulate maintainer has write access
         github_reader.has_write_access.return_value = True
+        storage.track_issue_assignment("Gitcord", 50, "maintainer_dev", assigned_at)
         github_reader.list_open_issues.return_value = [
             {
                 "repo": "Gitcord",
@@ -1450,9 +1441,11 @@ class TestInactivityLifecycleExecution:
         # Must NOT send reminder DM or unassign
         discord_writer.send_dm.assert_not_called()
         github_writer.unassign_issue.assert_not_called()
-        # Not tracked in storage
         rec = storage.get_issue_inactivity_record("Gitcord", 50, "maintainer_dev")
-        assert rec is None
+        assert rec is not None
+        assert rec["reminder_sent_at"] is None
+        assert rec["escalated_at"] is None
+        github_reader.has_write_access.assert_called()
 
     def test_mentor_in_mentor_github_users_is_skipped(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
@@ -1461,6 +1454,7 @@ class TestInactivityLifecycleExecution:
         github_reader, github_writer, discord_writer, storage, policy, config = setup_env
         now = datetime.now(UTC)
         assigned_at = now - timedelta(days=20)
+        storage.track_issue_assignment("Gitcord", 51, "mentor_bob", assigned_at)
 
         github_reader.list_open_issues.return_value = [
             {
@@ -1487,7 +1481,44 @@ class TestInactivityLifecycleExecution:
         discord_writer.send_dm.assert_not_called()
         github_writer.unassign_issue.assert_not_called()
         rec = storage.get_issue_inactivity_record("Gitcord", 51, "mentor_bob")
-        assert rec is None
+        assert rec is not None
+        assert rec["reminder_sent_at"] is None
+        assert rec["escalated_at"] is None
+
+    def test_maintainer_check_not_run_when_neither_reminder_nor_unassign_due(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When issue is recently assigned and no action is due, maintainer checks are not executed."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=2)  # Under 7 days: neither reminder nor escalation is due
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 52,
+                "title": "Recent task",
+                "assignees": [{"login": "recent_user"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        # Maintainer APIs were NOT called because no reminder or unassign was due
+        github_reader.has_write_access.assert_not_called()
+        github_reader.check_user_permission.assert_not_called()
 
 
 
