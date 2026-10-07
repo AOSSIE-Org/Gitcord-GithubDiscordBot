@@ -258,10 +258,9 @@ def has_contributor_activity(
                     pr_created = _parse_utc_datetime(pr.get("created_at"))
                     if pr_created and pr_created > since and (latest_activity is None or pr_created > latest_activity):
                         latest_activity = pr_created
-                    else:
-                        pr_updated = _parse_utc_datetime(pr.get("updated_at"))
-                        if pr_updated and pr_updated > since and (latest_activity is None or pr_updated > latest_activity):
-                            latest_activity = pr_updated
+                    pr_updated = _parse_utc_datetime(pr.get("updated_at"))
+                    if pr_updated and pr_updated > since and (latest_activity is None or pr_updated > latest_activity):
+                        latest_activity = pr_updated
     else:
         fetch_failed = True
         logger.warning(

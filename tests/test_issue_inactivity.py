@@ -336,6 +336,62 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == pr_time
 
+    def test_recent_pr_updated_more_recently_uses_updated_at(self) -> None:
+        reader = MagicMock()
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        created_time = now - timedelta(days=3)
+        updated_time = now - timedelta(days=1)
+        reader.get_issue_comments.return_value = []
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 105,
+                "title": "Fix bug (#42)",
+                "body": "Closes #42",
+                "created_at": created_time.isoformat(),
+                "updated_at": updated_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == updated_time
+
+    def test_pr_created_before_since_but_updated_after_counts_as_activity(self) -> None:
+        reader = MagicMock()
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        created_time = now - timedelta(days=10)
+        updated_time = now - timedelta(days=1)
+        reader.get_issue_comments.return_value = []
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 105,
+                "title": "Fix bug (#42)",
+                "body": "Closes #42",
+                "created_at": created_time.isoformat(),
+                "updated_at": updated_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == updated_time
+
     def test_recent_pr_not_mentioning_issue_does_not_count_as_activity(self) -> None:
         reader = MagicMock()
         now = datetime.now(UTC)
