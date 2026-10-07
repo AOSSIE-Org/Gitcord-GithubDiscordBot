@@ -71,13 +71,13 @@ def test_duplicate_pending_claim_for_same_github_user_is_rejected(tmp_path: Path
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
 
-    first_claim = svc.create_claim("d1", "shubham_5080")
+    first_claim = svc.create_claim("d1", "shubham5080")
 
     with pytest.raises(ValueError, match="active pending claim"):
-        svc.create_claim("d2", "shubham_5080")
+        svc.create_claim("d2", "shubham5080")
 
-    original_row = storage.get_identity_link("d1", "shubham_5080")
-    duplicate_row = storage.get_identity_link("d2", "shubham_5080")
+    original_row = storage.get_identity_link("d1", "shubham5080")
+    duplicate_row = storage.get_identity_link("d2", "shubham5080")
     assert original_row is not None
     assert original_row["verification_code"] == first_claim.verification_code
     assert duplicate_row is None
@@ -893,3 +893,82 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+class _RecordingGitHubIdentity:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def search_verification_code(self, github_user: str, code: str) -> VerificationMatch:
+        self.calls.append(github_user)
+        return VerificationMatch(found=True, location="bio")
+
+
+@pytest.mark.parametrize(
+    "github_user",
+    [
+        "victim/../attacker",
+        "../orgs/AOSSIE-Org",
+        "victim?x=1",
+        "victim#frag",
+        "victim.attacker",
+        "victim attacker",
+        "victim_attacker",
+        "",
+        "@",
+        "a" * 40,
+    ],
+)
+def test_create_claim_rejects_invalid_github_login(tmp_path: Path, github_user: str) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+
+    with pytest.raises(ValueError, match="Invalid GitHub username"):
+        svc.create_claim("d1", github_user)
+    assert storage.get_identity_status("d1")["status"] == "not_linked"
+
+
+def test_verify_claim_rejects_path_traversal_before_github_lookup(tmp_path: Path) -> None:
+    """A legacy row for victim/../attacker must not be verified via /users/attacker."""
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    github = _RecordingGitHubIdentity()
+    svc = IdentityLinkService(storage=storage, github_identity=github)
+    storage.create_identity_claim(
+        discord_user_id="d1",
+        github_user="victim/../attacker",
+        verification_code="A" * 10,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+
+    with pytest.raises(ValueError, match="Invalid GitHub username"):
+        svc.verify_claim("d1", "victim/../attacker")
+    assert github.calls == []
+
+
+@pytest.mark.parametrize(
+    "github_user",
+    ["octocat", "a", "a" * 39, "my-user-1", "-old-", "old--name", "MixedCase"],
+)
+def test_valid_github_logins_are_accepted(tmp_path: Path, github_user: str) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_RecordingGitHubIdentity())
+
+    claim = svc.create_claim("d1", github_user)
+    assert claim.github_user == github_user
+    assert svc.verify_claim("d1", github_user) == (True, "bio")
+
+
+def test_leading_at_and_whitespace_are_stripped(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    github = _RecordingGitHubIdentity()
+    svc = IdentityLinkService(storage=storage, github_identity=github)
+
+    claim = svc.create_claim("d1", "  @octocat ")
+    assert claim.github_user == "octocat"
+    assert storage.get_identity_link("d1", "octocat") is not None
+    assert svc.verify_claim("d1", "@octocat") == (True, "bio")
+    assert github.calls == ["octocat"]
