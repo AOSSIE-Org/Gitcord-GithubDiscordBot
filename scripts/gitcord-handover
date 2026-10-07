@@ -180,12 +180,12 @@ start_stacks() {
   [[ -n "$pem_host" ]] || die "GITCORD_PEM_HOST is not set"
   export GITCORD_PEM_HOST="$pem_host"
   info "Starting AOSSIE…"
-  docker compose -p gitcord-githubdiscordbot --profile scheduler up -d --build
+  docker compose -p gitcord-githubdiscordbot --profile scheduler up -d --build || return 1
   info "Starting Stability Nexus…"
   docker compose -p gitcord-stability \
     -f docker-compose.stability-nexus.yml \
     --env-file .env.stability-nexus \
-    --profile scheduler up -d --build
+    --profile scheduler up -d --build || return 1
 }
 
 install_pem() {
@@ -275,10 +275,12 @@ cmd_pack() {
     -v "$work/bundle/volumes:/out" \
     alpine tar czf /out/stability-data.tgz -C /data .
 
-  pack_need_restart=0
   ensure_pem_host_in_env "$pem" .env
   ensure_pem_host_in_env "$pem" .env.stability-nexus
-  start_stacks "$pem" || info "Could not auto-restart bots — start them manually if needed."
+  if ! start_stacks "$pem"; then
+    die "Failed to restart bots after snapshot copy."
+  fi
+  pack_need_restart=0
 
   cat >"$work/bundle/README.txt" <<EOF
 Gitcord handover bundle (${stamp})
