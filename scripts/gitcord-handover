@@ -250,13 +250,18 @@ EOF
   ok "DONE — one file created:"
   echo "    $archive"
   echo
+  info "SECURITY NOTICE:"
+  echo "  • This archive contains sensitive secrets (.env tokens, config,"
+  echo "    GitHub App private key, and databases) in PLAINTEXT."
+  echo "  • Only transfer it over a trusted, secure channel (e.g. encrypted USB or direct copy)."
+  echo "  • Delete this archive after a successful restore on the new computer."
+  echo "  • Do NOT upload this file to public GitHub or untrusted storage."
+  echo
   echo "Next:"
   echo "  1) Copy that file to a USB (or send encrypted)."
   echo "  2) On the new PC run:  ./scripts/gitcord-handover restore <that-file>"
   echo "  3) After Discord works there, stop bots on THIS PC:"
   echo "       ./scripts/gitcord-handover stop-old"
-  echo
-  echo "Do NOT upload this file to public GitHub."
 }
 
 cmd_restore() {
