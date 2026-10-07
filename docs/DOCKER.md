@@ -292,3 +292,4 @@ Mentors can route a repo's **PR-opened and issue-opened** posts to a channel or 
 - **Updates**: Rebuild with `docker compose build --no-cache` after dependency or code changes; config and data are unchanged.
 - **Logs**: Use `docker compose logs -f bot` for live logs; log level is controlled by config `runtime.log_level`.
 - **Scheduled sync**: Use `sync-scheduler` profile or host cron; with 15 AOSSIE repos expect **10–30+ minutes** per run.
+- **Handover and migration**: When moving stacks between machines, use `./scripts/gitcord-handover pack [--encrypt]` and `restore` per [HANDOVER-EASY.txt](../HANDOVER-EASY.txt) and [HANDOVER.md](HANDOVER.md). Security notice: the archive contains credentials (`.env` tokens, GitHub App private key, databases) in plaintext unless `--encrypt` is used; only transfer over a trusted channel, keep passphrases separate, and delete the archive once restored.
