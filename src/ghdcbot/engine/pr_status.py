@@ -438,7 +438,7 @@ def fetch_all_open_pr_health(
     if repo:
         clean_repo = repo.strip().lower()
         all_open_prs = [
-            pr for pr in all_open_prs 
+            pr for pr in all_open_prs
             if pr.get("repo") and str(pr.get("repo")).strip().lower() == clean_repo
         ]
     total = len(all_open_prs)

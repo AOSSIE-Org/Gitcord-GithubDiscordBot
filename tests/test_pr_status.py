@@ -2091,5 +2091,113 @@ class TestRepoRecommendationAndAutocomplete:
         assert "Closed 🔴" in msg
 
 
+# ===================================================================
+# /pr-status view: per-user cooldown on button and modal fetches
+# ===================================================================
 
 
+@pytest.fixture
+def pr_status_guard():
+    import ghdcbot.bot as bot_module
+
+    bot_module._pr_status_last_fetch.clear()
+    bot_module._pr_status_in_flight.clear()
+    yield bot_module
+    bot_module._pr_status_last_fetch.clear()
+    bot_module._pr_status_in_flight.clear()
+
+
+def _button_interaction(user_id: int = 42) -> MagicMock:
+    from unittest.mock import AsyncMock
+
+    interaction = MagicMock()
+    interaction.user.id = user_id
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    return interaction
+
+
+@pytest.mark.asyncio
+async def test_dashboard_click_rejected_while_previous_fetch_running(pr_status_guard) -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    release = asyncio.Event()
+    calls: list[int] = []
+
+    async def slow_fetch(self, interaction, *, skip):
+        calls.append(skip)
+        await release.wait()
+
+    view = pr_status_guard.PRStatusView(None, MagicMock(), MagicMock())
+    first, second = _button_interaction(), _button_interaction()
+    with patch.object(pr_status_guard.PRStatusView, "_fetch_and_send_dashboard", slow_fetch):
+        task = asyncio.create_task(view._send_dashboard(first, skip=0))
+        await asyncio.sleep(0)
+        await view._send_dashboard(second, skip=0)
+        release.set()
+        await task
+
+    assert calls == [0]
+    second.response.defer.assert_not_awaited()
+    assert "still running" in second.response.send_message.call_args[0][0]
+    assert pr_status_guard._pr_status_in_flight == set()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_click_cooldown_then_allowed(pr_status_guard) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    fetch = AsyncMock()
+    view = pr_status_guard.PRStatusView(None, MagicMock(), MagicMock())
+    clock = [1000.0]
+    with (
+        patch.object(pr_status_guard.PRStatusView, "_fetch_and_send_dashboard", fetch),
+        patch.object(pr_status_guard.time, "monotonic", lambda: clock[0]),
+    ):
+        await view._send_dashboard(_button_interaction(), skip=0)
+        blocked = _button_interaction()
+        await view._send_dashboard(blocked, skip=0)
+        clock[0] += pr_status_guard.PR_STATUS_FETCH_COOLDOWN_SECONDS
+        await view._send_dashboard(_button_interaction(), skip=0)
+
+    assert fetch.await_count == 2
+    assert "cooldown" in blocked.response.send_message.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_cooldown_is_per_user_and_shared_with_modal(pr_status_guard) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    view = pr_status_guard.PRStatusView(None, MagicMock(), MagicMock())
+    modal = pr_status_guard.PRStatusModal(None, MagicMock(), MagicMock())
+    modal.pr_number._value = "7"
+    lookup = AsyncMock()
+    with (
+        patch.object(pr_status_guard.PRStatusView, "_fetch_and_send_dashboard", AsyncMock()),
+        patch.object(pr_status_guard.PRStatusModal, "_lookup", lookup),
+    ):
+        await view._send_dashboard(_button_interaction(user_id=1), skip=0)
+        same_user = _button_interaction(user_id=1)
+        await modal.on_submit(same_user)
+        await modal.on_submit(_button_interaction(user_id=2))
+
+    assert "cooldown" in same_user.response.send_message.call_args[0][0]
+    assert lookup.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_fetch_error_releases_in_flight_guard(pr_status_guard) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    view = pr_status_guard.PRStatusView(None, MagicMock(), MagicMock())
+    with patch.object(
+        pr_status_guard.PRStatusView,
+        "_fetch_and_send_dashboard",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        with pytest.raises(RuntimeError):
+            await view._send_dashboard(_button_interaction(), skip=0)
+
+    assert pr_status_guard._pr_status_in_flight == set()

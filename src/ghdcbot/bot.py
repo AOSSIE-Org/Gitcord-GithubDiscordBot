@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -467,6 +468,34 @@ class IdentityVerificationView(discord.ui.View):
         await self._edit_response(interaction, "Verification cancelled.")
 
 
+PR_STATUS_FETCH_COOLDOWN_SECONDS = 5.0
+# Button and modal callbacks bypass the slash command cooldown, so GitHub fetches
+# from /pr-status views are rate-limited per user here instead.
+_pr_status_last_fetch: dict[Any, float] = {}
+_pr_status_in_flight: set[Any] = set()
+
+
+def _claim_pr_status_fetch(user_id: Any) -> str | None:
+    """Reserve a /pr-status GitHub fetch for this user, or return why it was refused."""
+    if user_id in _pr_status_in_flight:
+        return "⏳ Your previous PR status request is still running. Please wait for it to finish."
+    now = time.monotonic()
+    for uid, started in list(_pr_status_last_fetch.items()):
+        if now - started >= PR_STATUS_FETCH_COOLDOWN_SECONDS:
+            del _pr_status_last_fetch[uid]
+    started = _pr_status_last_fetch.get(user_id)
+    if started is not None:
+        retry_after = int(PR_STATUS_FETCH_COOLDOWN_SECONDS - (now - started)) + 1
+        return f"⏳ This command is on cooldown. Try again in {retry_after}s."
+    _pr_status_last_fetch[user_id] = now
+    _pr_status_in_flight.add(user_id)
+    return None
+
+
+def _release_pr_status_fetch(user_id: Any) -> None:
+    _pr_status_in_flight.discard(user_id)
+
+
 class PRStatusModal(discord.ui.Modal, title="Check Specific PR"):
     pr_number = discord.ui.TextInput(
         label="Pull Request Number",
@@ -483,13 +512,24 @@ class PRStatusModal(discord.ui.Modal, title="Check Specific PR"):
         self.github_adapter = github_adapter
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
         try:
             pr_num = int(self.pr_number.value.strip())
         except ValueError:
-            await interaction.followup.send("❌ PR number must be an integer.", ephemeral=True)
+            await interaction.response.send_message("❌ PR number must be an integer.", ephemeral=True)
             return
 
+        user_id = interaction.user.id
+        refusal = _claim_pr_status_fetch(user_id)
+        if refusal:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await self._lookup(interaction, pr_num)
+        finally:
+            _release_pr_status_fetch(user_id)
+
+    async def _lookup(self, interaction: discord.Interaction, pr_num: int) -> None:
         repo_name, err = await resolve_repo_for_pr(
             self.config, self.github_adapter, pr_num, repo=self.repo
         )
@@ -575,6 +615,18 @@ class PRStatusView(discord.ui.View):
                 break
 
     async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
+        user_id = interaction.user.id
+        refusal = _claim_pr_status_fetch(user_id)
+        if refusal:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await self._fetch_and_send_dashboard(interaction, skip=skip)
+        finally:
+            _release_pr_status_fetch(user_id)
+
+    async def _fetch_and_send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
         notification_config = getattr(self.config.discord, "notifications", None)
         coderabbit_logins = (
             getattr(notification_config, "coderabbit_bot_logins", None) if notification_config else None
@@ -618,7 +670,6 @@ class PRStatusView(discord.ui.View):
 
     @discord.ui.button(label="Show All Open PRs", style=discord.ButtonStyle.primary, emoji="📄")
     async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True)
         await self._send_dashboard(interaction, skip=0)
 
     @discord.ui.button(
@@ -629,7 +680,6 @@ class PRStatusView(discord.ui.View):
         disabled=True,
     )
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True)
         await self._send_dashboard(interaction, skip=self.skip + PR_STATUS_MAX_PRS)
 
     @discord.ui.button(label="Check Specific PR", style=discord.ButtonStyle.secondary, emoji="🔍")
