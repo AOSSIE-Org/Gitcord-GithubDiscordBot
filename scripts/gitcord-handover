@@ -295,7 +295,7 @@ EOF
     raw_tar="$work/gitcord-handover-${stamp}.tar.gz"
     tar -czf "$raw_tar" -C "$work/bundle" .
     info "Encrypting archive with gpg (AES-256)…"
-    if ! gpg ${GPG_EXTRA_ARGS:-} --symmetric --cipher-algo AES256 --output "$archive" "$raw_tar"; then
+    if ! gpg --symmetric --cipher-algo AES256 --no-symkey-cache --output "$archive" "$raw_tar"; then
       die "Encryption failed."
     fi
     rm -f "$raw_tar"
@@ -354,7 +354,7 @@ cmd_restore() {
     command -v gpg >/dev/null 2>&1 || die "Archive is encrypted, but gpg is not installed. Install GnuPG to restore."
     info "Encrypted handover file detected. Decrypting with gpg…"
     local decrypted_tar="$work/decrypted.tar.gz"
-    if ! gpg ${GPG_EXTRA_ARGS:-} --decrypt --output "$decrypted_tar" "$archive"; then
+    if ! gpg --decrypt --output "$decrypted_tar" "$archive"; then
       die "Decryption failed (incorrect passphrase or corrupt archive)."
     fi
     info "Opening decrypted handover file…"
