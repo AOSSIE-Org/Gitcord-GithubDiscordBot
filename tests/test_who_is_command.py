@@ -42,7 +42,7 @@ async def _run_who_is_handler(
 ) -> None:
     """Helper representing the who_is_cmd handler logic in bot.py."""
     await interaction.response.defer(ephemeral=True)
-    github_username = github_username.strip()
+    github_username = github_username.strip().removeprefix("@").strip()
     discord_user_id = resolve_github_to_discord(storage, github_username)
 
     if discord_user_id:
@@ -175,6 +175,40 @@ async def test_who_is_case_insensitive_matching() -> None:
 
     assert len(interaction.followup.messages) == 1
     assert "as Discord member <@999888777>" in interaction.followup.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_who_is_ignores_leading_at_sign() -> None:
+    """Test /who-is resolves `@PrithvijitBose` the same as `PrithvijitBose`."""
+    storage = MagicMock()
+    config = MagicMock()
+    config.identity.verified_max_age_days = 30
+
+    mapping_record = MagicMock()
+    mapping_record.github_user = "PrithvijitBose"
+    mapping_record.discord_user_id = "999888777"
+    storage.list_verified_identity_mappings.return_value = [mapping_record]
+    storage.get_identity_status.return_value = {"status": "verified", "is_stale": False}
+
+    interaction = _FakeInteraction()
+    await _run_who_is_handler(interaction, storage, config, " @PrithvijitBose ")
+
+    assert (
+        interaction.followup.messages[0]["content"]
+        == "GitHub user **PrithvijitBose** is **✅ Verified** as Discord member <@999888777>."
+    )
+
+
+def test_resolve_github_to_discord_strips_at_sign() -> None:
+    storage = MagicMock()
+    mapping_record = MagicMock()
+    mapping_record.github_user = "octocat"
+    mapping_record.discord_user_id = "42"
+    storage.list_verified_identity_mappings.return_value = [mapping_record]
+
+    assert resolve_github_to_discord(storage, "@octocat") == "42"
+    assert resolve_github_to_discord(storage, " @OctoCat ") == "42"
+    assert resolve_github_to_discord(storage, "@") is None
 
 
 import sys

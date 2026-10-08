@@ -78,7 +78,7 @@ def resolve_github_to_discord(
     if not callable(verified):
         return None
     
-    target = (github_user or "").strip().lower()
+    target = (github_user or "").strip().removeprefix("@").strip().lower()
     for mapping in verified():
         if (mapping.github_user or "").strip().lower() == target:
             return mapping.discord_user_id
