@@ -334,6 +334,13 @@ class HelpLinkStartView(discord.ui.View):
                     await target_msg.delete()
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
                     logger.debug("Failed to delete expired help-link channel message: %s", exc)
+        else:
+            target_msg = getattr(self, "message", None)
+            if target_msg is not None and hasattr(target_msg, "edit"):
+                try:
+                    await target_msg.edit(view=self)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    logger.debug("Failed to disable expired help-link DM: %s", exc)
 
 
 async def deliver_help_link_prompt(
