@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 from ghdcbot.config.models import DigestConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine.metrics import UserMetrics, get_contribution_metrics, rank_by_activity
+from ghdcbot.engine.notifications import _sanitize_discord_title
 
 if TYPE_CHECKING:
     from ghdcbot.core.interfaces import DiscordWriter, Storage
@@ -241,10 +242,14 @@ def build_digest_report(
 
 
 def _short_title(title: str) -> str:
+    """Shorten an attacker-controlled PR title and escape it for the digest embed.
+
+    Truncate before escaping so the cut can never split an escape sequence.
+    """
     title = " ".join(title.replace("`", "'").split())
     if len(title) > _TITLE_MAX:
-        return title[: _TITLE_MAX - 1] + "…"
-    return title
+        title = title[: _TITLE_MAX - 1] + "…"
+    return _sanitize_discord_title(title)
 
 
 def _format_open_pr(pr: DigestOpenPR, *, org: str, guild_id: str | None, now: datetime) -> str:
