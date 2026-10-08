@@ -660,78 +660,6 @@ class GitHubRestAdapter:
         )
         return False
 
-    def delete_file(
-        self,
-        owner: str,
-        repo: str,
-        file_path: str,
-        commit_message: str,
-        branch: str | None = None,
-    ) -> bool:
-        """Delete a file from a GitHub repo using the Contents API.
-
-        Returns True if the file was deleted (200) or already absent (404).
-        """
-        try:
-            if not branch:
-                repo_info = self._request("GET", f"/repos/{owner}/{repo}", params={})
-                if repo_info and repo_info.status_code == 200:
-                    branch = repo_info.json().get("default_branch", "main")
-                else:
-                    branch = "main"
-
-            file_response = self._request(
-                "GET",
-                f"/repos/{owner}/{repo}/contents/{file_path}",
-                params={"ref": branch},
-            )
-            if file_response is None:
-                return False
-            if file_response.status_code == 404:
-                return True
-            if file_response.status_code != 200:
-                return False
-            file_sha = file_response.json().get("sha")
-            if not file_sha:
-                return False
-
-            payload = {"message": commit_message, "sha": file_sha, "branch": branch}
-            try:
-                response = self._client.request(
-                    "DELETE",
-                    f"/repos/{owner}/{repo}/contents/{file_path}",
-                    json=payload,
-                )
-            except httpx.HTTPError as exc:
-                self._logger.warning(
-                    "GitHub delete file failed (network)",
-                    extra={"path": file_path, "error": str(exc)},
-                )
-                return False
-            if response.status_code in {200, 204}:
-                self._logger.info(
-                    "File deleted from GitHub",
-                    extra={"owner": owner, "repo": repo, "file_path": file_path},
-                )
-                return True
-            self._logger.warning(
-                "Failed to delete file from GitHub",
-                extra={
-                    "owner": owner,
-                    "repo": repo,
-                    "file_path": file_path,
-                    "status_code": response.status_code,
-                },
-            )
-            return False
-        except Exception as exc:
-            self._logger.warning(
-                "Exception deleting file from GitHub",
-                exc_info=True,
-                extra={"owner": owner, "repo": repo, "file_path": file_path, "error": str(exc)},
-            )
-            return False
-
     def list_repo_open_issues(
         self,
         owner: str,
@@ -794,6 +722,43 @@ class GitHubRestAdapter:
         for page in self._paginate(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", params={"per_page": 100}):
             reviews.extend(page)
         return reviews
+
+    def get_pr_timeline_snapshot(self, repo: str, pr_number: int) -> dict | None:
+        """Read the PR, its issue timeline and its commits for the PR channel timeline.
+
+        Returns None when any part cannot be read completely, so callers never render a
+        partial history.
+        """
+        owner = self._org
+        pr = self.get_pull_request(owner, repo, pr_number)
+        if not pr:
+            return None
+        try:
+            timeline = [
+                item
+                for page in self._paginate(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/timeline",
+                    params={"per_page": 100},
+                    raise_on_error=True,
+                )
+                for item in page
+            ]
+            commits = [
+                item
+                for page in self._paginate(
+                    f"/repos/{owner}/{repo}/pulls/{pr_number}/commits",
+                    params={"per_page": 100},
+                    raise_on_error=True,
+                )
+                for item in page
+            ]
+        except GitHubPaginationError:
+            self._logger.warning(
+                "Could not read full PR timeline",
+                extra={"repo": f"{owner}/{repo}", "pr_number": pr_number},
+            )
+            return None
+        return {"pr": pr, "timeline": timeline, "commits": commits}
 
     def get_pull_request_review_comments(self, owner: str, repo: str, pr_number: int) -> list[dict]:
         """Fetch inline review comments for a pull request.
@@ -1031,106 +996,6 @@ class GitHubRestAdapter:
         if response and response.status_code == 200:
             return response.json()
         return None
-
-    def write_file(
-        self, owner: str, repo: str, file_path: str, content: str, commit_message: str, branch: str | None = None
-    ) -> bool:
-        """Write a file to GitHub repo using Contents API.
-
-        Creates or updates a file in the repository. Uses the default branch if branch is not specified.
-
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            file_path: Path to file within repo (e.g., "snapshots/2024-01-01/meta.json")
-            content: File content (will be base64 encoded)
-            commit_message: Commit message
-            branch: Branch name (default: main or master)
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        import base64
-
-        try:
-            # Get default branch if not specified
-            if not branch:
-                repo_info = self._request("GET", f"/repos/{owner}/{repo}", params={})
-                if repo_info and repo_info.status_code == 200:
-                    branch = repo_info.json().get("default_branch", "main")
-                else:
-                    branch = "main"
-
-            # Check if file exists to get SHA for update
-            file_sha = None
-            try:
-                file_response = self._request(
-                    "GET",
-                    f"/repos/{owner}/{repo}/contents/{file_path}",
-                    params={"ref": branch},
-                )
-                if file_response and file_response.status_code == 200:
-                    file_sha = file_response.json().get("sha")
-            except Exception:
-                # File doesn't exist yet, will create new
-                pass
-
-            # Prepare content (base64 encode)
-            content_bytes = content.encode("utf-8")
-            content_b64 = base64.b64encode(content_bytes).decode("ascii")
-
-            # Create/update file
-            payload = {
-                "message": commit_message,
-                "content": content_b64,
-                "branch": branch,
-            }
-            if file_sha:
-                payload["sha"] = file_sha
-
-            # Use _client directly for PUT with JSON body
-            try:
-                response = self._client.put(
-                    f"/repos/{owner}/{repo}/contents/{file_path}",
-                    json=payload,
-                )
-            except httpx.HTTPError as exc:
-                self._logger.warning(
-                    "GitHub request failed",
-                    extra={"path": f"/repos/{owner}/{repo}/contents/{file_path}", "error": str(exc)},
-                )
-                return False
-
-            if response and response.status_code in {200, 201}:
-                self._logger.info(
-                    "File written to GitHub",
-                    extra={"owner": owner, "repo": repo, "file_path": file_path, "branch": branch},
-                )
-                return True
-            else:
-                error_body = ""
-                try:
-                    error_body = (response.text or "")[:300] if response else ""
-                except Exception:
-                    pass
-                self._logger.warning(
-                    "Failed to write file to GitHub",
-                    extra={
-                        "owner": owner,
-                        "repo": repo,
-                        "file_path": file_path,
-                        "status_code": response.status_code if response else None,
-                        "error": error_body,
-                    },
-                )
-                return False
-        except Exception as exc:
-            self._logger.warning(
-                "Exception writing file to GitHub",
-                exc_info=True,
-                extra={"owner": owner, "repo": repo, "file_path": file_path, "error": str(exc)},
-            )
-            return False
 
     def _ingest_repo(self, repo: dict, since: datetime) -> Iterable[ContributionEvent]:
         repo_name = repo["name"]
@@ -1925,6 +1790,7 @@ class GitHubRestAdapter:
                     "title": pr.get("title"),
                     "html_url": pr.get("html_url"),
                     "created_at": pr.get("created_at"),
+                    "head_sha": (pr.get("head") or {}).get("sha"),
                 }
 
     def _paginate(

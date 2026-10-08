@@ -33,6 +33,14 @@ discord:
     write: false
   # Optional: channel ID for read-only activity feed (mentor visibility). If set, one summary message per run.
   activity_channel_id: null
+  # Optional: weekly maintainer digest (auto-only, once per ISO week). Distinct from activity_channel_id.
+  # digest:
+  #   enabled: true
+  #   channel_id: "000000000000000000"
+  #   weekday_utc: 6   # Sunday
+  #   hour_utc: 12
+  #   lookback_days: 7
+  #   top_n: 5
   # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
   # Example: ["mentor-chat", "review-queue"]
   pr_preview_channels: []
@@ -66,6 +74,7 @@ discord:
   #   pr_opened_github_comment: false  # Comment on new PRs asking unverified authors to /link (needs invite_url)
   #   issue_opened_github_comment: false  # Same /link comment on new issues (needs invite_url)
   #   update_pr_channel_on_lifecycle: true
+  #   pr_channel_timeline: false       # PR posts show a status dot + review timeline (replaces the lifecycle edit)
   #   update_issue_channel_on_lifecycle: true  # Edit issue posts on assign/unassign/close/reopen
   #   coderabbit_reminders: false
   #   coderabbit_reminder_after_hours: 48
