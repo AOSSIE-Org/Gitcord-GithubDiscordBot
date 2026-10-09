@@ -15,3 +15,7 @@ primary_region = "iad"
 [mounts]
   source = "gitcord_data"
   destination = "/data"
+
+[[files]]
+  guest_path = "/app/config/config.yaml"
+  local_path = "config/config.yaml"
