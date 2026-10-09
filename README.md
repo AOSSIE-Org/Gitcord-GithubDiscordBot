@@ -191,7 +191,9 @@ Protect `.env`, restrict SSH access, and back up the `gitcord_data` volume. Neve
 
 #### Fly.io and similar container platforms
 
-Fly.io is possible, but the repository is not currently a one-command Fly deployment: its Compose file uses host networking and a local named volume. A Fly deployment must remove `network_mode: host`, provide secrets through `fly secrets`, mount a persistent volume at `/data`, and run the bot and scheduler without allowing overlapping syncs. Use a Linux VPS for the supported copy-and-run path until platform-specific deployment files are added.
+Gitcord supports first-class deployment on [Fly.io](https://fly.io) using `fly launch` / `fly deploy`. A persistent volume securely handles SQLite state, and Fly secrets provide `GITHUB_TOKEN` and `DISCORD_TOKEN` without committing an `.env` file.
+
+See **[docs/FLY.md](docs/FLY.md)** for step-by-step instructions on deploying to Fly.io.
 
 ### Quick Setup Overview (local Python install)
 

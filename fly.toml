@@ -1,0 +1,21 @@
+app = "gitcord"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[experimental]
+  # Override Dockerfile ENTRYPOINT to run our wrapper script which starts both the sync loop and bot
+  entrypoint = ["/bin/bash"]
+  cmd = ["/app/scripts/fly-start.sh"]
+
+[env]
+  GITCORD_CONFIG = "/app/config/config.yaml"
+
+[mounts]
+  source = "gitcord_data"
+  destination = "/data"
+
+[[files]]
+  guest_path = "/app/config/config.yaml"
+  local_path = "config/config.yaml"
