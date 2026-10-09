@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -e . \
 
 # Config (copied as root; chown so appuser can read).
 COPY config/ ./config/
+COPY scripts/ ./scripts/
 RUN chown -R appuser:appuser /app
 
 # Steady state: run as non-root. /data ownership for volumes is handled by init in compose.
