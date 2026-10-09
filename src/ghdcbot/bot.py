@@ -1502,10 +1502,10 @@ def run_bot(config_path: str) -> None:
         description="Lookup a GitHub username to find their verified Discord account",
         guild=discord.Object(id=guild_id)
     )
-    @app_commands.describe(github_username="GitHub username to look up")
+    @app_commands.describe(github_username="GitHub username to look up, without @ (e.g. octocat)")
     async def who_is_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        github_username = github_username.strip()
+        github_username = github_username.strip().removeprefix("@").strip()
         # Pass storage into the standalone resolve_github_to_discord helper function
         discord_user_id = resolve_github_to_discord(storage, github_username)
         if discord_user_id:
