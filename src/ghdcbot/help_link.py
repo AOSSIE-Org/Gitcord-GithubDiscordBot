@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import discord
 
@@ -16,6 +17,10 @@ logger = logging.getLogger("ghdcbot.help_link")
 HELP_LINK_COMMAND_NAME = "help-link"
 # Synthetic initiator id for join-welcome sessions (not a real Discord snowflake).
 WELCOME_INITIATOR_ID = "welcome-on-join"
+
+# Default validity duration for /help-link requests (2 hours).
+HELP_LINK_SESSION_TTL: timedelta = timedelta(hours=2)
+HELP_LINK_EXPIRY_SECONDS: float = HELP_LINK_SESSION_TTL.total_seconds()
 
 
 def should_skip_welcome_for_identity(status: dict[str, Any] | None) -> str | None:
@@ -52,7 +57,9 @@ async def deliver_welcome_link_dm(
     """Send the welcome Start-linking DM. Returns True if delivered."""
     embed = build_welcome_link_prompt_embed(org_label=org_label)
     try:
-        await member.send(embed=embed, view=view)
+        dm_msg = await member.send(embed=embed, view=view)
+        if dm_msg is not None:
+            view.message = dm_msg
         return True
     except (discord.Forbidden, discord.HTTPException) as exc:
         logger.info(
@@ -65,7 +72,7 @@ async def deliver_welcome_link_dm(
 
 @dataclass(frozen=True)
 class HelpLinkSession:
-    """Mentor→contributor help session (no time-based expiry by default)."""
+    """Mentor→contributor help session (valid for 2 hours by default)."""
 
     session_id: str
     mentor_discord_id: str
@@ -76,7 +83,7 @@ class HelpLinkSession:
     def is_expired(self, now: datetime | None = None) -> bool:
         if self.expires_at is None:
             return False
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         return now >= self.expires_at
 
 
@@ -88,32 +95,41 @@ class HelpLinkSessionStore:
         self._ttl = ttl
         self._by_target: dict[str, HelpLinkSession] = {}
 
-    def create(self, *, mentor_discord_id: str, target_discord_id: str) -> HelpLinkSession:
-        now = datetime.now(timezone.utc)
+    def create(
+        self,
+        *,
+        mentor_discord_id: str,
+        target_discord_id: str,
+        ttl: timedelta | None | object = ...,
+    ) -> HelpLinkSession:
+        now = datetime.now(UTC)
+        effective_ttl = self._ttl if ttl is ... else ttl  # type: ignore[assignment]
         session = HelpLinkSession(
             session_id=uuid.uuid4().hex,
             mentor_discord_id=str(mentor_discord_id),
             target_discord_id=str(target_discord_id),
             created_at=now,
-            expires_at=(now + self._ttl) if self._ttl is not None else None,
+            expires_at=(now + effective_ttl) if effective_ttl is not None else None,
         )
         self._by_target[session.target_discord_id] = session
         return session
 
-    def get_active(self, target_discord_id: str) -> HelpLinkSession | None:
+    def get_active(
+        self, target_discord_id: str, *, now: datetime | None = None
+    ) -> HelpLinkSession | None:
         session = self._by_target.get(str(target_discord_id))
         if session is None:
             return None
-        if session.is_expired():
+        if session.is_expired(now=now):
             self._by_target.pop(str(target_discord_id), None)
             return None
         return session
 
     def get_active_matching(
-        self, target_discord_id: str, session_id: str
+        self, target_discord_id: str, session_id: str, *, now: datetime | None = None
     ) -> HelpLinkSession | None:
         """Return the active session only if it still matches ``session_id``."""
-        session = self.get_active(target_discord_id)
+        session = self.get_active(target_discord_id, now=now)
         if session is None or session.session_id != session_id:
             return None
         return session
@@ -132,7 +148,7 @@ class HelpLinkSessionStore:
 
 def build_help_link_prompt_embed(*, mentor_mention: str) -> discord.Embed:
     """DM/channel prompt for the tagged contributor (channel fallback is visible)."""
-    return discord.Embed(
+    embed = discord.Embed(
         title="Link your GitHub with Gitcord",
         description=(
             f"{mentor_mention} asked Gitcord to help you link your GitHub account.\n\n"
@@ -141,6 +157,8 @@ def build_help_link_prompt_embed(*, mentor_mention: str) -> discord.Embed:
         ),
         color=0x2563EB,
     )
+    embed.set_footer(text="Request expires in 2 hours")
+    return embed
 
 
 class HelpLinkUsernameModal(discord.ui.Modal, title="Link your GitHub"):
@@ -247,6 +265,7 @@ class HelpLinkStartView(discord.ui.View):
         session_store: HelpLinkSessionStore,
         max_age_days: int | None = None,
         timeout: float | None = None,
+        delete_channel_message_on_timeout: bool = True,
     ) -> None:
         # timeout=None keeps the Start linking button until the session is used,
         # replaced by a newer /help-link, or the bot restarts.
@@ -261,6 +280,8 @@ class HelpLinkStartView(discord.ui.View):
         self.build_verification_embed = build_verification_embed
         self.session_store = session_store
         self.max_age_days = max_age_days
+        self.delete_channel_message_on_timeout = delete_channel_message_on_timeout
+        self.channel_message: Any = None
 
         start_button = discord.ui.Button(
             label="Start linking",
@@ -309,6 +330,20 @@ class HelpLinkStartView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+        if self.channel_message is not None:
+            if self.delete_channel_message_on_timeout and hasattr(self.channel_message, "delete"):
+                try:
+                    await self.channel_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    logger.debug("Failed to delete expired help-link channel message: %s", exc)
+        elif getattr(self, "message", None) is not None:
+            target_msg = self.message
+            if hasattr(target_msg, "edit"):
+                try:
+                    await target_msg.edit(view=self)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    logger.debug("Failed to disable buttons on expired help-link message: %s", exc)
+
 
 async def deliver_help_link_prompt(
     *,
@@ -316,15 +351,19 @@ async def deliver_help_link_prompt(
     contributor: discord.abc.User,
     mentor: discord.abc.User,
     view: HelpLinkStartView,
+    delete_after: float | None = HELP_LINK_EXPIRY_SECONDS,
 ) -> str:
     """DM the contributor; fall back to a channel ping if DMs are closed.
 
     Returns a short status string for the mentor ephemeral reply.
     Channel fallback is visible to others; only the tagged user can use the button.
+    Channel fallback message is deleted after ``delete_after`` seconds (default 2 hours).
     """
     embed = build_help_link_prompt_embed(mentor_mention=mentor.mention)
     try:
-        await contributor.send(embed=embed, view=view)
+        dm_msg = await contributor.send(embed=embed, view=view)
+        if dm_msg is not None:
+            view.message = dm_msg
         return (
             f"✅ Help started for {contributor.mention}. "
             "I sent them a DM with **Start linking**."
@@ -343,14 +382,21 @@ async def deliver_help_link_prompt(
             "Ask them to enable DMs from server members, then retry `/help-link`."
         )
 
-    await channel.send(
-        content=(
+    send_kwargs: dict[str, Any] = {
+        "content": (
             f"{contributor.mention} — a mentor asked Gitcord to help you link GitHub. "
             "Only you can use the button below."
         ),
-        embed=embed,
-        view=view,
-    )
+        "embed": embed,
+        "view": view,
+    }
+    if delete_after is not None:
+        send_kwargs["delete_after"] = delete_after
+
+    fallback_msg = await channel.send(**send_kwargs)
+    if fallback_msg is not None:
+        view.channel_message = fallback_msg
+
     return (
         f"✅ Help started for {contributor.mention}. "
         "DMs were closed, so I posted a **Start linking** button in this channel "

@@ -82,6 +82,8 @@ from ghdcbot.engine.pr_status import (
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
+    HELP_LINK_EXPIRY_SECONDS,
+    HELP_LINK_SESSION_TTL,
     WELCOME_INITIATOR_ID,
     HelpLinkSessionStore,
     HelpLinkStartView,
@@ -1571,6 +1573,7 @@ def run_bot(config_path: str) -> None:
         session = help_link_sessions.create(
             mentor_discord_id=mentor_id,
             target_discord_id=target_id,
+            ttl=HELP_LINK_SESSION_TTL,
         )
         view = HelpLinkStartView(
             service=service,
@@ -1583,6 +1586,7 @@ def run_bot(config_path: str) -> None:
             build_verification_embed=build_identity_verification_embed,
             session_store=help_link_sessions,
             max_age_days=max_age_days,
+            timeout=HELP_LINK_EXPIRY_SECONDS,
         )
         try:
             status = await deliver_help_link_prompt(
