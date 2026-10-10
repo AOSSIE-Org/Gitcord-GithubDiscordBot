@@ -2391,6 +2391,14 @@ def run_bot(config_path: str) -> None:
             await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
             return
             
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            await interaction.followup.send(
+                f"❌ Repository **{repo}** is not allowed by Gitcord configuration.",
+                ephemeral=True,
+            )
+            return
+
         # 4. Create issue
         label_list = [label] if label else None
         
