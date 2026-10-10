@@ -31,7 +31,7 @@ class _FakeMember:
 
 
 class _ForbiddenMember(_FakeMember):
-    async def send(self, **kwargs: Any) -> None:  # noqa: ARG002
+    async def send(self, **kwargs: Any) -> None:
         response = SimpleNamespace(status=403, reason="Forbidden")
         raise discord.Forbidden(response, "dm closed")
 
@@ -89,6 +89,8 @@ def test_deliver_welcome_link_dm_success() -> None:
         deliver_welcome_link_dm(member=member, view=view, org_label="AOSSIE")  # type: ignore[arg-type]
     )
     assert ok is True
+    assert session.expires_at is None
+    assert view.timeout is None
     assert len(member.dms) == 1
     assert member.dms[0]["view"] is view
     assert "AOSSIE" in member.dms[0]["embed"].title

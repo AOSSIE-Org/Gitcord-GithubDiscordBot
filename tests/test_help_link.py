@@ -73,18 +73,38 @@ class _FakeButtonInteraction:
         self.followup = _FakeFollowup()
 
 
+class _FakeMessage:
+    def __init__(self, message_id: int = 123) -> None:
+        self.id = message_id
+        self.deleted = False
+        self.delete_delay: float | None = None
+        self.edited_view: Any = None
+
+    async def delete(self, *, delay: float | None = None) -> None:
+        self.deleted = True
+        self.delete_delay = delay
+
+    async def edit(self, *, view: Any = None, **kwargs: Any) -> None:
+        self.edited_view = view
+
+
 class _FakeMember:
     def __init__(self, user_id: int, *, bot: bool = False, mention: str | None = None) -> None:
         self.id = user_id
         self.bot = bot
         self.mention = mention or f"<@{user_id}>"
+        self.last_dm: dict[str, Any] | None = None
+        self.last_sent_msg: _FakeMessage | None = None
 
-    async def send(self, **kwargs: Any) -> None:
+    async def send(self, **kwargs: Any) -> _FakeMessage:
         self.last_dm = kwargs
+        msg = _FakeMessage()
+        self.last_sent_msg = msg
+        return msg
 
 
 class _ForbiddenMember(_FakeMember):
-    async def send(self, **kwargs: Any) -> None:
+    async def send(self, **kwargs: Any) -> _FakeMessage:
         response = SimpleNamespace(status=403, reason="Forbidden")
         raise discord.Forbidden(response, "dm closed")
 
@@ -92,9 +112,16 @@ class _ForbiddenMember(_FakeMember):
 class _FakeChannel:
     def __init__(self) -> None:
         self.messages: list[dict] = []
+        self.last_sent_msg: _FakeMessage | None = None
 
-    async def send(self, **kwargs: Any) -> None:
+    async def send(self, **kwargs: Any) -> _FakeMessage:
         self.messages.append(kwargs)
+        msg = _FakeMessage()
+        self.last_sent_msg = msg
+        return msg
+
+
+_FakeChannelWithMsg = _FakeChannel
 
 
 def _make_view(
@@ -103,6 +130,7 @@ def _make_view(
     session: HelpLinkSession,
     service: Any = None,
     storage: Any = None,
+    timeout: float | None = None,
 ) -> HelpLinkStartView:
     return HelpLinkStartView(
         service=service if service is not None else SimpleNamespace(),
@@ -114,28 +142,37 @@ def _make_view(
         verification_view_factory=IdentityVerificationView,
         build_verification_embed=build_identity_verification_embed,
         session_store=store,
+        timeout=timeout,
     )
 
 
-def test_help_link_session_store_default_ttl_is_two_hours() -> None:
+def test_help_link_session_store_has_no_default_ttl() -> None:
     store = HelpLinkSessionStore()
-    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
-    assert session.expires_at is not None
-    assert session.expires_at - session.created_at == HELP_LINK_SESSION_TTL
-    assert session.expires_at - session.created_at == timedelta(hours=2)
-    assert store.get_active("t1") is session
-
-
-def test_help_link_session_store_explicit_none_ttl() -> None:
-    store = HelpLinkSessionStore(ttl=None)
     session = store.create(mentor_discord_id="m1", target_discord_id="t1")
     assert session.expires_at is None
     assert store.get_active("t1") is session
 
 
+def test_help_link_session_store_explicit_ttl() -> None:
+    store = HelpLinkSessionStore(ttl=HELP_LINK_SESSION_TTL)
+    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    assert session.expires_at is not None
+    assert session.expires_at - session.created_at == HELP_LINK_SESSION_TTL
+    assert session.expires_at - session.created_at == timedelta(hours=2)
+
+    store2 = HelpLinkSessionStore()
+    session2 = store2.create(
+        mentor_discord_id="m1", target_discord_id="t1", ttl=HELP_LINK_SESSION_TTL
+    )
+    assert session2.expires_at is not None
+    assert session2.expires_at - session2.created_at == HELP_LINK_SESSION_TTL
+
+
 def test_help_link_session_expires_after_two_hours() -> None:
     store = HelpLinkSessionStore()
-    session = store.create(mentor_discord_id="m1", target_discord_id="t1")
+    session = store.create(
+        mentor_discord_id="m1", target_discord_id="t1", ttl=HELP_LINK_SESSION_TTL
+    )
     now_future = session.created_at + timedelta(hours=2, seconds=1)
     assert session.is_expired(now=now_future)
     assert store.get_active("t1", now=now_future) is None
@@ -231,7 +268,11 @@ def test_start_view_opens_modal_for_target(tmp_path: Path) -> None:
     store = HelpLinkSessionStore()
     session = store.create(mentor_discord_id="m1", target_discord_id="t1")
     view = _make_view(store=store, session=session, service=svc, storage=storage)
-    assert view.timeout == HELP_LINK_EXPIRY_SECONDS
+    assert view.timeout is None
+    view_with_timeout = _make_view(
+        store=store, session=session, timeout=HELP_LINK_EXPIRY_SECONDS
+    )
+    assert view_with_timeout.timeout == HELP_LINK_EXPIRY_SECONDS
     interaction = _FakeButtonInteraction("t1")
     asyncio.run(view.start_linking(interaction))
     assert len(interaction.response.modals) == 1
@@ -372,27 +413,37 @@ def test_modal_rejects_expired_session(tmp_path: Path) -> None:
     assert storage.get_identity_link("t1", "octocat") is None
 
 
-class _FakeMessage:
-    def __init__(self, message_id: int = 123) -> None:
-        self.id = message_id
-        self.deleted = False
-        self.delete_delay: float | None = None
+def test_deliver_help_link_dm_timeout_disables_button_without_deleting() -> None:
+    contributor = _FakeMember(42)
+    mentor = _FakeMember(7, mention="<@7>")
+    channel = _FakeChannel()
+    interaction = SimpleNamespace(channel=channel)
+    store = HelpLinkSessionStore()
+    session = store.create(
+        mentor_discord_id="7", target_discord_id="42", ttl=HELP_LINK_SESSION_TTL
+    )
+    view = _make_view(store=store, session=session, timeout=HELP_LINK_EXPIRY_SECONDS)
 
-    async def delete(self, *, delay: float | None = None) -> None:
-        self.deleted = True
-        self.delete_delay = delay
+    status = asyncio.run(
+        deliver_help_link_prompt(
+            interaction=interaction,  # type: ignore[arg-type]
+            contributor=contributor,  # type: ignore[arg-type]
+            mentor=mentor,  # type: ignore[arg-type]
+            view=view,
+        )
+    )
+    assert "DM" in status
+    assert view.message is not None
+    assert view.message is contributor.last_sent_msg
+    assert view.channel_message is None
+    assert all(not item.disabled for item in view.children)
 
-
-class _FakeChannelWithMsg:
-    def __init__(self) -> None:
-        self.messages: list[dict] = []
-        self.last_sent_msg: _FakeMessage | None = None
-
-    async def send(self, **kwargs: Any) -> _FakeMessage:
-        self.messages.append(kwargs)
-        msg = _FakeMessage()
-        self.last_sent_msg = msg
-        return msg
+    # When view times out, DM message is kept (not deleted), but buttons are disabled via edit()
+    asyncio.run(view.on_timeout())
+    assert view.message.deleted is False
+    assert view.message.edited_view is view
+    assert all(item.disabled for item in view.children)
+    assert store.get_active("42") is None
 
 
 def test_deliver_help_link_channel_fallback_deletes_after_two_hours() -> None:

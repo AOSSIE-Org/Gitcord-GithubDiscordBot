@@ -57,7 +57,9 @@ async def deliver_welcome_link_dm(
     """Send the welcome Start-linking DM. Returns True if delivered."""
     embed = build_welcome_link_prompt_embed(org_label=org_label)
     try:
-        await member.send(embed=embed, view=view)
+        dm_msg = await member.send(embed=embed, view=view)
+        if dm_msg is not None:
+            view.message = dm_msg
         return True
     except (discord.Forbidden, discord.HTTPException) as exc:
         logger.info(
@@ -88,8 +90,8 @@ class HelpLinkSession:
 class HelpLinkSessionStore:
     """In-memory sessions (one active help flow per target Discord user)."""
 
-    def __init__(self, *, ttl: timedelta | None = HELP_LINK_SESSION_TTL) -> None:
-        # Defaults to 2 hours (HELP_LINK_SESSION_TTL); None disables time-based expiry.
+    def __init__(self, *, ttl: timedelta | None = None) -> None:
+        # None = no time-based expiry (sessions last until used, replaced, or bot restart).
         self._ttl = ttl
         self._by_target: dict[str, HelpLinkSession] = {}
 
@@ -262,10 +264,11 @@ class HelpLinkStartView(discord.ui.View):
         build_verification_embed: Callable[..., discord.Embed],
         session_store: HelpLinkSessionStore,
         max_age_days: int | None = None,
-        timeout: float | None = HELP_LINK_EXPIRY_SECONDS,
+        timeout: float | None = None,
         delete_channel_message_on_timeout: bool = True,
     ) -> None:
-        # Default timeout is 2 hours (HELP_LINK_EXPIRY_SECONDS).
+        # timeout=None keeps the Start linking button until the session is used,
+        # replaced by a newer /help-link, or the bot restarts.
         super().__init__(timeout=timeout)
         self.service = service
         self.storage = storage
@@ -327,20 +330,19 @@ class HelpLinkStartView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-        if self.delete_channel_message_on_timeout:
-            target_msg = self.channel_message or getattr(self, "message", None)
-            if target_msg is not None and hasattr(target_msg, "delete"):
+        if self.channel_message is not None:
+            if self.delete_channel_message_on_timeout and hasattr(self.channel_message, "delete"):
                 try:
-                    await target_msg.delete()
+                    await self.channel_message.delete()
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
                     logger.debug("Failed to delete expired help-link channel message: %s", exc)
-        else:
-            target_msg = getattr(self, "message", None)
-            if target_msg is not None and hasattr(target_msg, "edit"):
+        elif getattr(self, "message", None) is not None:
+            target_msg = self.message
+            if hasattr(target_msg, "edit"):
                 try:
                     await target_msg.edit(view=self)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
-                    logger.debug("Failed to disable expired help-link DM: %s", exc)
+                    logger.debug("Failed to disable buttons on expired help-link message: %s", exc)
 
 
 async def deliver_help_link_prompt(
@@ -359,7 +361,9 @@ async def deliver_help_link_prompt(
     """
     embed = build_help_link_prompt_embed(mentor_mention=mentor.mention)
     try:
-        await contributor.send(embed=embed, view=view)
+        dm_msg = await contributor.send(embed=embed, view=view)
+        if dm_msg is not None:
+            view.message = dm_msg
         return (
             f"✅ Help started for {contributor.mention}. "
             "I sent them a DM with **Start linking**."
@@ -389,27 +393,9 @@ async def deliver_help_link_prompt(
     if delete_after is not None:
         send_kwargs["delete_after"] = delete_after
 
-    fallback_msg: Any = None
-    try:
-        fallback_msg = await channel.send(**send_kwargs)
-    except TypeError:
-        # Compatibility fallback if mock or custom channel doesn't accept delete_after
-        send_kwargs.pop("delete_after", None)
-        fallback_msg = await channel.send(**send_kwargs)
-        if (
-            fallback_msg is not None
-            and hasattr(fallback_msg, "delete")
-            and delete_after is not None
-        ):
-            try:
-                await fallback_msg.delete(delay=delete_after)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
-                logger.debug("Failed to schedule help-link message deletion: %s", exc)
-
+    fallback_msg = await channel.send(**send_kwargs)
     if fallback_msg is not None:
         view.channel_message = fallback_msg
-        if not hasattr(view, "message") or view.message is None:
-            view.message = fallback_msg
 
     return (
         f"✅ Help started for {contributor.mention}. "
