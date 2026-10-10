@@ -113,6 +113,12 @@ class NotificationConfig(BaseModel):
     coderabbit_reminders: bool = False  # Remind PR authors about old CodeRabbit review comments
     coderabbit_reminder_after_hours: int = 48  # Only remind if comment is at least this old
     coderabbit_bot_logins: list[str] | None = None  # Bot logins to treat as CodeRabbit; default ["coderabbitai", "coderabbitai[bot]"]
+    # Inactive issue check-in and escalation
+    issue_inactivity_reminders: bool = False  # Enable inactivity check-ins for assigned issues
+    issue_inactivity_days: int = 7  # Inactivity threshold in days before sending first DM check-in
+    issue_inactivity_escalate_days: int = 7  # Additional days of inactivity after reminder before escalation/unassignment
+    issue_inactivity_auto_unassign: bool = False  # Auto-unassign after escalate_days if still inactive
+    issue_inactivity_comment_on_unassign: bool = False  # Post explanatory comment on GitHub issue when unassigning
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
 
@@ -121,6 +127,16 @@ class NotificationConfig(BaseModel):
     def validate_coderabbit_reminder_hours(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("coderabbit_reminder_after_hours must be positive")
+        return value
+
+    @field_validator(
+        "issue_inactivity_days",
+        "issue_inactivity_escalate_days",
+    )
+    @classmethod
+    def validate_inactivity_days(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("inactivity timing must be positive")
         return value
 
 
