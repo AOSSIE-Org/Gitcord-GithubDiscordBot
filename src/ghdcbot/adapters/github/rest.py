@@ -117,6 +117,8 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        self._successful_issue_listing_repos: set[str] = set()
+        self._failed_issue_listing_repos: set[str] = set()
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
 
     def close(self) -> None:
@@ -167,8 +169,18 @@ class GitHubRestAdapter:
             self._sync_cached_repos = None
 
     def list_open_issues(self) -> Iterable[dict]:
+        self._successful_issue_listing_repos = set()
+        self._failed_issue_listing_repos = set()
         for repo in self._list_repos():
             yield from self._list_repo_open_issues(repo)
+
+    def get_successful_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues were listed successfully."""
+        return set(getattr(self, "_successful_issue_listing_repos", set()))
+
+    def get_failed_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues listing failed."""
+        return set(getattr(self, "_failed_issue_listing_repos", set()))
 
     def invalidate_repo_cache(self) -> None:
         """Explicitly invalidate the repository cache (e.g. after config changes)."""
@@ -355,6 +367,122 @@ class GitHubRestAdapter:
                 page += 1
         return results
 
+    def get_author_prs_for_inactivity(
+        self, github_user: str, *, repo: str
+    ) -> list[dict] | None:
+        """Fetch PRs by author in a repo with title and body for inactivity checks.
+
+        Returns list[dict] with 'number', 'title', 'body', 'created_at', 'updated_at',
+        or None if GitHub search fails (to prevent false-positive inactivity flags).
+        """
+        author = (github_user or "").strip()
+        repo_name = (repo or "").strip()
+        if not author or not repo_name:
+            return []
+
+        query = f"is:pr author:{author} repo:{self._org}/{repo_name}"
+        page = 1
+        results: list[dict] = []
+        seen: set[int] = set()
+
+        while page <= _GITHUB_SEARCH_MAX_PAGES:
+            params: dict[str, str | int] = {
+                "q": query,
+                "sort": "updated",
+                "order": "desc",
+                "per_page": 100,
+                "page": page,
+            }
+            response = self._request("GET", "/search/issues", params=params)
+            if response is None or response.status_code != 200:
+                if response is not None:
+                    self._logger.warning(
+                        "GitHub search failed for author PRs in inactivity check",
+                        extra={
+                            "status_code": response.status_code,
+                            "github_user": author,
+                            "repo": repo_name,
+                            "org": self._org,
+                        },
+                    )
+                return None
+            payload = response.json()
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                pr_num = item.get("number")
+                if pr_num is None or pr_num in seen:
+                    continue
+                seen.add(pr_num)
+                user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                results.append({
+                    "repo": repo_name,
+                    "number": pr_num,
+                    "author": user.get("login") or author,
+                    "title": item.get("title") or "",
+                    "body": item.get("body") or "",
+                    "html_url": item.get("html_url"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                })
+            if len(items) < 100:
+                break
+            page += 1
+        return results
+
+    def check_user_permission(self, owner: str | None, repo: str, username: str) -> str | None:
+        """Check a user's permission level in a repository.
+
+        Returns 'admin', 'maintain', 'write', 'triage', 'read', 'none', or None on error.
+        """
+        user = (username or "").strip()
+        repo_name = (repo or "").strip()
+        if not user or not repo_name:
+            return None
+        org = owner or self._org
+        response = self._request(
+            "GET",
+            f"/repos/{org}/{repo_name}/collaborators/{user}/permission",
+        )
+        if response is None:
+            return None
+        if response.status_code == 200:
+            payload = response.json()
+            if isinstance(payload, dict):
+                perm = payload.get("permission")
+                if isinstance(perm, str):
+                    return perm.lower()
+                user_info = payload.get("user")
+                if isinstance(user_info, dict):
+                    perms = user_info.get("permissions") or {}
+                    for p in ("admin", "maintain", "push", "triage", "pull"):
+                        if perms.get(p):
+                            return "write" if p == "push" else p
+        elif response.status_code == 404:
+            return "none"
+        return None
+
+    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool | None:
+        """Check if user has write/maintainer access to repository or org."""
+        user = (username or "").strip()
+        if not user:
+            return False
+        org = owner or self._org
+        perm = self.check_user_permission(org, repo, user)
+        if perm in {"admin", "maintain", "write"}:
+            return True
+        # Check org membership
+        org_resp = self._request("GET", f"/orgs/{org}/members/{user}")
+        if org_resp is not None and org_resp.status_code == 204:
+            return True
+        if perm is None or org_resp is None or org_resp.status_code != 404:
+            return None
+        return False
+
+
     def create_issue(
         self, owner: str, repo: str, title: str, body: str = "", labels: list[str] | None = None
     ) -> dict | None:
@@ -525,7 +653,8 @@ class GitHubRestAdapter:
             True if unassignment succeeded, False otherwise.
         """
         try:
-            response = self._client.delete(
+            response = self._client.request(
+                "DELETE",
                 f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
                 json={"assignees": [assignee]},
             )
@@ -772,6 +901,30 @@ class GitHubRestAdapter:
         ):
             comments.extend(page)
         return comments
+
+    def get_issue_comments(
+        self, owner: str, repo: str, issue_number: int
+    ) -> list[dict] | None:
+        """Fetch comments for an issue.
+
+        Returns list of comment dicts (each has user.login, created_at, id, body, etc.).
+        Returns None on error.
+        """
+        try:
+            comments: list[dict] = []
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                params={"per_page": 100},
+                raise_on_error=True,
+            ):
+                comments.extend(page)
+            return comments
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to fetch issue comments",
+                extra={"owner": owner, "repo": repo, "issue": issue_number, "error": str(exc)},
+            )
+            return None
 
     def get_pull_request_review_threads(
         self, owner: str, repo: str, pr_number: int
@@ -1765,16 +1918,37 @@ class GitHubRestAdapter:
         owner = repo["owner"]["login"]
         repo_name = repo["name"]
         params = {"state": "open", "per_page": 100}
-        for page in self._paginate(f"/repos/{owner}/{repo_name}/issues", params=params):
-            for issue in page:
-                if "pull_request" in issue:
-                    continue
-                # Include assignees so planning can skip already-assigned issues
-                yield {
-                    "repo": repo["name"],
-                    "number": issue["number"],
-                    "assignees": issue.get("assignees", []),
-                }
+        try:
+            for page in self._paginate(
+                f"/repos/{owner}/{repo_name}/issues", params=params, raise_on_error=True
+            ):
+                for issue in page:
+                    if "pull_request" in issue:
+                        continue
+                    # Include assignees and metadata for planning and inactivity tracking
+                    yield {
+                        "repo": repo["name"],
+                        "number": issue["number"],
+                        "title": issue.get("title", ""),
+                        "assignees": issue.get("assignees", []),
+                        "created_at": issue.get("created_at"),
+                        "updated_at": issue.get("updated_at"),
+                        "html_url": issue.get("html_url"),
+                    }
+            if hasattr(self, "_successful_issue_listing_repos"):
+                self._successful_issue_listing_repos.add(repo_name)
+            if hasattr(self, "_failed_issue_listing_repos"):
+                self._failed_issue_listing_repos.discard(repo_name)
+        except Exception:
+            self._logger.warning(
+                "Failed to list open issues for repository",
+                extra={"repo": repo_name, "owner": owner},
+                exc_info=True,
+            )
+            if hasattr(self, "_successful_issue_listing_repos"):
+                self._successful_issue_listing_repos.discard(repo_name)
+            if hasattr(self, "_failed_issue_listing_repos"):
+                self._failed_issue_listing_repos.add(repo_name)
 
     def _list_repo_open_prs(self, repo: dict) -> Iterable[dict]:
         owner = repo["owner"]["login"]
