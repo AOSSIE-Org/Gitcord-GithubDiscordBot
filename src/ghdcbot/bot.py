@@ -50,6 +50,15 @@ from ghdcbot.engine.issue_list import (
     format_issue_list_messages,
     resolve_repo_for_issue,
 )
+from ghdcbot.engine.issue_request_flow import (
+    build_mentor_request_embed,
+    build_repo_selection_embed,
+    compute_eligibility,
+    format_claim_request_audit_context,
+    format_claim_resolution_audit_context,
+    get_merged_pr_count_and_last_time,
+    group_pending_requests_by_repo,
+)
 from ghdcbot.engine.metrics import (
     build_contribution_summary_message,
     get_contribution_metrics,
@@ -97,6 +106,8 @@ from ghdcbot.plugins.registry import build_adapter
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_PR_STATUS = "pr-status"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
+SLASH_CMD_CLAIM_ISSUE = "claim-issue"
+SLASH_CMD_ISSUE_REQUESTS = "issue-requests"
 
 logger = logging.getLogger("ghdcbot.bot")
 
@@ -345,6 +356,211 @@ class IssueAssignmentView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+
+class MentorClaimReviewView(discord.ui.View):
+    """View with Approve and Decline buttons for mentors reviewing an issue claim."""
+
+    def __init__(
+        self,
+        *,
+        request_id: str,
+        storage: Any,
+        github_adapter: Any,
+        config: Any,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        discord_user_id: str,
+        timeout: float = 86400.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.request_id = request_id
+        self.storage = storage
+        self.github_adapter = github_adapter
+        self.config = config
+        self.owner = owner
+        self.repo = repo
+        self.issue_number = issue_number
+        self.github_user = github_user
+        self.discord_user_id = discord_user_id
+        self._is_completed = False
+
+        approve_btn = discord.ui.Button(
+            label="Approve & Assign",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id=f"mentor_claim_approve:{request_id}",
+        )
+        approve_btn.callback = self.approve
+        self.add_item(approve_btn)
+
+        decline_btn = discord.ui.Button(
+            label="Decline",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=f"mentor_claim_decline:{request_id}",
+        )
+        decline_btn.callback = self.decline
+        self.add_item(decline_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not slash_command_allowed(interaction, self.config, "issue-requests"):
+            await interaction.response.send_message(
+                "❌ Only mentors or administrators can approve or decline issue claims.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _disable(self) -> None:
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+        self._is_completed = True
+
+    async def approve(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        self._is_completed = True
+        await interaction.response.defer(ephemeral=False)
+        self._disable()
+
+        claim = self.storage.get_issue_request(self.request_id)
+        if not claim or claim.get("status") != "pending":
+            curr_status = claim.get("status", "unknown") if claim else "not found"
+            await interaction.edit_original_response(
+                content=f"⚠️ This claim is no longer pending (current status: `{curr_status}`).",
+                view=self,
+            )
+            return
+
+        try:
+            issue_data = await asyncio.to_thread(
+                self.github_adapter.get_issue, self.owner, self.repo, self.issue_number
+            )
+        except Exception as e:
+            logger.error("Failed to refetch issue: %s", e)
+            await interaction.edit_original_response(
+                content="❌ Error refetching issue status from GitHub.",
+                view=self,
+            )
+            return
+
+        if not issue_data:
+            await interaction.edit_original_response(
+                content=f"❌ Issue #{self.issue_number} was not found on GitHub.",
+                view=self,
+            )
+            return
+        if issue_data.get("state") == "closed":
+            await interaction.edit_original_response(
+                content=f"❌ Issue #{self.issue_number} is already closed.",
+                view=self,
+            )
+            return
+        if issue_data.get("assignees"):
+            existing = [a.get("login") for a in issue_data.get("assignees", [])]
+            if self.github_user not in existing:
+                await interaction.edit_original_response(
+                    content=f"❌ Issue #{self.issue_number} is already assigned to {', '.join(existing)}.",
+                    view=self,
+                )
+                return
+
+        try:
+            res = await asyncio.to_thread(
+                self.github_adapter.assign_issue,
+                self.owner,
+                self.repo,
+                self.issue_number,
+                self.github_user,
+            )
+        except Exception as e:
+            logger.error("Failed to assign issue: %s", e)
+            res = False
+
+        if not res:
+            await interaction.edit_original_response(
+                content=f"❌ Failed to assign @{self.github_user} on GitHub. Check bot GitHub write permissions.",
+                view=self,
+            )
+            return
+
+        resolved_at = datetime.now(UTC).isoformat()
+        mentor_id_str = str(interaction.user.id)
+        self.storage.update_issue_request_status(
+            self.request_id,
+            "approved",
+            resolved_by_discord_id=mentor_id_str,
+            resolved_at=resolved_at,
+        )
+
+        append_audit = getattr(self.storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit(
+                format_claim_resolution_audit_context(
+                    self.request_id, "approved", mentor_id_str
+                )
+            )
+
+        await interaction.edit_original_response(
+            content=f"✅ **Claim Approved:** <@{self.discord_user_id}> (`@{self.github_user}`) was assigned to **#{self.issue_number}** by <@{mentor_id_str}>.",
+            view=self,
+        )
+
+        try:
+            contributor = await interaction.client.fetch_user(int(self.discord_user_id))
+            if contributor:
+                await contributor.send(
+                    f"🎉 **Claim Approved!** A mentor approved your request to work on "
+                    f"**{self.owner}/{self.repo}#{self.issue_number}**. You are now assigned on GitHub!\n"
+                    f"🔗 https://github.com/{self.owner}/{self.repo}/issues/{self.issue_number}"
+                )
+        except Exception as err:
+            logger.debug("Could not DM contributor about approved claim: %s", err)
+
+    async def decline(self, interaction: discord.Interaction) -> None:
+        if self._is_completed:
+            return
+        self._is_completed = True
+        await interaction.response.defer(ephemeral=False)
+        self._disable()
+
+        mentor_id_str = str(interaction.user.id)
+        resolved_at = datetime.now(UTC).isoformat()
+        self.storage.update_issue_request_status(
+            self.request_id,
+            "declined",
+            resolved_by_discord_id=mentor_id_str,
+            resolved_at=resolved_at,
+        )
+
+        append_audit = getattr(self.storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit(
+                format_claim_resolution_audit_context(
+                    self.request_id, "declined", mentor_id_str
+                )
+            )
+
+        await interaction.edit_original_response(
+            content=f"❌ **Claim Declined:** Claim for #{self.issue_number} was declined by <@{mentor_id_str}>.",
+            view=self,
+        )
+
+        try:
+            contributor = await interaction.client.fetch_user(int(self.discord_user_id))
+            if contributor:
+                await contributor.send(
+                    f"Your claim request for **{self.owner}/{self.repo}#{self.issue_number}** was declined by a mentor."
+                )
+        except Exception as err:
+            logger.debug("Could not DM contributor about declined claim: %s", err)
+
+    async def on_timeout(self) -> None:
+        self._is_completed = True
+        self._disable()
 
 
 class IdentityVerificationView(discord.ui.View):
@@ -2469,6 +2685,325 @@ def run_bot(config_path: str) -> None:
             for match in matches[:25]
         ]
 
+    async def handle_claim_issue_submission(
+        interaction: discord.Interaction,
+        repo: str,
+        issue_number: int,
+    ) -> None:
+        discord_user_id = str(interaction.user.id)
+
+        get_status = getattr(storage, "get_identity_status", None)
+        max_age_days = getattr(getattr(config, "identity", None), "verified_max_age_days", None)
+        status_info = get_status(discord_user_id, max_age_days=max_age_days) if callable(get_status) else {}
+        st = status_info.get("status")
+        github_user = status_info.get("github_user")
+
+        if st not in ("verified", "verified_stale") or not github_user:
+            await interaction.response.send_message(
+                "❌ You must verify your GitHub account before claiming an issue.\n"
+                "Use `/link <your_github_username>` to link and verify your account.",
+                ephemeral=True,
+            )
+            return
+
+        if status_info.get("is_stale"):
+            await interaction.response.send_message(
+                "⚠️ Your GitHub verification is stale. Please refresh it with `/verify-link` before claiming issues.",
+                ephemeral=True,
+            )
+            return
+
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            await interaction.response.send_message(
+                f"❌ Repository **{repo}** is not allowed by Gitcord configuration.",
+                ephemeral=True,
+            )
+            return
+
+        get_pending = getattr(storage, "get_pending_issue_request", None)
+        existing_claim = (
+            get_pending(repo, issue_number, github_user=github_user)
+            if callable(get_pending)
+            else None
+        )
+        if existing_claim:
+            await interaction.response.send_message(
+                f"⚠️ You already have a pending claim for **{repo}#{issue_number}**.",
+                ephemeral=True,
+            )
+            return
+
+        if not getattr(config.github.permissions, "write", False):
+            await interaction.response.send_message(
+                "❌ Bot does not have GitHub write permission enabled (`github.permissions.write: true`).",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        owner = getattr(config.github, "org", "")
+        try:
+            issue_data = await asyncio.to_thread(github_adapter.get_issue, owner, repo, issue_number)
+        except Exception as exc:
+            logger.error("Failed to fetch issue %s/%s#%d: %s", owner, repo, issue_number, exc)
+            await interaction.followup.send(
+                f"❌ Failed to fetch issue `#{issue_number}` from GitHub.", ephemeral=True
+            )
+            return
+
+        if not issue_data:
+            await interaction.followup.send(
+                f"❌ Issue `#{issue_number}` was not found in **{owner}/{repo}**.", ephemeral=True
+            )
+            return
+        if issue_data.get("state") == "closed":
+            await interaction.followup.send(
+                f"❌ Issue `#{issue_number}` is closed.", ephemeral=True
+            )
+            return
+        if "pull_request" in issue_data:
+            await interaction.followup.send(
+                f"❌ `#{issue_number}` is a pull request, not an issue.", ephemeral=True
+            )
+            return
+        if issue_data.get("assignees"):
+            assignee_names = [a.get("login") for a in issue_data.get("assignees", [])]
+            await interaction.followup.send(
+                f"❌ Issue `#{issue_number}` is already assigned to {', '.join(assignee_names)}.",
+                ephemeral=True,
+            )
+            return
+
+        import secrets
+
+        request_id = f"req_{int(time.time())}_{secrets.token_hex(3)}"
+        issue_url = issue_data.get("html_url") or f"https://github.com/{owner}/{repo}/issues/{issue_number}"
+
+        storage.insert_issue_request(
+            request_id,
+            discord_user_id,
+            github_user,
+            owner,
+            repo,
+            issue_number,
+            issue_url,
+        )
+
+        append_audit = getattr(storage, "append_audit_event", None)
+        if callable(append_audit):
+            append_audit(
+                format_claim_request_audit_context(
+                    owner, repo, issue_number, github_user, discord_user_id, request_id
+                )
+            )
+
+        now = datetime.now(UTC)
+        period_days = getattr(getattr(config, "scoring", None), "period_days", 30)
+        period_start = now - timedelta(days=period_days)
+        merged_count, last_merged_at = get_merged_pr_count_and_last_time(
+            storage, github_user, period_start, now
+        )
+        eligible_roles_cfg = list(
+            getattr(getattr(config, "assignments", None), "issue_request_eligible_roles", []) or []
+        )
+        contributor_roles = [r.name for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+        verdict, reason = compute_eligibility(
+            eligible_roles_config=eligible_roles_cfg,
+            contributor_roles=contributor_roles,
+            merged_count=merged_count,
+            last_merged_at=last_merged_at,
+            now=now,
+        )
+
+        req_dict = {
+            "request_id": request_id,
+            "discord_user_id": discord_user_id,
+            "github_user": github_user,
+            "owner": owner,
+            "repo": repo,
+            "issue_number": issue_number,
+            "issue_url": issue_url,
+            "created_at": now.isoformat(),
+            "status": "pending",
+        }
+
+        mentor_embed_dict = build_mentor_request_embed(
+            request=req_dict,
+            issue=issue_data,
+            contributor_discord_mention=f"<@{discord_user_id}>",
+            contributor_roles=contributor_roles,
+            merged_count=merged_count,
+            last_merged_at=last_merged_at,
+            eligibility_verdict=verdict,
+            eligibility_reason=reason,
+            eligible_roles_config=eligible_roles_cfg,
+            period_days=period_days,
+            now=now,
+        )
+        mentor_embed = discord.Embed.from_dict(mentor_embed_dict)
+
+        mentor_view = MentorClaimReviewView(
+            request_id=request_id,
+            storage=storage,
+            github_adapter=github_adapter,
+            config=config,
+            owner=owner,
+            repo=repo,
+            issue_number=issue_number,
+            github_user=github_user,
+            discord_user_id=discord_user_id,
+        )
+
+        mentor_channel_id = config.discord.activity_channel_id or (
+            config.discord.notifications.channel_id
+            if getattr(config.discord, "notifications", None)
+            else None
+        )
+        posted_to_channel = False
+        if mentor_channel_id:
+            try:
+                m_chan = interaction.client.get_channel(int(mentor_channel_id))
+                if m_chan and hasattr(m_chan, "send"):
+                    await m_chan.send(embed=mentor_embed, view=mentor_view)
+                    posted_to_channel = True
+            except Exception as err:
+                logger.warning(
+                    "Could not post mentor claim review to channel %s: %s", mentor_channel_id, err
+                )
+
+        if not posted_to_channel and interaction.channel and hasattr(interaction.channel, "send"):
+            try:
+                await interaction.channel.send(
+                    content="🔔 **New Issue Claim Request** (for mentors):",
+                    embed=mentor_embed,
+                    view=mentor_view,
+                )
+            except Exception as err:
+                logger.warning("Could not post mentor claim review in current channel: %s", err)
+
+        await interaction.followup.send(
+            f"✅ Your claim for **{owner}/{repo}#{issue_number}** has been submitted! "
+            f"Mentors have been notified and will review your request.",
+            ephemeral=True,
+        )
+
+    @tree.command(
+        name="claim-issue",
+        description="Claim an open GitHub issue for assignment (verified users only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Repository name to claim an issue in",
+        issue_number="The GitHub issue number to claim",
+    )
+    @app_commands.autocomplete(
+        repo=assign_issue_repo_autocomplete,
+        issue_number=assign_issue_number_autocomplete,
+    )
+    async def claim_issue_cmd(
+        interaction: discord.Interaction,
+        repo: str,
+        issue_number: int,
+    ) -> None:
+        await handle_claim_issue_submission(interaction, repo.strip(), issue_number)
+
+    @tree.command(
+        name="issue-requests",
+        description="Review pending issue assignment claim requests (Mentors only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        repo="Filter requests by repository (optional)",
+    )
+    @app_commands.autocomplete(repo=assign_issue_repo_autocomplete)
+    async def issue_requests_cmd(
+        interaction: discord.Interaction,
+        repo: str | None = None,
+    ) -> None:
+        if not slash_command_allowed(interaction, config, "issue-requests"):
+            await interaction.response.send_message(
+                format_slash_command_permission_denied(config, "issue-requests"),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        pending = storage.list_pending_issue_requests(repo=repo.strip() if repo else None)
+        if not pending:
+            filter_note = f" for repository **{repo}**" if repo else ""
+            await interaction.followup.send(
+                f"ℹ️ No pending issue claim requests{filter_note}.", ephemeral=True
+            )
+            return
+
+        now = datetime.now(UTC)
+        grouped = group_pending_requests_by_repo(pending)
+        overview_embed = discord.Embed.from_dict(build_repo_selection_embed(grouped, now))
+        await interaction.followup.send(
+            content=f"📋 Found **{len(pending)}** pending issue claim(s):",
+            embed=overview_embed,
+            ephemeral=True,
+        )
+
+        for req in pending[:3]:
+            req_id = req["request_id"]
+            owner = req["owner"]
+            r_name = req["repo"]
+            i_num = req["issue_number"]
+            g_user = req["github_user"]
+            d_id = req["discord_user_id"]
+
+            try:
+                issue_info = (
+                    await asyncio.to_thread(github_adapter.get_issue, owner, r_name, i_num) or {}
+                )
+            except Exception:
+                issue_info = {}
+
+            p_days = getattr(getattr(config, "scoring", None), "period_days", 30)
+            m_count, l_time = get_merged_pr_count_and_last_time(
+                storage, g_user, now - timedelta(days=p_days), now
+            )
+            el_cfg = list(
+                getattr(getattr(config, "assignments", None), "issue_request_eligible_roles", []) or []
+            )
+            v, reas = compute_eligibility(
+                eligible_roles_config=el_cfg,
+                contributor_roles=[],
+                merged_count=m_count,
+                last_merged_at=l_time,
+                now=now,
+            )
+
+            c_embed = discord.Embed.from_dict(
+                build_mentor_request_embed(
+                    request=req,
+                    issue=issue_info,
+                    contributor_discord_mention=f"<@{d_id}>",
+                    contributor_roles=[],
+                    merged_count=m_count,
+                    last_merged_at=l_time,
+                    eligibility_verdict=v,
+                    eligibility_reason=reas,
+                    eligible_roles_config=el_cfg,
+                    period_days=p_days,
+                    now=now,
+                )
+            )
+            c_view = MentorClaimReviewView(
+                request_id=req_id,
+                storage=storage,
+                github_adapter=github_adapter,
+                config=config,
+                owner=owner,
+                repo=r_name,
+                issue_number=i_num,
+                github_user=g_user,
+                discord_user_id=d_id,
+            )
+            await interaction.followup.send(embed=c_embed, view=c_view, ephemeral=True)
 
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -2476,6 +3011,22 @@ def run_bot(config_path: str) -> None:
         await handle_app_command_error(interaction, error, config=config)
 
     register_social_commands(tree, guild_id, social_service)
+
+    @client.event
+    async def on_interaction(interaction: discord.Interaction) -> None:
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "") if interaction.data else ""
+            if custom_id.startswith("claim_issue:"):
+                parts = custom_id.split(":")
+                if len(parts) == 3:
+                    repo_clicked = parts[1]
+                    try:
+                        issue_num_clicked = int(parts[2])
+                    except ValueError:
+                        return
+                    await handle_claim_issue_submission(
+                        interaction, repo_clicked, issue_num_clicked
+                    )
 
     @client.event
     async def on_ready() -> None:

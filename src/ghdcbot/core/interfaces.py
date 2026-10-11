@@ -128,6 +128,44 @@ class Storage(Protocol):
     def set_cursor(self, source: str, cursor: datetime) -> None:
         """Persist last sync cursor for a source."""
 
+    def insert_issue_request(
+        self,
+        request_id: str,
+        discord_user_id: str,
+        github_user: str,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        issue_url: str,
+    ) -> None:
+        """Store a new issue assignment request."""
+
+    def get_pending_issue_request(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str | None = None,
+        discord_user_id: str | None = None,
+    ) -> dict | None:
+        """Return pending issue request for repo and issue number."""
+
+    def list_pending_issue_requests(self, repo: str | None = None) -> list[dict]:
+        """Return pending issue requests."""
+
+    def get_issue_request(self, request_id: str) -> dict | None:
+        """Return issue request by request_id."""
+
+    def update_issue_request_status(
+        self,
+        request_id: str,
+        status: str,
+        *,
+        resolved_by_discord_id: str | None = None,
+        rejection_reason: str | None = None,
+        resolved_at: str | None = None,
+    ) -> None:
+        """Update request status."""
+
 
 class ScoreStrategy(Protocol):
     def compute_scores(

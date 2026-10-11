@@ -592,18 +592,43 @@ def send_issue_opened_channel_notification(
     if not claimed:
         return False
 
+    issue_buttons = [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 1,
+                    "label": "✋ Claim Issue",
+                    "custom_id": f"claim_issue:{event.repo}:{issue_number}",
+                },
+                {
+                    "type": 2,
+                    "style": 5,
+                    "label": "🔗 View on GitHub",
+                    "url": f"https://github.com/{github_org}/{event.repo}/issues/{issue_number}",
+                },
+            ],
+        }
+    ]
+
     message_id: str | None = None
     try:
         if callable(create_msg):
             try:
-                message_id = create_msg(channel_id, message, embeds=embeds or None)
+                message_id = create_msg(
+                    channel_id, message, embeds=embeds or None, components=issue_buttons
+                )
             except TypeError:
-                fallback = message
-                if embeds:
-                    emb = embeds[0]
-                    card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
-                    fallback = f"{message}\n\n{card}".strip() if message else card
-                message_id = create_msg(channel_id, fallback)
+                try:
+                    message_id = create_msg(channel_id, message, embeds=embeds or None)
+                except TypeError:
+                    fallback = message
+                    if embeds:
+                        emb = embeds[0]
+                        card = f"**{emb.get('title', '')}**\n\n{emb.get('description', '')}".strip()
+                        fallback = f"{message}\n\n{card}".strip() if message else card
+                    message_id = create_msg(channel_id, fallback)
             sent = message_id is not None
             if message_id == "":
                 message_id = None

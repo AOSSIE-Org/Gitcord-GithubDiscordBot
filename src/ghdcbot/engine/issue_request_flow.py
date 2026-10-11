@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -64,9 +64,7 @@ def compute_eligibility(
         low_activity = True
     else:
         cutoff = now - timedelta(days=LOW_ACTIVITY_DAYS)
-        if last_merged_at < cutoff and merged_count == 0:
-            low_activity = True
-        elif last_merged_at < cutoff:
+        if last_merged_at < cutoff:
             low_activity = True
 
     if low_activity and merged_count == 0:
@@ -126,8 +124,7 @@ def group_pending_requests_by_repo(
         if key not in groups:
             groups[key] = []
         groups[key].append(req)
-
-    now = datetime.now(timezone.utc)
+ 
     result = []
     for (owner, repo), reqs in groups.items():
         oldest: datetime | None = None
@@ -204,7 +201,7 @@ def build_mentor_request_embed(
     created_at_issue = None
     if issue.get("created_at"):
         try:
-            created_at_issue = datetime.fromisoformat(issue["created_at"].replace("Z", "+00:00"))
+            created_at_issue = datetime.fromisoformat(issue["created_at"])
         except (ValueError, TypeError):
             pass
     issue_age = format_relative_time(created_at_issue, now) if created_at_issue else "Unknown"
@@ -248,3 +245,42 @@ def build_mentor_request_embed(
         "timestamp": created_at_str or now.isoformat(),
     }
     return embed
+
+
+def format_claim_request_audit_context(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    github_user: str,
+    discord_user_id: str,
+    request_id: str,
+) -> dict[str, Any]:
+    """Format audit payload for issue claim submission."""
+    return {
+        "event_type": "issue_claim_requested",
+        "owner": owner,
+        "repo": repo,
+        "issue_number": issue_number,
+        "github_user": github_user,
+        "discord_user_id": discord_user_id,
+        "request_id": request_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
+def format_claim_resolution_audit_context(
+    request_id: str,
+    status: str,
+    resolved_by_discord_id: str,
+    rejection_reason: str | None = None,
+) -> dict[str, Any]:
+    """Format audit payload for issue claim resolution (approved/rejected)."""
+    return {
+        "event_type": f"issue_claim_{status}",
+        "request_id": request_id,
+        "status": status,
+        "resolved_by_discord_id": resolved_by_discord_id,
+        "rejection_reason": rejection_reason,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+

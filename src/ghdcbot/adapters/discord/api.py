@@ -204,18 +204,19 @@ class DiscordApiAdapter:
         content: str,
         *,
         embeds: list[dict] | None = None,
+        components: list[dict] | None = None,
     ) -> str | None:
         """Post a channel message and return its Discord message ID (or None on failure).
 
         Empty content with no embeds is a no-op success that returns an empty string
-        sentinel so callers can distinguish \"nothing to send\" from a failed send (None).
+        sentinel so callers can distinguish "nothing to send" from a failed send (None).
 
         ``SUPPRESS_EMBEDS`` is only set for plain-text posts so GitHub link previews are
         hidden. It must not be set when custom embeds are included — Discord would hide
         those embeds too and leave an empty-looking message.
         """
         embed_list = list(embeds or [])
-        if not content and not embed_list:
+        if not content and not embed_list and not components:
             return ""
         text = (content or "")[:2000]
         payload: dict = {}
@@ -223,8 +224,10 @@ class DiscordApiAdapter:
             payload["content"] = text
         if embed_list:
             payload["embeds"] = embed_list[:10]
-        else:
+        elif not components:
             payload["flags"] = 4  # SUPPRESS_EMBEDS — link previews only
+        if components:
+            payload["components"] = list(components)
         payload["allowed_mentions"] = {"parse": ["users"]}
         try:
             response = self._client.request(
@@ -260,6 +263,7 @@ class DiscordApiAdapter:
         content: str,
         *,
         embeds: list[dict] | None = None,
+        components: list[dict] | None = None,
     ) -> bool:
         """Edit an existing channel message. Returns True on success.
 
@@ -279,8 +283,12 @@ class DiscordApiAdapter:
             payload["embeds"] = list(embeds)[:10]
             # Explicitly clear suppress-embeds if a prior edit set it.
             payload["flags"] = 0
+        elif components is not None:
+            payload["flags"] = 0
         else:
             payload["flags"] = 4
+        if components is not None:
+            payload["components"] = list(components)
         try:
             response = self._client.request(
                 "PATCH",

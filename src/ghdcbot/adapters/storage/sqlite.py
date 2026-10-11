@@ -125,6 +125,16 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_status ON issue_requests (status);
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_created ON issue_requests (created_at);
+                """
+            )
+            for col in ("resolved_by_discord_id TEXT", "resolved_at TEXT", "rejection_reason TEXT"):
+                try:
+                    conn.execute(f"ALTER TABLE issue_requests ADD COLUMN {col}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS notifications_sent (
                     dedupe_key TEXT PRIMARY KEY,
                     event_type TEXT NOT NULL,
@@ -705,35 +715,98 @@ class SqliteStorage:
                 (request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, now),
             )
 
-    def list_pending_issue_requests(self) -> list[dict]:
+    create_issue_request = insert_issue_request
+
+    def get_pending_issue_request(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str | None = None,
+        discord_user_id: str | None = None,
+    ) -> dict | None:
+        """Return a pending issue request for a repo + issue_number, optionally filtered by user."""
+        query = (
+            "SELECT request_id, discord_user_id, github_user, owner, repo, issue_number, "
+            "issue_url, created_at, status, resolved_by_discord_id, resolved_at, rejection_reason "
+            "FROM issue_requests WHERE repo = ? AND issue_number = ? AND status = 'pending'"
+        )
+        params: list[Any] = [repo, int(issue_number)]
+        if github_user:
+            query += " AND lower(github_user) = lower(?)"
+            params.append(github_user)
+        if discord_user_id:
+            query += " AND discord_user_id = ?"
+            params.append(str(discord_user_id))
+        query += " ORDER BY created_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return dict(row) if row else None
+
+    def list_pending_issue_requests(self, repo: str | None = None) -> list[dict]:
         """Return all issue requests with status pending, ordered by created_at ascending."""
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT request_id, discord_user_id, github_user, owner, repo,
-                       issue_number, issue_url, created_at, status
-                FROM issue_requests
-                WHERE status = 'pending'
-                ORDER BY created_at ASC
-                """
-            ).fetchall()
+            if repo:
+                rows = conn.execute(
+                    """
+                    SELECT request_id, discord_user_id, github_user, owner, repo,
+                           issue_number, issue_url, created_at, status,
+                           resolved_by_discord_id, resolved_at, rejection_reason
+                    FROM issue_requests
+                    WHERE status = 'pending' AND repo = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (repo,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT request_id, discord_user_id, github_user, owner, repo,
+                           issue_number, issue_url, created_at, status,
+                           resolved_by_discord_id, resolved_at, rejection_reason
+                    FROM issue_requests
+                    WHERE status = 'pending'
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
         return [dict(row) for row in rows]
 
     def get_issue_request(self, request_id: str) -> dict | None:
         """Return a single issue request by request_id, or None."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT request_id, discord_user_id, github_user, owner, repo, issue_number, issue_url, created_at, status FROM issue_requests WHERE request_id = ?",
+                """
+                SELECT request_id, discord_user_id, github_user, owner, repo,
+                       issue_number, issue_url, created_at, status,
+                       resolved_by_discord_id, resolved_at, rejection_reason
+                FROM issue_requests
+                WHERE request_id = ?
+                """,
                 (request_id,),
             ).fetchone()
         return dict(row) if row else None
 
-    def update_issue_request_status(self, request_id: str, status: str) -> None:
-        """Update request status to approved, rejected, or cancelled."""
-        if status not in ("pending", "approved", "rejected", "cancelled"):
+    def update_issue_request_status(
+        self,
+        request_id: str,
+        status: str,
+        *,
+        resolved_by_discord_id: str | None = None,
+        rejection_reason: str | None = None,
+        resolved_at: str | None = None,
+    ) -> None:
+        """Update request status to approved, rejected, declined, or cancelled."""
+        if status not in ("pending", "approved", "rejected", "declined", "cancelled"):
             raise ValueError(f"Invalid status: {status}")
+        now = resolved_at or datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            conn.execute("UPDATE issue_requests SET status = ? WHERE request_id = ?", (status, request_id))
+            conn.execute(
+                """
+                UPDATE issue_requests
+                SET status = ?, resolved_by_discord_id = ?, rejection_reason = ?, resolved_at = ?
+                WHERE request_id = ?
+                """,
+                (status, resolved_by_discord_id, rejection_reason, now, request_id),
+            )
 
     def append_audit_event(self, event: dict) -> None:
         """Append a single audit event (append-only) to data_dir/audit_events.jsonl.
