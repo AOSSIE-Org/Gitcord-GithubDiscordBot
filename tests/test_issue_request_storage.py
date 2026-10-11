@@ -155,3 +155,59 @@ def test_unique_pending_index_enforces_one_pending_claim(temp_storage: SqliteSto
         issue_url="https://github.com/org/repo-x/issues/10",
     )
     assert temp_storage.get_issue_request("req-p3")["status"] == "pending"
+
+
+def test_migration_deduplicates_legacy_duplicate_claims_before_creating_unique_index(tmp_path):
+    storage = SqliteStorage(str(tmp_path))
+
+    # Simulate legacy table without unique index and with existing duplicates
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE issue_requests (
+                request_id TEXT PRIMARY KEY,
+                discord_user_id TEXT NOT NULL,
+                github_user TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                repo TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                issue_url TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO issue_requests VALUES
+            ('old-req', 'u1', 'Alice', 'org', 'repo-x', 10, 'url', '2026-01-01T00:00:00Z', 'pending'),
+            ('new-req', 'u1', 'alice', 'org', 'repo-x', 10, 'url', '2026-01-02T00:00:00Z', 'pending')
+            """
+        )
+
+    # Run init_schema migration
+    storage.init_schema()
+
+    # Verify older row was cancelled with migration reason and newer row remained pending
+    old_claim = storage.get_issue_request("old-req")
+    new_claim = storage.get_issue_request("new-req")
+    assert old_claim["status"] == "cancelled"
+    assert "migration" in old_claim.get("rejection_reason", "").lower()
+    assert new_claim["status"] == "pending"
+
+    # Verify unique index is now active: a 3rd duplicate raises IntegrityError
+    with pytest.raises(sqlite3.IntegrityError):
+        storage.insert_issue_request(
+            request_id="dup-req",
+            discord_user_id="u1",
+            github_user="ALICE",
+            owner="org",
+            repo="repo-x",
+            issue_number=10,
+            issue_url="url",
+        )
+
+    # Calling init_schema() again should be a clean no-op for the index
+    storage.init_schema()
+    assert storage.get_issue_request("new-req")["status"] == "pending"
+

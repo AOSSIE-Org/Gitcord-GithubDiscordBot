@@ -125,10 +125,6 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_status ON issue_requests (status);
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_created ON issue_requests (created_at);
-                DROP INDEX IF EXISTS idx_issue_requests_pending_unique;
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_requests_pending_unique
-                ON issue_requests (repo, issue_number, lower(github_user))
-                WHERE status IN ('pending', 'approving');
                 """
             )
             for col in ("resolved_by_discord_id TEXT", "resolved_at TEXT", "rejection_reason TEXT"):
@@ -137,6 +133,36 @@ class SqliteStorage:
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e).lower():
                         raise
+
+            idx = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_issue_requests_pending_unique'"
+            ).fetchone()
+            if idx is None or "'approving'" not in (idx["sql"] or ""):
+                conn.execute("DROP INDEX IF EXISTS idx_issue_requests_pending_unique")
+                conn.execute(
+                    """
+                    UPDATE issue_requests
+                    SET status = 'cancelled',
+                        rejection_reason = 'Duplicate claim removed during migration'
+                    WHERE rowid IN (
+                        SELECT rowid FROM (
+                            SELECT rowid, ROW_NUMBER() OVER (
+                                PARTITION BY repo, issue_number, lower(github_user)
+                                ORDER BY created_at DESC
+                            ) AS rn
+                            FROM issue_requests
+                            WHERE status IN ('pending', 'approving')
+                        ) WHERE rn > 1
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_requests_pending_unique
+                    ON issue_requests (repo, issue_number, lower(github_user))
+                    WHERE status IN ('pending', 'approving')
+                    """
+                )
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS notifications_sent (

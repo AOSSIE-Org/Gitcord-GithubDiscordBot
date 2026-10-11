@@ -632,3 +632,44 @@ def test_mentor_claim_review_view_approve_github_uncertain_outcome(test_env):
 
     content = interaction.edit_original_response.call_args[1]["content"]
     assert "uncertain" in content.lower()
+
+
+def test_mentor_claim_review_view_approve_assignee_case_insensitive_match(test_env):
+    storage, fake_github, config = test_env
+
+    storage.insert_issue_request(
+        request_id="req-case-1",
+        discord_user_id="123",
+        github_user="alice",
+        owner="test-org",
+        repo="repo-a",
+        issue_number=55,
+        issue_url="https://github.com/test-org/repo-a/issues/55",
+    )
+
+    view = MentorClaimReviewView(
+        request_id="req-case-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=55,
+        github_user="alice",
+        discord_user_id="123",
+    )
+
+    # GitHub issue already has assignee with differing casing 'Alice'
+    fake_github.get_issue = MagicMock(
+        return_value={"number": 55, "state": "open", "assignees": [{"login": "Alice"}]}
+    )
+
+    interaction = _make_mock_interaction(user_id=777)
+    asyncio.run(view.approve(interaction))
+
+    # Should not be rejected as 'Already assigned to someone else'
+    claim = storage.get_issue_request("req-case-1")
+    assert claim["status"] == "approved"
+    content = interaction.edit_original_response.call_args[1]["content"]
+    assert "Claim Approved" in content
+

@@ -516,8 +516,13 @@ class MentorClaimReviewView(discord.ui.View):
             return
 
         if issue_data.get("assignees"):
-            existing = [a.get("login") for a in issue_data.get("assignees", []) if isinstance(a, dict)]
-            if self.github_user not in existing:
+            existing = [
+                str(a.get("login"))
+                for a in issue_data.get("assignees", [])
+                if isinstance(a, dict) and a.get("login")
+            ]
+            existing_lower = {login.lower() for login in existing}
+            if self.github_user.lower() not in existing_lower:
                 if callable(update_fn):
                     update_fn(
                         self.request_id,
