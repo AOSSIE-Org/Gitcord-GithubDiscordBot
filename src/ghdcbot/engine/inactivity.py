@@ -130,6 +130,57 @@ def build_unassign_dm_message(
     )
 
 
+def is_pr_referencing_issue(pr: dict, issue_number: int, repo: str | None = None) -> bool:
+    """Check if a pull request references the given issue number.
+
+    Recognizes standard GitHub conventions:
+      - Hash notation: #42, (#42), [#42], repo#42
+      - GH prefix: GH-42
+      - Issue URLs or URL paths: /issues/42 (e.g. https://github.com/org/repo/issues/42)
+      - Explicit keywords: 'issue 42', 'issue: 42'
+      - PR head branch name: issue-42, fix/42, feat/42, 42-feature
+    """
+    _ = repo
+    title = str(pr.get("title") or "")
+    body = str(pr.get("body") or "")
+    head = pr.get("head")
+    head_ref = str(head.get("ref") or "") if isinstance(head, dict) else str(pr.get("head_ref") or "")
+
+    # 1. Direct hash reference (#42, (#42), [#42])
+    if re.search(rf"#\b{issue_number}\b", title, re.IGNORECASE) or re.search(
+        rf"#\b{issue_number}\b", body, re.IGNORECASE
+    ):
+        return True
+
+    # 2. GH-42 reference
+    if re.search(rf"\bGH-{issue_number}\b", title, re.IGNORECASE) or re.search(
+        rf"\bGH-{issue_number}\b", body, re.IGNORECASE
+    ):
+        return True
+
+    # 3. Issue URL or path (/issues/42)
+    if re.search(rf"/issues/{issue_number}\b", title, re.IGNORECASE) or re.search(
+        rf"/issues/{issue_number}\b", body, re.IGNORECASE
+    ):
+        return True
+
+    # 4. Explicit keyword reference ('issue 42', 'issue: 42')
+    if re.search(rf"\bissue\s*[:#]?\s*{issue_number}\b", title, re.IGNORECASE) or re.search(
+        rf"\bissue\s*[:#]?\s*{issue_number}\b", body, re.IGNORECASE
+    ):
+        return True
+
+    # 5. Branch name
+    if head_ref and re.search(
+        rf"(?:^|[/\-_])(?:issue|fix|feat|feature|bug)?[/\-_]?{issue_number}(?:[/\-_]|$)",
+        head_ref,
+        re.IGNORECASE,
+    ):
+        return True
+
+    return False
+
+
 def has_contributor_activity(
     github_reader: Any,
     owner: str,
@@ -214,13 +265,8 @@ def has_contributor_activity(
                     extra={"repo": repo, "author": github_user, "error": str(exc)},
                 )
         if not fetch_failed and prs is not None:
-            pattern = re.compile(rf"#\b{issue_number}\b", re.IGNORECASE)
             for pr in prs:
-                title = str(pr.get("title") or "")
-                body = str(pr.get("body") or "")
-
-                # Only count PRs that mention this issue (#number in title/body)
-                if pattern.search(title) or pattern.search(body):
+                if is_pr_referencing_issue(pr, issue_number, repo=repo):
                     pr_created = _parse_utc_datetime(pr.get("created_at"))
                     if pr_created and pr_created > since and (latest_activity is None or pr_created > latest_activity):
                         latest_activity = pr_created

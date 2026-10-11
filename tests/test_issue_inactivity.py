@@ -14,6 +14,7 @@ from ghdcbot.engine.inactivity import (
     build_unassign_comment,
     build_unassign_dm_message,
     has_contributor_activity,
+    is_pr_referencing_issue,
     run_issue_inactivity_lifecycle,
 )
 
@@ -411,6 +412,126 @@ class TestActivityDetection:
         )
         assert has_act is False
         assert act_time is None
+
+    def test_recent_pr_mentioning_issue_via_full_url(self, reader: MagicMock) -> None:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        pr_time = now - timedelta(days=2)
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 107,
+                "title": "Fix memory leak",
+                "body": "Resolves https://github.com/AOSSIE-Org/Gitcord/issues/42 cleanly",
+                "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == pr_time
+
+    def test_recent_pr_mentioning_issue_via_gh_prefix(self, reader: MagicMock) -> None:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        pr_time = now - timedelta(days=2)
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 108,
+                "title": "GH-42: Add Discord bot command",
+                "body": "Implements required slash command",
+                "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == pr_time
+
+    def test_recent_pr_mentioning_issue_via_branch_name(self, reader: MagicMock) -> None:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        pr_time = now - timedelta(days=2)
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 109,
+                "title": "WIP work",
+                "body": "Initial draft",
+                "head": {"ref": "fix/42-fix-login"},
+                "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is True
+        assert act_time == pr_time
+
+    def test_recent_pr_with_different_issue_number_does_not_count(self, reader: MagicMock) -> None:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=5)
+        pr_time = now - timedelta(days=2)
+        reader.list_pull_requests_for_author.return_value = [
+            {
+                "number": 110,
+                "title": "Fix bug #420",
+                "body": "See https://github.com/AOSSIE-Org/Gitcord/issues/4",
+                "head": {"ref": "fix/420-other-bug"},
+                "created_at": pr_time.isoformat(),
+                "updated_at": pr_time.isoformat(),
+            }
+        ]
+
+        has_act, act_time = has_contributor_activity(
+            github_reader=reader,
+            owner="AOSSIE-Org",
+            repo="Gitcord",
+            issue_number=42,
+            github_user="alex",
+            since=since,
+        )
+        assert has_act is False
+        assert act_time is None
+
+    def test_is_pr_referencing_issue_unit_matrix(self) -> None:
+        assert is_pr_referencing_issue({"title": "Fixes #42"}, 42)
+        assert is_pr_referencing_issue({"body": "Closes https://github.com/org/repo/issues/42"}, 42)
+        assert is_pr_referencing_issue({"title": "GH-42: New feature"}, 42)
+        assert is_pr_referencing_issue({"body": "Working on issue: 42"}, 42)
+        assert is_pr_referencing_issue({"head": {"ref": "issue-42"}}, 42)
+        assert is_pr_referencing_issue({"head": {"ref": "fix/42"}}, 42)
+        assert is_pr_referencing_issue({"head": {"ref": "42-auth-support"}}, 42)
+        assert is_pr_referencing_issue({"head_ref": "fix/42"}, 42)
+
+        # Negative checks
+        assert not is_pr_referencing_issue({"title": "Fixes #420"}, 42)
+        assert not is_pr_referencing_issue({"title": "Fixes #4"}, 42)
+        assert not is_pr_referencing_issue({"body": "https://github.com/org/repo/issues/420"}, 42)
+        assert not is_pr_referencing_issue({"head": {"ref": "fix/420"}}, 42)
+        assert not is_pr_referencing_issue({"title": "Unrelated work", "body": "Nothing here"}, 42)
+
 
     def test_comment_fetch_failure_returns_none(self, reader: MagicMock) -> None:
         reader.get_issue_comments.return_value = None
