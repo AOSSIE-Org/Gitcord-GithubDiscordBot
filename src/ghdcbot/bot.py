@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -426,48 +427,113 @@ class MentorClaimReviewView(discord.ui.View):
         await interaction.response.defer(ephemeral=False)
         self._disable()
 
-        claim = self.storage.get_issue_request(self.request_id)
-        if not claim or claim.get("status") != "pending":
-            curr_status = claim.get("status", "unknown") if claim else "not found"
+        update_fn = getattr(self.storage, "update_issue_request_status", None)
+        get_fn = getattr(self.storage, "get_issue_request", None)
+        mentor_id_str = str(interaction.user.id)
+        now_str = datetime.now(UTC).isoformat()
+
+        # Step 1: Pre-check & stale approving reconciliation
+        claim = get_fn(self.request_id) if callable(get_fn) else None
+        if not claim:
             await interaction.edit_original_response(
-                content=f"⚠️ This claim is no longer pending (current status: `{curr_status}`).",
+                content="❌ Claim request not found.",
                 view=self,
             )
             return
 
+        curr_status = claim.get("status", "unknown")
+        if curr_status == "approving":
+            resolved_at = claim.get("resolved_at")
+            is_stale = False
+            if resolved_at:
+                try:
+                    dt = datetime.fromisoformat(resolved_at)
+                    if datetime.now(UTC) - dt > timedelta(seconds=300):
+                        is_stale = True
+                except Exception:
+                    is_stale = True
+            else:
+                is_stale = True
+
+            if is_stale and callable(update_fn):
+                update_fn(self.request_id, "pending", expected_status="approving")
+                claim = get_fn(self.request_id) if callable(get_fn) else None
+                curr_status = claim.get("status", "unknown") if claim else "unknown"
+
+        if curr_status != "pending":
+            if curr_status == "approving":
+                msg = "⚠️ This claim is currently being processed by another mentor."
+            else:
+                msg = f"⚠️ This claim is no longer pending (current status: `{curr_status}`)."
+            await interaction.edit_original_response(content=msg, view=self)
+            return
+
+        # Step 2: Atomically acquire reservation (pending -> approving)
+        reserved = (
+            update_fn(
+                self.request_id,
+                "approving",
+                resolved_by_discord_id=mentor_id_str,
+                resolved_at=now_str,
+                expected_status="pending",
+            )
+            if callable(update_fn)
+            else False
+        )
+        if not reserved:
+            curr = get_fn(self.request_id) if callable(get_fn) else None
+            status_now = curr.get("status") if curr else "already resolved"
+            if status_now == "approving":
+                msg = "⚠️ This claim is currently being processed by another mentor."
+            else:
+                msg = f"⚠️ This claim was already resolved ({status_now}) by another mentor."
+            await interaction.edit_original_response(content=msg, view=self)
+            return
+
+        # Step 3: Refetch issue details from GitHub to confirm state
         try:
             issue_data = await asyncio.to_thread(
                 self.github_adapter.get_issue, self.owner, self.repo, self.issue_number
             )
         except Exception as e:
             logger.error("Failed to refetch issue: %s", e)
+            if callable(update_fn):
+                update_fn(self.request_id, "pending", expected_status="approving")
             await interaction.edit_original_response(
-                content="❌ Error refetching issue status from GitHub.",
+                content="❌ Error refetching issue status from GitHub. Request returned to pending.",
                 view=self,
             )
             return
 
-        if not issue_data:
+        if not issue_data or issue_data.get("state") == "closed":
+            reason = "Issue closed on GitHub" if (issue_data and issue_data.get("state") == "closed") else "Issue not found on GitHub"
+            if callable(update_fn):
+                update_fn(self.request_id, "cancelled", rejection_reason=reason, expected_status="approving")
             await interaction.edit_original_response(
-                content=f"❌ Issue #{self.issue_number} was not found on GitHub.",
+                content=f"❌ {reason}.",
                 view=self,
             )
             return
-        if issue_data.get("state") == "closed":
-            await interaction.edit_original_response(
-                content=f"❌ Issue #{self.issue_number} is already closed.",
-                view=self,
-            )
-            return
+
         if issue_data.get("assignees"):
-            existing = [a.get("login") for a in issue_data.get("assignees", [])]
+            existing = [a.get("login") for a in issue_data.get("assignees", []) if isinstance(a, dict)]
             if self.github_user not in existing:
+                if callable(update_fn):
+                    update_fn(
+                        self.request_id,
+                        "cancelled",
+                        rejection_reason=f"Already assigned to {', '.join(existing)}",
+                        expected_status="approving",
+                    )
                 await interaction.edit_original_response(
                     content=f"❌ Issue #{self.issue_number} is already assigned to {', '.join(existing)}.",
                     view=self,
                 )
                 return
 
+        # Step 4: Perform GitHub assignment
+        res = False
+        assignment_error = None
         try:
             res = await asyncio.to_thread(
                 self.github_adapter.assign_issue,
@@ -478,24 +544,63 @@ class MentorClaimReviewView(discord.ui.View):
             )
         except Exception as e:
             logger.error("Failed to assign issue: %s", e)
-            res = False
+            assignment_error = e
 
+        # Handle uncertain outcomes (Requirement 7)
         if not res:
+            verified_not_assigned = False
+            try:
+                verify_issue = await asyncio.to_thread(
+                    self.github_adapter.get_issue, self.owner, self.repo, self.issue_number
+                )
+                verify_assignees = [
+                    a.get("login", "").lower()
+                    for a in (verify_issue.get("assignees") or [])
+                    if isinstance(a, dict)
+                ]
+                if self.github_user.lower() in verify_assignees:
+                    res = True
+                else:
+                    verified_not_assigned = True
+            except Exception:
+                verified_not_assigned = False
+
+            if not res:
+                if verified_not_assigned:
+                    if callable(update_fn):
+                        update_fn(self.request_id, "pending", expected_status="approving")
+                    await interaction.edit_original_response(
+                        content=f"❌ Failed to assign @{self.github_user} on GitHub. Check bot permissions. Request returned to pending.",
+                        view=self,
+                    )
+                else:
+                    await interaction.edit_original_response(
+                        content=f"⚠️ GitHub assignment outcome is uncertain due to network errors ({assignment_error}). Please check GitHub directly.",
+                        view=self,
+                    )
+                return
+
+        # Step 5: Transition reservation from 'approving' to 'approved'
+        resolved_at = datetime.now(UTC).isoformat()
+        final_updated = (
+            update_fn(
+                self.request_id,
+                "approved",
+                resolved_by_discord_id=mentor_id_str,
+                resolved_at=resolved_at,
+                expected_status="approving",
+            )
+            if callable(update_fn)
+            else False
+        )
+        if not final_updated:
             await interaction.edit_original_response(
-                content=f"❌ Failed to assign @{self.github_user} on GitHub. Check bot GitHub write permissions.",
+                content="⚠️ Failed to record final approval status in database.",
                 view=self,
             )
             return
 
-        resolved_at = datetime.now(UTC).isoformat()
-        mentor_id_str = str(interaction.user.id)
-        self.storage.update_issue_request_status(
-            self.request_id,
-            "approved",
-            resolved_by_discord_id=mentor_id_str,
-            resolved_at=resolved_at,
-        )
-
+        # Step 6: Side-effects (Audit log and Contributor DM only AFTER final approved state is committed)
         append_audit = getattr(self.storage, "append_audit_event", None)
         if callable(append_audit):
             append_audit(
@@ -529,12 +634,33 @@ class MentorClaimReviewView(discord.ui.View):
 
         mentor_id_str = str(interaction.user.id)
         resolved_at = datetime.now(UTC).isoformat()
-        self.storage.update_issue_request_status(
-            self.request_id,
-            "declined",
-            resolved_by_discord_id=mentor_id_str,
-            resolved_at=resolved_at,
+        update_fn = getattr(self.storage, "update_issue_request_status", None)
+        updated = (
+            update_fn(
+                self.request_id,
+                "declined",
+                resolved_by_discord_id=mentor_id_str,
+                resolved_at=resolved_at,
+                expected_status="pending",
+            )
+            if callable(update_fn)
+            else False
         )
+        if not updated:
+            get_fn = getattr(self.storage, "get_issue_request", None)
+            curr = get_fn(self.request_id) if callable(get_fn) else None
+            curr_status = curr.get("status") if curr else "already resolved"
+            if curr_status == "approving":
+                await interaction.edit_original_response(
+                    content="⚠️ This claim is currently being approved by another mentor.",
+                    view=self,
+                )
+            else:
+                await interaction.edit_original_response(
+                    content=f"⚠️ This claim was already resolved ({curr_status}) by another mentor.",
+                    view=self,
+                )
+            return
 
         append_audit = getattr(self.storage, "append_audit_event", None)
         if callable(append_audit):
@@ -2781,15 +2907,22 @@ def run_bot(config_path: str) -> None:
         request_id = f"req_{int(time.time())}_{secrets.token_hex(3)}"
         issue_url = issue_data.get("html_url") or f"https://github.com/{owner}/{repo}/issues/{issue_number}"
 
-        storage.insert_issue_request(
-            request_id,
-            discord_user_id,
-            github_user,
-            owner,
-            repo,
-            issue_number,
-            issue_url,
-        )
+        try:
+            storage.insert_issue_request(
+                request_id,
+                discord_user_id,
+                github_user,
+                owner,
+                repo,
+                issue_number,
+                issue_url,
+            )
+        except sqlite3.IntegrityError:
+            await interaction.followup.send(
+                f"⚠️ You already have a pending claim for **{repo}#{issue_number}**.",
+                ephemeral=True,
+            )
+            return
 
         append_audit = getattr(storage, "append_audit_event", None)
         if callable(append_audit):
@@ -2802,8 +2935,12 @@ def run_bot(config_path: str) -> None:
         now = datetime.now(UTC)
         period_days = getattr(getattr(config, "scoring", None), "period_days", 30)
         period_start = now - timedelta(days=period_days)
-        merged_count, last_merged_at = get_merged_pr_count_and_last_time(
-            storage, github_user, period_start, now
+        merged_count, last_merged_at = await asyncio.to_thread(
+            get_merged_pr_count_and_last_time,
+            storage,
+            github_user,
+            period_start,
+            now,
         )
         eligible_roles_cfg = list(
             getattr(getattr(config, "assignments", None), "issue_request_eligible_roles", []) or []
@@ -2963,8 +3100,12 @@ def run_bot(config_path: str) -> None:
                 issue_info = {}
 
             p_days = getattr(getattr(config, "scoring", None), "period_days", 30)
-            m_count, l_time = get_merged_pr_count_and_last_time(
-                storage, g_user, now - timedelta(days=p_days), now
+            m_count, l_time = await asyncio.to_thread(
+                get_merged_pr_count_and_last_time,
+                storage,
+                g_user,
+                now - timedelta(days=p_days),
+                now,
             )
             el_cfg = list(
                 getattr(getattr(config, "assignments", None), "issue_request_eligible_roles", []) or []

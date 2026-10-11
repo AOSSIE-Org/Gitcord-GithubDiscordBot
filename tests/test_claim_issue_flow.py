@@ -390,3 +390,245 @@ def test_issue_opened_channel_notification_attaches_claim_button():
     buttons = components[0]["components"]
     claim_btn = next(b for b in buttons if "Claim Issue" in b["label"])
     assert claim_btn["custom_id"] == "claim_issue:repo-a:105"
+
+
+def test_mentor_claim_review_view_race_condition_already_resolved(test_env):
+    storage, fake_github, config = test_env
+
+    storage.insert_issue_request(
+        request_id="req-race-1",
+        discord_user_id="123",
+        github_user="alice",
+        owner="test-org",
+        repo="repo-a",
+        issue_number=99,
+        issue_url="https://github.com/test-org/repo-a/issues/99",
+    )
+
+    # First mentor approves
+    storage.update_issue_request_status(
+        "req-race-1",
+        "approved",
+        resolved_by_discord_id="mentor-1",
+        expected_status="pending",
+    )
+
+    # Second mentor views and tries to decline
+    view = MentorClaimReviewView(
+        request_id="req-race-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=99,
+        github_user="alice",
+        discord_user_id="123",
+    )
+
+    mentor2_interaction = _make_mock_interaction(user_id=888)
+    asyncio.run(view.decline(mentor2_interaction))
+
+    # Should report already resolved and NOT send a decline DM or overwrite status
+    claim = storage.get_issue_request("req-race-1")
+    assert claim["status"] == "approved"
+    assert claim["resolved_by_discord_id"] == "mentor-1"
+
+    content = mentor2_interaction.edit_original_response.call_args[1]["content"]
+    assert "already resolved" in content.lower()
+
+
+def test_claim_submission_integrity_error_handled(test_env):
+    storage, fake_github, config = test_env
+
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO identity_links (discord_user_id, github_user, verified, created_at, verified_at, github_user_normalized)
+            VALUES ('123', 'alice', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 'alice')
+            """
+        )
+
+    # Mock insert_issue_request to raise sqlite3.IntegrityError simulating concurrent insert
+    import sqlite3
+
+    commands = _setup_bot_and_get_commands(config, fake_github, storage)
+    claim_cmd = commands["claim-issue"]
+
+    with patch.object(storage, "insert_issue_request", side_effect=sqlite3.IntegrityError("UNIQUE constraint failed")):
+        interaction = _make_mock_interaction(user_id=123)
+        asyncio.run(claim_cmd.callback(interaction, repo="repo-a", issue_number=10))
+
+        assert interaction.followup.send.called
+        msg = interaction.followup.send.call_args[0][0]
+        assert "already have a pending claim" in msg
+
+
+def test_mentor_claim_review_in_flight_race_decline_blocked_by_reservation(test_env):
+    storage, fake_github, config = test_env
+
+    storage.insert_issue_request(
+        request_id="req-inflight-1",
+        discord_user_id="123",
+        github_user="alice",
+        owner="test-org",
+        repo="repo-a",
+        issue_number=88,
+        issue_url="https://github.com/test-org/repo-a/issues/88",
+    )
+
+    view_a = MentorClaimReviewView(
+        request_id="req-inflight-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=88,
+        github_user="alice",
+        discord_user_id="123",
+    )
+    view_b = MentorClaimReviewView(
+        request_id="req-inflight-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=88,
+        github_user="alice",
+        discord_user_id="123",
+    )
+
+    interaction_a = _make_mock_interaction(user_id=101)
+    interaction_b = _make_mock_interaction(user_id=202)
+
+    # Coordinate: pause Mentor A inside assign_issue, run Mentor B's decline, then resume A
+    import threading
+
+    paused_in_assign = threading.Event()
+    resume_assign = threading.Event()
+
+    original_assign = fake_github.assign_issue
+
+    def paused_assign(owner, repo, issue_number, assignee):
+        paused_in_assign.set()
+        resume_assign.wait(timeout=5.0)
+        return original_assign(owner, repo, issue_number, assignee)
+
+    fake_github.assign_issue = paused_assign
+
+    async def run_race():
+        task_a = asyncio.create_task(view_a.approve(interaction_a))
+        while not paused_in_assign.is_set():
+            await asyncio.sleep(0.01)
+
+        # At this point, A holds 'approving' reservation
+        assert storage.get_issue_request("req-inflight-1")["status"] == "approving"
+
+        # B attempts to decline while A is approving
+        await view_b.decline(interaction_b)
+
+        # Resume A
+        resume_assign.set()
+        await task_a
+
+    asyncio.run(run_race())
+
+    # Verify outcomes
+    # 1. B was rejected because A held reservation
+    content_b = interaction_b.edit_original_response.call_args[1]["content"]
+    assert "currently being approved" in content_b
+
+    # 2. A completed approval
+    claim = storage.get_issue_request("req-inflight-1")
+    assert claim["status"] == "approved"
+    assert claim["resolved_by_discord_id"] == "101"
+
+    # 3. GitHub was assigned exactly once to alice
+    assert len(fake_github.assigned_issues) == 1
+    assert fake_github.assigned_issues[0]["assignee"] == "alice"
+
+
+def test_mentor_claim_review_view_approve_github_failure_reverts_to_pending(test_env):
+    storage, fake_github, config = test_env
+
+    storage.insert_issue_request(
+        request_id="req-fail-1",
+        discord_user_id="123",
+        github_user="alice",
+        owner="test-org",
+        repo="repo-a",
+        issue_number=77,
+        issue_url="https://github.com/test-org/repo-a/issues/77",
+    )
+
+    view = MentorClaimReviewView(
+        request_id="req-fail-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=77,
+        github_user="alice",
+        discord_user_id="123",
+    )
+
+    # Force GitHub assign to return False (permission denied / failure)
+    fake_github.assign_issue = MagicMock(return_value=False)
+
+    interaction = _make_mock_interaction(user_id=777)
+    asyncio.run(view.approve(interaction))
+
+    # Reservation safely rolled back to pending for retry
+    claim = storage.get_issue_request("req-fail-1")
+    assert claim["status"] == "pending"
+
+    content = interaction.edit_original_response.call_args[1]["content"]
+    assert "returned to pending" in content.lower()
+
+
+def test_mentor_claim_review_view_approve_github_uncertain_outcome(test_env):
+    storage, fake_github, config = test_env
+
+    storage.insert_issue_request(
+        request_id="req-uncertain-1",
+        discord_user_id="123",
+        github_user="alice",
+        owner="test-org",
+        repo="repo-a",
+        issue_number=66,
+        issue_url="https://github.com/test-org/repo-a/issues/66",
+    )
+
+    view = MentorClaimReviewView(
+        request_id="req-uncertain-1",
+        storage=storage,
+        github_adapter=fake_github,
+        config=config,
+        owner="test-org",
+        repo="repo-a",
+        issue_number=66,
+        github_user="alice",
+        discord_user_id="123",
+    )
+
+    # Step 3 refetch succeeds, then assign raises error and Step 4 verification also raises error (network blackout)
+    fake_github.get_issue = MagicMock(
+        side_effect=[
+            {"number": 66, "state": "open", "assignees": []},
+            RuntimeError("DNS resolution failed"),
+        ]
+    )
+    fake_github.assign_issue = MagicMock(side_effect=RuntimeError("Connection timeout"))
+
+    interaction = _make_mock_interaction(user_id=777)
+    asyncio.run(view.approve(interaction))
+
+    # Uncertain outcome does NOT blindly reset to pending
+    claim = storage.get_issue_request("req-uncertain-1")
+    assert claim["status"] == "approving"
+
+    content = interaction.edit_original_response.call_args[1]["content"]
+    assert "uncertain" in content.lower()

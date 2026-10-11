@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Iterable, Protocol, Sequence
+from typing import Protocol
 
 from ghdcbot.core.models import (
     AssignmentPlan,
@@ -163,8 +164,9 @@ class Storage(Protocol):
         resolved_by_discord_id: str | None = None,
         rejection_reason: str | None = None,
         resolved_at: str | None = None,
-    ) -> None:
-        """Update request status."""
+        expected_status: str | Sequence[str] | None = "pending",
+    ) -> bool:
+        """Update request status. Returns True if updated, False otherwise."""
 
 
 class ScoreStrategy(Protocol):

@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ghdcbot.config.models import IdentityMapping
 from ghdcbot.core.models import ContributionEvent, ContributionSummary, Score
@@ -125,6 +125,10 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_status ON issue_requests (status);
                 CREATE INDEX IF NOT EXISTS idx_issue_requests_created ON issue_requests (created_at);
+                DROP INDEX IF EXISTS idx_issue_requests_pending_unique;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_requests_pending_unique
+                ON issue_requests (repo, issue_number, lower(github_user))
+                WHERE status IN ('pending', 'approving');
                 """
             )
             for col in ("resolved_by_discord_id TEXT", "resolved_at TEXT", "rejection_reason TEXT"):
@@ -742,8 +746,23 @@ class SqliteStorage:
             row = conn.execute(query, params).fetchone()
         return dict(row) if row else None
 
+    def reconcile_stale_approving_requests(self, max_age_seconds: int = 300) -> int:
+        """Reset issue requests stuck in 'approving' state back to 'pending' after timeout."""
+        cutoff = (datetime.now(UTC) - timedelta(seconds=max_age_seconds)).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE issue_requests
+                SET status = 'pending', resolved_by_discord_id = NULL, resolved_at = NULL
+                WHERE status = 'approving' AND (resolved_at <= ? OR resolved_at IS NULL)
+                """,
+                (cutoff,),
+            )
+            return cur.rowcount
+
     def list_pending_issue_requests(self, repo: str | None = None) -> list[dict]:
         """Return all issue requests with status pending, ordered by created_at ascending."""
+        self.reconcile_stale_approving_requests()
         with self._connect() as conn:
             if repo:
                 rows = conn.execute(
@@ -793,20 +812,33 @@ class SqliteStorage:
         resolved_by_discord_id: str | None = None,
         rejection_reason: str | None = None,
         resolved_at: str | None = None,
-    ) -> None:
-        """Update request status to approved, rejected, declined, or cancelled."""
-        if status not in ("pending", "approved", "rejected", "declined", "cancelled"):
+        expected_status: str | Sequence[str] | None = "pending",
+    ) -> bool:
+        """Update request status to approved, rejected, declined, cancelled, approving, or pending.
+
+        If expected_status is provided (default 'pending'), the update only occurs if the
+        current status matches expected_status. Returns True if a row was updated,
+        False otherwise (e.g. already resolved or locked).
+        """
+        if status not in ("pending", "approving", "approved", "rejected", "declined", "cancelled"):
             raise ValueError(f"Invalid status: {status}")
-        now = resolved_at or datetime.now(timezone.utc).isoformat()
+        now = resolved_at or datetime.now(UTC).isoformat()
         with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE issue_requests
-                SET status = ?, resolved_by_discord_id = ?, rejection_reason = ?, resolved_at = ?
-                WHERE request_id = ?
-                """,
-                (status, resolved_by_discord_id, rejection_reason, now, request_id),
+            query = (
+                "UPDATE issue_requests SET status = ?, resolved_by_discord_id = ?, "
+                "rejection_reason = ?, resolved_at = ? WHERE request_id = ?"
             )
+            params: list[Any] = [status, resolved_by_discord_id, rejection_reason, now, request_id]
+            if expected_status is not None:
+                if isinstance(expected_status, (list, tuple)):
+                    placeholders = ",".join("?" for _ in expected_status)
+                    query += f" AND status IN ({placeholders})"
+                    params.extend(expected_status)
+                else:
+                    query += " AND status = ?"
+                    params.append(expected_status)
+            cur = conn.execute(query, params)
+            return cur.rowcount == 1
 
     def append_audit_event(self, event: dict) -> None:
         """Append a single audit event (append-only) to data_dir/audit_events.jsonl.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from datetime import UTC, datetime
 
@@ -79,12 +80,21 @@ def test_issue_request_lifecycle(temp_storage: SqliteStorage):
 
     # 6. Resolve request to approved
     now_str = datetime.now(UTC).isoformat()
-    temp_storage.update_issue_request_status(
+    updated = temp_storage.update_issue_request_status(
         "req-123",
         "approved",
         resolved_by_discord_id="mentor-999",
         resolved_at=now_str,
     )
+    assert updated is True
+
+    # Atomic pending-only check: second update attempt on already resolved request returns False
+    second_update = temp_storage.update_issue_request_status(
+        "req-123",
+        "declined",
+        resolved_by_discord_id="mentor-888",
+    )
+    assert second_update is False
 
     req_approved = temp_storage.get_issue_request("req-123")
     assert req_approved["status"] == "approved"
@@ -96,14 +106,52 @@ def test_issue_request_lifecycle(temp_storage: SqliteStorage):
     assert len(temp_storage.list_pending_issue_requests(repo="repo-a")) == 0
 
     # 7. Resolve req-124 to declined with reason
-    temp_storage.update_issue_request_status(
+    updated_124 = temp_storage.update_issue_request_status(
         "req-124",
         "declined",
         resolved_by_discord_id="mentor-888",
         rejection_reason="Already assigned to someone else",
     )
+    assert updated_124 is True
     req_declined = temp_storage.get_issue_request("req-124")
     assert req_declined["status"] == "declined"
     assert req_declined["resolved_by_discord_id"] == "mentor-888"
     assert req_declined["rejection_reason"] == "Already assigned to someone else"
     assert len(temp_storage.list_pending_issue_requests()) == 0
+
+
+def test_unique_pending_index_enforces_one_pending_claim(temp_storage: SqliteStorage):
+    temp_storage.insert_issue_request(
+        request_id="req-p1",
+        discord_user_id="user-1",
+        github_user="Alice",
+        owner="org",
+        repo="repo-x",
+        issue_number=10,
+        issue_url="https://github.com/org/repo-x/issues/10",
+    )
+
+    # Duplicate pending claim for same repo, issue_number, and case-insensitive user raises IntegrityError
+    with pytest.raises(sqlite3.IntegrityError):
+        temp_storage.insert_issue_request(
+            request_id="req-p2",
+            discord_user_id="user-1",
+            github_user="alice",  # case-insensitive
+            owner="org",
+            repo="repo-x",
+            issue_number=10,
+            issue_url="https://github.com/org/repo-x/issues/10",
+        )
+
+    # After the pending request is resolved, a new pending claim can be created
+    temp_storage.update_issue_request_status("req-p1", "declined", resolved_by_discord_id="mentor-1")
+    temp_storage.insert_issue_request(
+        request_id="req-p3",
+        discord_user_id="user-1",
+        github_user="alice",
+        owner="org",
+        repo="repo-x",
+        issue_number=10,
+        issue_url="https://github.com/org/repo-x/issues/10",
+    )
+    assert temp_storage.get_issue_request("req-p3")["status"] == "pending"
