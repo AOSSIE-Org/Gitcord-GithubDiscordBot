@@ -176,6 +176,8 @@ def count_new_prs_still_open(events: Sequence[ContributionEvent]) -> int:
             opened.add(key)
         elif e.event_type in {"pr_merged", "pr_closed"}:
             closed.add(key)
+        elif e.event_type == "pr_reopened":
+            closed.discard(key)
     return len(opened - closed)
 
 
