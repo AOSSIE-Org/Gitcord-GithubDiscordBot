@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
@@ -140,7 +141,7 @@ def test_rows_written_without_key_are_keyed_on_next_init(tmp_path) -> None:
     assert storage.record_contributions([_event()]) == 0
 
 
-def test_list_contributions_tie_breaks_by_id_on_equal_created_at(tmp_path) -> None:
+def test_list_contributions_tie_breaks_by_id_on_equal_created_at(tmp_path, monkeypatch) -> None:
     storage = SqliteStorage(str(tmp_path))
     storage.init_schema()
 
@@ -151,5 +152,17 @@ def test_list_contributions_tie_breaks_by_id_on_equal_created_at(tmp_path) -> No
     ]
     storage.record_contributions(events)
 
+    captured_sql: list[str] = []
+    orig_connect = storage._connect
+
+    @contextmanager
+    def capturing_connect():
+        with orig_connect() as conn:
+            conn.set_trace_callback(captured_sql.append)
+            yield conn
+
+    monkeypatch.setattr(storage, "_connect", capturing_connect)
     listed = storage.list_contributions(EPOCH)
+
+    assert any("ORDER BY created_at ASC, id ASC" in sql for sql in captured_sql)
     assert [e.event_type for e in listed] == ["pr_opened", "pr_closed", "pr_reopened"]
