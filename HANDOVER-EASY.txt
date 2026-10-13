@@ -12,15 +12,21 @@ ON THE OLD COMPUTER
 
      ./scripts/gitcord-handover pack
 
+   Or encrypt with a passphrase (recommended for shared USB / transport):
+
+     ./scripts/gitcord-handover pack --encrypt
+
    (It briefly stops the bots so the database copy is safe, then starts them again.)
 
 3. Find the new file on your Desktop (or Downloads):
 
-     gitcord-handover-________.tar.gz
+     gitcord-handover-________.tar.gz        (unencrypted)
+     gitcord-handover-________.tar.gz.gpg    (encrypted)
 
 4. Copy that ONE file to a USB stick
 5. Give the new person:
      - the USB file
+     - the passphrase (separately, if using --encrypt)
      - access to both Discord bots + GitHub App
 
 
@@ -32,9 +38,13 @@ ON THE NEW COMPUTER
      git clone https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot.git
      cd Gitcord-GithubDiscordBot
 
-3. Run (put the real path to the USB file):
+3. Run (put the real path to the USB file; encrypted files are decrypted automatically):
 
      ./scripts/gitcord-handover restore /path/to/gitcord-handover-________.tar.gz
+
+   (or for encrypted archive):
+
+     ./scripts/gitcord-handover restore /path/to/gitcord-handover-________.tar.gz.gpg
 
 4. Press Enter when asked
 5. In Discord try:  /profile   and   /who-is
@@ -52,7 +62,7 @@ Only one computer should run the bots.
 USING AI (Cursor)
 -----------------
 Open docs/HANDOVER_AI_PROMPT.md and paste the prompt into the chat.
-Tell the AI the path to the .tar.gz file.
+Tell the AI the path to the .tar.gz (or .tar.gz.gpg) file.
 
 
 CHECK IF BOTS ARE UP
@@ -61,4 +71,13 @@ CHECK IF BOTS ARE UP
      ./scripts/gitcord-handover check
 
 
-NEVER put the .tar.gz on public GitHub — it has secret tokens.
+SECURITY NOTICE
+---------------
+- The archive contains sensitive credentials (.env tokens, GitHub App private key,
+  config, and database history).
+- Without --encrypt, secrets are stored in PLAINTEXT. Transfer only over a trusted
+  channel (e.g. physical USB stick or direct local transfer).
+- With --encrypt, the archive is encrypted with AES-256. Keep the passphrase separate
+  from the archive file when transferring.
+- Delete the archive from both computers after restore is verified.
+- NEVER upload the archive (.tar.gz or .tar.gz.gpg) to public GitHub or untrusted storage.

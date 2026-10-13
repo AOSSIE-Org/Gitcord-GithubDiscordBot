@@ -82,6 +82,8 @@ from ghdcbot.engine.pr_status import (
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
+    HELP_LINK_EXPIRY_SECONDS,
+    HELP_LINK_SESSION_TTL,
     WELCOME_INITIATOR_ID,
     HelpLinkSessionStore,
     HelpLinkStartView,
@@ -1502,10 +1504,10 @@ def run_bot(config_path: str) -> None:
         description="Lookup a GitHub username to find their verified Discord account",
         guild=discord.Object(id=guild_id)
     )
-    @app_commands.describe(github_username="GitHub username to look up")
+    @app_commands.describe(github_username="GitHub username to look up, without @ (e.g. octocat)")
     async def who_is_cmd(interaction: discord.Interaction, github_username: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        github_username = github_username.strip()
+        github_username = github_username.strip().removeprefix("@").strip()
         # Pass storage into the standalone resolve_github_to_discord helper function
         discord_user_id = resolve_github_to_discord(storage, github_username)
         if discord_user_id:
@@ -1571,6 +1573,7 @@ def run_bot(config_path: str) -> None:
         session = help_link_sessions.create(
             mentor_discord_id=mentor_id,
             target_discord_id=target_id,
+            ttl=HELP_LINK_SESSION_TTL,
         )
         view = HelpLinkStartView(
             service=service,
@@ -1583,6 +1586,7 @@ def run_bot(config_path: str) -> None:
             build_verification_embed=build_identity_verification_embed,
             session_store=help_link_sessions,
             max_age_days=max_age_days,
+            timeout=HELP_LINK_EXPIRY_SECONDS,
         )
         try:
             status = await deliver_help_link_prompt(
@@ -2387,6 +2391,14 @@ def run_bot(config_path: str) -> None:
             await interaction.followup.send(f"❌ {err_msg}", ephemeral=True)
             return
             
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            await interaction.followup.send(
+                f"❌ Repository **{repo}** is not allowed by Gitcord configuration.",
+                ephemeral=True,
+            )
+            return
+
         # 4. Create issue
         label_list = [label] if label else None
         

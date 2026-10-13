@@ -44,4 +44,6 @@ gitcord-handover-SECRET/
 **/gitcord-handover-*/
 gitcord-handover-*.tar.gz
 **/gitcord-handover-*.tar.gz
+gitcord-handover-*.tar.gz.gpg
+**/gitcord-handover-*.tar.gz.gpg
 *.pem

@@ -14,6 +14,10 @@ from ghdcbot.config.models import DigestConfig
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.digest import (
+    DigestAttention,
+    DigestOpenPR,
+    DigestPulse,
+    DigestReport,
     build_digest_pulse,
     build_digest_report,
     count_new_prs_still_open,
@@ -412,3 +416,53 @@ def test_digest_preview_cli_missing_db_creates_nothing(tmp_path, monkeypatch) ->
         _run_cli(monkeypatch, _preview_config(tmp_path, data_dir))
     assert exc.value.code == 1
     assert not data_dir.exists()
+
+
+def _digest_line_for_title(title: str) -> str:
+    now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+    pr = DigestOpenPR(
+        repo="RepoA",
+        pr_number=999,
+        title=title,
+        opened_at=now - timedelta(days=3),
+        channel_id="1",
+        message_id="2",
+    )
+    report = DigestReport(
+        org="Org",
+        period_start=now - timedelta(days=7),
+        period_end=now,
+        pulse=DigestPulse(prs_merged=1, issues_closed=0, issues_opened=0, active_repos=1),
+        top_contributors=(),
+        attention=DigestAttention(open_tracked_prs=1, new_prs_still_open=1, oldest_open=(pr,)),
+        quiet_week=False,
+    )
+    description = format_digest_embed(report)["description"]
+    return next(line for line in description.splitlines() if "#999" in line)
+
+
+def test_digest_escapes_masked_link_in_pr_title() -> None:
+    line = _digest_line_for_title("[Verify your account](https://evil.example)")
+    assert r"\[Verify your account\]\(https://evil.example\)" in line
+    assert "[Verify your account](" not in line
+    # The digest's own trusted link is untouched.
+    assert line.startswith("• [RepoA #999](https://github.com/Org/RepoA/pull/999) ")
+
+
+def test_digest_neutralizes_mentions_in_pr_title() -> None:
+    line = _digest_line_for_title("ping @everyone <@123> <@&456> <#789>")
+    for token in ("@everyone", "<@123>", "<@&456>", "<#789>"):
+        assert token not in line
+
+
+def test_digest_truncates_before_escaping() -> None:
+    title = "a" * 58 + "[x](https://evil.example)"
+    line = _digest_line_for_title(title)
+    assert ("a" * 58 + r"\[…") in line
+    assert "](https://evil.example" not in line
+
+
+def test_digest_plain_title_unchanged() -> None:
+    line = _digest_line_for_title("fix: handle  `None`\nin parser")
+    assert " fix: handle 'None' in parser — open 3 days" in line
+

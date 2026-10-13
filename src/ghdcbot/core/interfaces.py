@@ -34,10 +34,44 @@ class GitHubReader(Protocol):
     ) -> list[dict] | None:
         """Return open issues for one repository (excluding PRs), or None on error."""
 
+    def get_issue_comments(
+        self, owner: str, repo: str, issue_number: int
+    ) -> list[dict] | None:
+        """Fetch comments for an issue, or None on error."""
+
+    def list_pull_requests_for_author(
+        self, github_user: str, *, repo: str | None = None
+    ) -> list[dict]:
+        """List pull requests for an author."""
+
+    def get_author_prs_for_inactivity(
+        self, github_user: str, *, repo: str
+    ) -> list[dict] | None:
+        """Fetch PRs by author in a repo with title and body for inactivity check."""
+
+    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool:
+        """Check if user has write/maintainer access to repository or org."""
+
+    def get_successful_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues were listed successfully."""
+
+    def get_failed_issue_listing_repos(self) -> set[str]:
+        """Return repository names whose open issues listing failed."""
+
 
 class GitHubWriter(Protocol):
     def assign_issue(self, repo: str, issue_number: int, assignee: str) -> None:
         """Assign a user to a GitHub issue."""
+
+    def unassign_issue(
+        self, owner: str, repo: str, issue_number: int, assignee: str
+    ) -> bool:
+        """Unassign a user from a GitHub issue."""
+
+    def create_issue_comment(
+        self, owner: str, repo: str, issue_number: int, body: str
+    ) -> bool:
+        """Post a comment on a GitHub issue."""
 
     def request_review(self, repo: str, pr_number: int, reviewer: str) -> None:
         """Request a review from a GitHub user."""
