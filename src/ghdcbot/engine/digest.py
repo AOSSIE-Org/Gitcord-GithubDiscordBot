@@ -160,7 +160,7 @@ def build_top_contributors(
 
 
 def count_new_prs_still_open(events: Sequence[ContributionEvent]) -> int:
-    """PRs with pr_opened in window and no pr_merged/pr_closed for same repo+number."""
+    """PRs with pr_opened in window that remain open (accounting for reopens)."""
     opened: set[tuple[str, int]] = set()
     closed: set[tuple[str, int]] = set()
     for e in events:

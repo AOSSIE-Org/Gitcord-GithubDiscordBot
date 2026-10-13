@@ -107,6 +107,17 @@ def test_build_digest_pulse_and_still_open() -> None:
     assert count_new_prs_still_open(events) == 2  # #10 and #20
 
 
+def test_count_new_prs_still_open_reopened_then_closed() -> None:
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    events = [
+        _ev("frank", "pr_opened", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_closed", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_reopened", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_closed", "RepoC", now, pr_number=20),
+    ]
+    assert count_new_prs_still_open(events) == 0
+
+
 def test_build_digest_report_quiet_week_and_bot_filter(tmp_path) -> None:
     storage = SqliteStorage(tmp_path / "state.db")
     storage.init_schema()
