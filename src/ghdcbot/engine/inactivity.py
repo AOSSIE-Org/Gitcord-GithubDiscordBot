@@ -532,7 +532,22 @@ def run_issue_inactivity_lifecycle(
                 is_inactivity_due = (reminder_sent_at is None) and ((current_time - last_act) >= inactivity_delta)
                 is_escalation_due = auto_unassign and (reminder_sent_at is not None) and ((current_time - reminder_sent_at) >= escalate_delta)
 
-                if not is_inactivity_due and not is_escalation_due:
+                # Without auto-unassign nothing else re-checks activity after a reminder, so a reply
+                # would never reset the clock. Re-check once per escalate window after the reminder.
+                recheck_key: str | None = None
+                if not auto_unassign and reminder_sent_at is not None:
+                    reminder_age = current_time - reminder_sent_at
+                    if reminder_age >= escalate_delta:
+                        recheck_key = (
+                            f"issue_inactivity_recheck:{repo}:{issue_number}:{assignee}:"
+                            f"{reminder_sent_at.isoformat()}:{reminder_age // escalate_delta}"
+                        )
+                        was_checked = getattr(storage, "was_notification_sent", None)
+                        if callable(was_checked) and was_checked(recheck_key):
+                            recheck_key = None
+                is_recheck_due = recheck_key is not None
+
+                if not is_inactivity_due and not is_escalation_due and not is_recheck_due:
                     # Neither reminder nor escalation is due; leave last_activity_at unchanged
                     # and continue using it as since on the next check.
                     continue
@@ -571,6 +586,21 @@ def run_issue_inactivity_lifecycle(
                         "Activity detected for assigned contributor; clock reset",
                         extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                     )
+                    continue
+
+                if is_recheck_due:
+                    # Still inactive after the reminder: no repeat DM and no unassign without
+                    # auto_unassign. Record the check so this window is not re-fetched every sync.
+                    mark_checked = getattr(storage, "mark_notification_sent", None)
+                    if callable(mark_checked):
+                        event = ContributionEvent(
+                            github_user=assignee,
+                            event_type="issue_inactivity_recheck",
+                            repo=repo,
+                            created_at=current_time,
+                            payload={"issue_number": issue_number},
+                        )
+                        mark_checked(recheck_key, event, "", None, assignee)
                     continue
 
                 discord_user_id = resolve_github_to_discord(storage, assignee)
