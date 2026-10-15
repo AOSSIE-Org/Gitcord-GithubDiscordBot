@@ -1520,6 +1520,259 @@ class TestInactivityLifecycleExecution:
         github_reader.has_write_access.assert_not_called()
         github_reader.check_user_permission.assert_not_called()
 
+    def test_inconclusive_permission_has_write_access_none_check_perm_none_skips_actions(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When permission check is inconclusive (both return None), reminder and unassignment are skipped."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="uncertain_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        github_reader.has_write_access.return_value = None
+        github_reader.check_user_permission.return_value = None
+        storage.track_issue_assignment("Gitcord", 53, "uncertain_dev", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 53,
+                "title": "Inconclusive task",
+                "assignees": [{"login": "uncertain_dev"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 53, "uncertain_dev")
+        assert rec is not None
+        assert rec["reminder_sent_at"] is None
+        assert rec["escalated_at"] is None
+
+    def test_inconclusive_permission_has_write_access_none_check_perm_raises_skips_actions(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When has_write_access is None and check_user_permission raises, assignee is skipped."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="uncertain_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        github_reader.has_write_access.return_value = None
+        github_reader.check_user_permission.side_effect = RuntimeError("Rate limit exceeded")
+        storage.track_issue_assignment("Gitcord", 54, "uncertain_dev", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 54,
+                "title": "Rate limited perm task",
+                "assignees": [{"login": "uncertain_dev"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 54, "uncertain_dev")
+        assert rec is not None
+        assert rec["reminder_sent_at"] is None
+        assert rec["escalated_at"] is None
+
+    def test_inconclusive_permission_both_apis_raise_skips_actions(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When both has_write_access and check_user_permission raise exceptions, assignee is skipped."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="uncertain_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        github_reader.has_write_access.side_effect = ConnectionError("Network down")
+        github_reader.check_user_permission.side_effect = ConnectionError("Network down")
+        storage.track_issue_assignment("Gitcord", 55, "uncertain_dev", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 55,
+                "title": "Network failure task",
+                "assignees": [{"login": "uncertain_dev"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 55, "uncertain_dev")
+        assert rec is not None
+        assert rec["reminder_sent_at"] is None
+        assert rec["escalated_at"] is None
+
+    def test_inconclusive_permission_not_cached_as_confirmed_negative(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Inconclusive permission check is not cached as negative, allowing subsequent runs to detect elevated role."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="transient_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        # Run 1: permission check fails / inconclusive
+        github_reader.has_write_access.return_value = None
+        github_reader.check_user_permission.return_value = None
+        storage.track_issue_assignment("Gitcord", 56, "transient_dev", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 56,
+                "title": "Transient perm task",
+                "assignees": [{"login": "transient_dev"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+
+        # Run 2: permission check recovers and confirms elevated access
+        github_reader.has_write_access.return_value = True
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now + timedelta(hours=1),
+        )
+
+        # Must still not send reminder or unassign because user is confirmed elevated
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+
+    def test_fallback_permission_elevated_role_skips_actions(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When has_write_access is inconclusive but check_user_permission returns elevated role, user is skipped."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="fallback_admin"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+
+        github_reader.has_write_access.return_value = None
+        github_reader.check_user_permission.return_value = "maintain"
+        storage.track_issue_assignment("Gitcord", 57, "fallback_admin", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 57,
+                "title": "Fallback admin task",
+                "assignees": [{"login": "fallback_admin"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+
+    def test_fallback_permission_confirmed_non_elevated_proceeds(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When has_write_access is None but check_user_permission confirms non-elevated (read), inactivity proceeds."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="99887766", github_user="fallback_contributor"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=10)
+
+        github_reader.has_write_access.return_value = None
+        github_reader.check_user_permission.return_value = "read"
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+
+        storage.track_issue_assignment("Gitcord", 58, "fallback_contributor", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 58,
+                "title": "Fallback contributor task",
+                "assignees": [{"login": "fallback_contributor"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        rec = storage.get_issue_inactivity_record("Gitcord", 58, "fallback_contributor")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
 
 
 class TestSqliteStorageInactivityMethods:
