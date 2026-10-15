@@ -755,9 +755,38 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
                     else:
-                        logger.debug(
-                            "Skipping inactivity check-in DM: unverified contributor",
-                            extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                        )
+                        # Unverified contributor: cannot send Discord DM, but must record Stage 1 check-in
+                        # so that reminder_sent_at is tracked and Stage 2 auto-unassign can proceed.
+                        if policy.allow_github_mutations or policy.allow_discord_mutations:
+                            rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
+                            if callable(rem_fn):
+                                rem_fn(repo, issue_number, assignee, current_time)
+
+                            mark_sent = getattr(storage, "mark_notification_sent", None)
+                            if callable(mark_sent):
+                                event = ContributionEvent(
+                                    github_user=assignee,
+                                    event_type="issue_inactivity_checkin",
+                                    repo=repo,
+                                    created_at=current_time,
+                                    payload={
+                                        "issue_number": issue_number,
+                                        "days": inactivity_days,
+                                        "unverified": True,
+                                    },
+                                )
+                                mark_sent(dedupe_key, event, "", None, assignee)
+
+                            logger.info(
+                                "Recorded %s inactivity check-in for unverified contributor (skipping DM)",
+                                inactivity_label,
+                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                            )
+                        else:
+                            logger.info(
+                                "[DRY-RUN / AUDIT] Would record %s inactivity check-in for unverified contributor (skipping DM)",
+                                inactivity_label,
+                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                            )
     finally:
         _lifecycle_lock.release()
