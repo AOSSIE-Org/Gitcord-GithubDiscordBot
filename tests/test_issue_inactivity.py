@@ -873,6 +873,25 @@ class TestInactivityLifecycleExecution:
         assert rec["reminder_sent_at"] is None
         checkin_key = f"issue_inactivity_checkin:Gitcord:42:alex:{assigned_at.isoformat()}"
         assert not storage.was_notification_sent(checkin_key)
+        assert len(storage.audit_events) == 1
+        assert storage.audit_events[0]["action"] == "issue_inactivity_checkin_dry_run"
+        assert storage.audit_events[0]["repo"] == "Gitcord"
+        assert storage.audit_events[0]["issue_number"] == 42
+        assert storage.audit_events[0]["github_user"] == "alex"
+        assert storage.audit_events[0]["discord_user_id"] == "11223344"
+
+        # Repeated execution must not append duplicate audit events
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=dry_run_policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+        assert len(storage.audit_events) == 1
 
     def test_newly_discovered_issue_starts_tracking_without_dm(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
