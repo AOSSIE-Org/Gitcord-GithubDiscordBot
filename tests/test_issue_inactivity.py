@@ -569,6 +569,102 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
 
+    def test_stage_1_records_reminder_for_unverified_contributor_without_dm(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=7, hours=1)
+
+        # "ghost_user" has not verified Discord identity (not in storage.verified_mappings)
+        storage.track_issue_assignment("Gitcord", 42, "ghost_user", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Unverified contributor issue",
+                "assignees": [{"login": "ghost_user"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # DM is skipped because user has not linked Discord
+        discord_writer.send_dm.assert_not_called()
+
+        # Reminder is still recorded in storage so Stage 2 auto-unassign can proceed
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "ghost_user")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
+    def test_stage_2_unassigns_unverified_contributor_after_14_days(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        config.issue_inactivity_comment_on_unassign = True
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+        reminded_at = now - timedelta(days=7, hours=2)
+
+        # "ghost_user" is unverified and was previously recorded as reminded
+        storage.track_issue_assignment("Gitcord", 42, "ghost_user", assigned_at)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "ghost_user", reminded_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Unverified contributor issue",
+                "assignees": [{"login": "ghost_user"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.unassign_issue.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # Unassigned on GitHub
+        github_writer.unassign_issue.assert_called_once_with("AOSSIE-Org", "Gitcord", 42, "ghost_user")
+
+        # Courtesy comment posted on issue
+        github_writer.create_issue_comment.assert_called_once()
+        comment_body = github_writer.create_issue_comment.call_args[0][3]
+        assert "@ghost_user has been unassigned from this issue due to 14 days of inactivity" in comment_body
+
+        # DM skipped since contributor is not linked on Discord
+        discord_writer.send_dm.assert_not_called()
+
+        # Storage updated to unassigned
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "ghost_user")
+        assert rec is not None
+        assert rec["status"] == "unassigned"
+        assert rec["escalated_at"] is not None
+
     def test_activity_resets_reminder_and_delays_stage_1(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
