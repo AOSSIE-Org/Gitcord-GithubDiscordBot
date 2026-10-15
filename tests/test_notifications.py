@@ -5,6 +5,7 @@ from threading import Barrier, Thread
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from ghdcbot.adapters.github.rest import GitHubRestAdapter
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
@@ -2521,7 +2522,7 @@ def test_issue_opened_github_link_comment_posts_for_unverified() -> None:
     storage.verified_mappings = []
     github_writer = MockGithubWriter()
     config = NotificationConfig(enabled=True, issue_opened_github_comment=True)
-    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
 
     result = send_issue_opened_github_link_comment(
         _issue_opened_event(github_user="stranger", issue_number=77),
@@ -2590,7 +2591,7 @@ def test_pr_opened_github_link_comment_posts_for_unverified() -> None:
     storage.verified_mappings = []
     github_writer = MockGithubWriter()
     config = NotificationConfig(enabled=True, pr_opened_github_comment=True)
-    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
 
     result = send_pr_opened_github_link_comment(
         _pr_opened_event(github_user="stranger"),
@@ -2610,6 +2611,52 @@ def test_pr_opened_github_link_comment_posts_for_unverified() -> None:
     assert number == 42
     assert "/link stranger" in body
     assert "pr_opened_github_link:Gitcord-GithubDiscordBot:42" in storage.notifications_sent
+
+
+@pytest.mark.parametrize(
+    "mode, github_write_allowed",
+    [
+        (RunMode.ACTIVE, False),
+        (RunMode.OBSERVER, True),
+        (RunMode.DRY_RUN, True),
+    ],
+)
+def test_opened_github_link_comments_respect_mutation_policy(mode, github_write_allowed) -> None:
+    storage = MockStorage()
+    storage.verified_mappings = []
+    github_writer = MockGithubWriter()
+    config = NotificationConfig(
+        enabled=True,
+        issue_opened_github_comment=True,
+        pr_opened_github_comment=True,
+    )
+    policy = MutationPolicy(
+        mode=mode, github_write_allowed=github_write_allowed, discord_write_allowed=True
+    )
+
+    issue_result = send_issue_opened_github_link_comment(
+        _issue_opened_event(github_user="stranger", issue_number=77),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+    pr_result = send_pr_opened_github_link_comment(
+        _pr_opened_event(github_user="stranger"),
+        storage,
+        github_writer,
+        policy,
+        config,
+        "AOSSIE-Org",
+        "https://discord.gg/hjUhu33uAn",
+    )
+
+    assert issue_result is False
+    assert pr_result is False
+    assert github_writer.comments == []
+    assert storage.notifications_sent == set()
 
 
 def test_pr_opened_github_link_comment_skips_verified() -> None:
