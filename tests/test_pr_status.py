@@ -1460,13 +1460,16 @@ class TestRepoRecommendationAndAutocomplete:
         with (
             patch("ghdcbot.bot.load_config", return_value=cfg),
             patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
-            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.build_adapter") as build_adapter,
             patch("ghdcbot.bot.GitHubIdentityReader"),
             patch("ghdcbot.bot.IdentityLinkService"),
             patch("ghdcbot.bot.SocialProfileService"),
             patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
             patch("discord.Client.run", side_effect=SystemExit(0)),
         ):
+            build_adapter.return_value.list_org_repo_names.return_value = [
+                "Knowledge-Agent", "Devr.AI"
+            ]
             try:
                 run_bot("dummy.yaml")
             except SystemExit:
@@ -2201,3 +2204,62 @@ async def test_dashboard_fetch_error_releases_in_flight_guard(pr_status_guard) -
             await view._send_dashboard(_button_interaction(), skip=0)
 
     assert pr_status_guard._pr_status_in_flight == set()
+
+
+@pytest.mark.asyncio
+async def test_repo_suggestions_discovers_org_repos_and_filters() -> None:
+    from ghdcbot.engine.pr_status import get_repo_suggestions
+
+    adapter = MagicMock()
+    adapter.list_org_repo_names.return_value = ["new-repo", "other", "NEW-repo", "blocked"]
+    config = {"github": {"repos": {"mode": "deny", "names": ["blocked"]}}}
+    assert await get_repo_suggestions(config, adapter, "repo") == ["new-repo"]
+    assert await get_repo_suggestions(config, adapter, "") == ["new-repo", "other"]
+
+
+@pytest.mark.asyncio
+async def test_repo_suggestions_failure_uses_filtered_config() -> None:
+    from ghdcbot.engine.pr_status import get_repo_suggestions
+
+    adapter = MagicMock()
+    adapter.list_org_repo_names.side_effect = RuntimeError("unavailable")
+    config = {
+        "github": {"repos": {"mode": "allow", "names": ["allowed"]}},
+        "discord": {"pr_open_channels": {"blocked": 123}},
+    }
+    assert await get_repo_suggestions(config, adapter, "") == ["allowed"]
+
+
+@pytest.mark.asyncio
+async def test_repo_suggestions_caps_choices() -> None:
+    from ghdcbot.engine.pr_status import get_repo_suggestions
+
+    adapter = MagicMock()
+    adapter.list_org_repo_names.return_value = [f"repo-{i:02}" for i in range(40)]
+    assert len(await get_repo_suggestions({}, adapter, "")) == 25
+    assert await get_repo_suggestions({}, adapter, "39") == ["repo-39"]
+
+
+@pytest.mark.asyncio
+async def test_repo_suggestions_timeout_uses_config() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    from ghdcbot.engine.pr_status import get_repo_suggestions
+
+    async def slow_discovery(*args: Any) -> list[str]:
+        await asyncio.sleep(10)
+        return ["remote"]
+
+    config = {"github": {"repos": {"mode": "allow", "names": ["configured"]}}}
+    with patch("ghdcbot.engine.pr_status.asyncio.to_thread", side_effect=slow_discovery):
+        result = await asyncio.wait_for(get_repo_suggestions(config, MagicMock(), ""), 2)
+    assert result == ["configured"]
+
+
+@pytest.mark.asyncio
+async def test_repo_suggestions_without_discovery_support() -> None:
+    from ghdcbot.engine.pr_status import get_repo_suggestions
+
+    config = {"github": {"repos": {"mode": "allow", "names": ["configured"]}}}
+    assert await get_repo_suggestions(config, object(), "conf") == ["configured"]
