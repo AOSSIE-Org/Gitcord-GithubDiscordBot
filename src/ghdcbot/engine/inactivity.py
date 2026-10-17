@@ -658,7 +658,9 @@ def run_issue_inactivity_lifecycle(
                     else:
                         # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
                         rem_key_part = (
-                            reminder_sent_at.isoformat() if reminder_sent_at else "unverified"
+                            reminder_sent_at.isoformat()
+                            if reminder_sent_at
+                            else f"unverified:{last_act.isoformat()}"
                         )
                         dry_run_dedupe_key = (
                             f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{rem_key_part}"
