@@ -749,11 +749,55 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
                         elif not policy.allow_discord_mutations:
+                            dry_run_dedupe_key = (
+                                f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                            )
+                            was_sent = getattr(storage, "was_notification_sent", None)
+                            already_logged = False
+                            if callable(was_sent):
+                                already_logged = bool(was_sent(dry_run_dedupe_key))
+                            else:
+                                audit_events = getattr(storage, "audit_events", None)
+                                if isinstance(audit_events, list):
+                                    already_logged = any(
+                                        isinstance(e, dict)
+                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
+                                        and e.get("repo") == repo
+                                        and e.get("issue_number") == issue_number
+                                        and e.get("github_user") == assignee
+                                        for e in audit_events
+                                    )
+                            if already_logged:
+                                continue
+
                             logger.info(
                                 "[DRY-RUN / AUDIT] Would send %s inactivity check-in reminder",
                                 inactivity_label,
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
+
+                            audit_fn = getattr(storage, "append_audit_event", None)
+                            if callable(audit_fn):
+                                audit_fn({
+                                    "action": "issue_inactivity_checkin_dry_run",
+                                    "repo": repo,
+                                    "issue_number": issue_number,
+                                    "github_user": assignee,
+                                    "discord_user_id": discord_user_id,
+                                    "days": inactivity_days,
+                                    "timestamp": current_time.isoformat(),
+                                })
+
+                            mark_sent = getattr(storage, "mark_notification_sent", None)
+                            if callable(mark_sent):
+                                event = ContributionEvent(
+                                    github_user=assignee,
+                                    event_type="issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    created_at=current_time,
+                                    payload={"issue_number": issue_number, "days": inactivity_days},
+                                )
+                                mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
                     else:
                         logger.debug(
                             "Skipping inactivity check-in DM: unverified contributor",
