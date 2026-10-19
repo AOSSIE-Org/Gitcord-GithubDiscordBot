@@ -276,46 +276,60 @@ def run_issue_inactivity_lifecycle(
         total_time_label = f"{inactivity_days + escalate_days} days"
 
         # Maintainer / mentor check helper
-        maintainer_cache: dict[str, bool] = {}
+        permission_cache: dict[str, bool] = {}
         known_mentors: set[str] = {u.strip().lower() for u in (mentor_github_users or set()) if u}
 
-        def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
+        def _get_assignee_permission_state(login: str, repo_name: str) -> bool | None:
+            """Check contributor permission status for inactivity handling.
+
+            Returns:
+              - True: confirmed elevated (maintainer, admin, write, mentor)
+              - False: confirmed non-elevated (regular contributor)
+              - None: unknown / error / inconclusive lookup
+            """
             clean = (login or "").strip().lower()
             if not clean:
                 return False
             if clean in known_mentors:
                 return True
             cache_key = f"{repo_name.lower()}:{clean}"
-            if cache_key in maintainer_cache:
-                return maintainer_cache[cache_key]
+            if cache_key in permission_cache:
+                return permission_cache[cache_key]
 
-            # Check github_reader.has_write_access
+            # 1. Primary check: github_reader.has_write_access
             has_write_fn = getattr(github_reader, "has_write_access", None)
             if callable(has_write_fn):
                 try:
                     res = has_write_fn(github_org, repo_name, login)
                     if res is True or (isinstance(res, bool) and res):
-                        maintainer_cache[cache_key] = True
+                        permission_cache[cache_key] = True
                         return True
                     if res is False or (isinstance(res, bool) and not res):
-                        maintainer_cache[cache_key] = False
+                        permission_cache[cache_key] = False
                         return False
                 except Exception:
                     logger.debug("Failed to check write access for %s", login, exc_info=True)
 
-            # Check github_reader.check_user_permission
+            # 2. Fallback check: github_reader.check_user_permission
             check_perm_fn = getattr(github_reader, "check_user_permission", None)
             if callable(check_perm_fn):
                 try:
                     perm = check_perm_fn(github_org, repo_name, login)
-                    if isinstance(perm, str) and perm.lower() in {"admin", "maintain", "write"}:
-                        maintainer_cache[cache_key] = True
-                        return True
+                    if isinstance(perm, str):
+                        perm_lower = perm.strip().lower()
+                        if perm_lower in {"admin", "maintain", "write"}:
+                            permission_cache[cache_key] = True
+                            return True
+                        if perm_lower in {"triage", "read", "none"}:
+                            permission_cache[cache_key] = False
+                            return False
                 except Exception:
                     logger.debug("Failed to check user permission for %s", login, exc_info=True)
 
-            maintainer_cache[cache_key] = False
-            return False
+            return None
+
+        def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
+            return _get_assignee_permission_state(login, repo_name) is True
 
 
         # Discover open issues (use passed-in open_issues to avoid duplicate GitHub API calls)
@@ -552,10 +566,17 @@ def run_issue_inactivity_lifecycle(
                     # and continue using it as since on the next check.
                     continue
 
-                # Skip assignees who are maintainers/mentors (checked only when reminder or unassign is due)
-                if _is_maintainer_or_mentor(assignee, repo):
+                # Skip assignees who are maintainers/mentors or whose permission check is inconclusive
+                perm_state = _get_assignee_permission_state(assignee, repo)
+                if perm_state is True:
                     logger.debug(
                         "Skipping inactivity check for maintainer/mentor assignee",
+                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                    )
+                    continue
+                if perm_state is None:
+                    logger.warning(
+                        "Skipping inactivity check for assignee due to inconclusive permission check",
                         extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                     )
                     continue
