@@ -251,7 +251,7 @@ class SqliteStorage:
                 SELECT DISTINCT github_user, event_type, repo, created_at, payload_json
                 FROM contributions
                 WHERE created_at >= ?
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, id ASC
                 """,
                 (since_utc.isoformat(),),
             ).fetchall()
