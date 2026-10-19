@@ -56,7 +56,11 @@ from ghdcbot.engine.metrics import (
     get_rank_for_user,
     rank_by_activity,
 )
-from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
+from ghdcbot.engine.open_prs import (
+    format_open_prs_messages,
+    format_open_prs_report,
+    list_open_prs_for_author,
+)
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -1263,13 +1267,18 @@ def run_bot(config_path: str) -> None:
             return
 
         prs = list_open_prs_for_author(open_prs, github_user)
-        message = format_open_prs_report(
+        messages = format_open_prs_messages(
             contributor_mention=contributor.mention,
             github_user=github_user,
             prs=prs,
             org=config.github.org,
         )
-        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
 
     @tree.command(
         name="pr",
