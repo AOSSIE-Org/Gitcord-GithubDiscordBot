@@ -90,6 +90,21 @@ def build_checkin_message(
     )
 
 
+def build_checkin_comment(
+    github_user: str,
+    time_label: str | int = "7 days",
+    days: str | int | None = None,
+) -> str:
+    """Build check-in reminder comment posted on GitHub issue for unverified contributor."""
+    raw_time = days if days is not None else time_label
+    time_str = f"{raw_time} days" if isinstance(raw_time, int) else str(raw_time)
+    return (
+        f"@{github_user} you were assigned to this issue {time_str} ago with no detected activity. "
+        f"Are you still working on this issue? Please comment with an update if you need more time, "
+        f"otherwise this issue may be reopened for other contributors."
+    )
+
+
 def build_unassign_comment(
     github_user: str,
     time_label: str | int = "14 days",
@@ -544,7 +559,9 @@ def run_issue_inactivity_lifecycle(
 
                 # Skip activity fetches when both inactivity and escalation clocks are below thresholds
                 is_inactivity_due = (reminder_sent_at is None) and ((current_time - last_act) >= inactivity_delta)
-                is_escalation_due = auto_unassign and (reminder_sent_at is not None) and ((current_time - reminder_sent_at) >= escalate_delta)
+                is_escalation_due = auto_unassign and (
+                    reminder_sent_at is not None and (current_time - reminder_sent_at) >= escalate_delta
+                )
 
                 # Without auto-unassign nothing else re-checks activity after a reminder, so a reply
                 # would never reset the clock. Re-check once per escalate window after the reminder.
@@ -627,130 +644,137 @@ def run_issue_inactivity_lifecycle(
                 discord_user_id = resolve_github_to_discord(storage, assignee)
 
                 # Stage 2: 7 days after reminder_sent_at (escalate_days)
+                escalation_due = False
                 if auto_unassign and reminder_sent_at is not None:
-                    if (current_time - reminder_sent_at) >= escalate_delta:
-                        # Escalation / auto-unassign
-                        if policy.allow_github_mutations:
-                            # 1. Unassign on GitHub
-                            unassign_fn = getattr(github_writer, "unassign_issue", None)
-                            unassigned = False
-                            if callable(unassign_fn):
+                    escalation_due = (current_time - reminder_sent_at) >= escalate_delta
+
+                if escalation_due:
+                    # Escalation / auto-unassign
+                    if policy.allow_github_mutations:
+                        # 1. Unassign on GitHub
+                        unassign_fn = getattr(github_writer, "unassign_issue", None)
+                        unassigned = False
+                        if callable(unassign_fn):
+                            try:
+                                unassigned = bool(unassign_fn(github_org, repo, issue_number, assignee))
+                            except Exception as exc:  # noqa: BLE001
+                                logger.error(
+                                    "Failed to unassign inactive contributor",
+                                    extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+                                )
+                        if not unassigned:
+                            continue  # retry next run; do not comment, DM, or record
+
+                        # 2. Courtesy comment on issue
+                        if comment_on_unassign:
+                            comment_fn = getattr(github_writer, "create_issue_comment", None)
+                            if callable(comment_fn):
                                 try:
-                                    unassigned = bool(unassign_fn(github_org, repo, issue_number, assignee))
+                                    comment_fn(
+                                        github_org,
+                                        repo,
+                                        issue_number,
+                                        build_unassign_comment(assignee, total_time_label),
+                                    )
                                 except Exception as exc:  # noqa: BLE001
-                                    logger.error(
-                                        "Failed to unassign inactive contributor",
-                                        extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+                                    logger.warning(
+                                        "Failed to post unassignment comment",
+                                        extra={"repo": repo, "issue": issue_number, "error": str(exc)},
                                     )
-                            if not unassigned:
-                                continue  # retry next run; do not comment, DM, or record
 
-                            # 2. Courtesy comment on issue
-                            if comment_on_unassign:
-                                comment_fn = getattr(github_writer, "create_issue_comment", None)
-                                if callable(comment_fn):
-                                    try:
-                                        comment_fn(
-                                            github_org,
-                                            repo,
-                                            issue_number,
-                                            build_unassign_comment(assignee, total_time_label),
-                                        )
-                                    except Exception as exc:  # noqa: BLE001
-                                        logger.warning(
-                                            "Failed to post unassignment comment",
-                                            extra={"repo": repo, "issue": issue_number, "error": str(exc)},
-                                        )
+                        # 3. Follow-up DM to verified contributor
+                        if discord_user_id and policy.allow_discord_mutations:
+                            unassign_dm = build_unassign_dm_message(
+                                github_org=github_org,
+                                repo=repo,
+                                issue_number=issue_number,
+                                issue_title=issue_title,
+                                github_user=assignee,
+                                discord_user_id=discord_user_id,
+                                time_label=total_time_label,
+                            )
+                            _send_discord_notification(
+                                discord_writer=discord_writer,
+                                discord_user_id=discord_user_id,
+                                message=unassign_dm,
+                                channel_id=None,
+                                policy=policy,
+                            )
 
-                            # 3. Follow-up DM to verified contributor
-                            if discord_user_id and policy.allow_discord_mutations:
-                                unassign_dm = build_unassign_dm_message(
-                                    github_org=github_org,
-                                    repo=repo,
-                                    issue_number=issue_number,
-                                    issue_title=issue_title,
-                                    github_user=assignee,
-                                    discord_user_id=discord_user_id,
-                                    time_label=total_time_label,
-                                )
-                                _send_discord_notification(
-                                    discord_writer=discord_writer,
-                                    discord_user_id=discord_user_id,
-                                    message=unassign_dm,
-                                    channel_id=None,
-                                    policy=policy,
-                                )
+                        # Record escalation in storage
+                        esc_fn = getattr(storage, "record_issue_inactivity_escalation", None)
+                        if callable(esc_fn):
+                            esc_fn(repo, issue_number, assignee, current_time, status="unassigned")
 
-                            # Record escalation in storage
-                            esc_fn = getattr(storage, "record_issue_inactivity_escalation", None)
-                            if callable(esc_fn):
-                                esc_fn(repo, issue_number, assignee, current_time, status="unassigned")
-
-                            audit_fn = getattr(storage, "append_audit_event", None)
-                            if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_unassigned",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "total_time": total_time_label,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                        audit_fn = getattr(storage, "append_audit_event", None)
+                        if callable(audit_fn):
+                            audit_fn({
+                                "action": "issue_inactivity_unassigned",
+                                "repo": repo,
+                                "issue_number": issue_number,
+                                "github_user": assignee,
+                                "discord_user_id": discord_user_id,
+                                "total_time": total_time_label,
+                                "timestamp": current_time.isoformat(),
+                            })
+                    else:
+                        # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
+                        rem_key_part = (
+                            reminder_sent_at.isoformat()
+                            if reminder_sent_at
+                            else f"unverified:{last_act.isoformat()}"
+                        )
+                        dry_run_dedupe_key = (
+                            f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{rem_key_part}"
+                        )
+                        was_sent = getattr(storage, "was_notification_sent", None)
+                        already_logged = False
+                        if callable(was_sent):
+                            already_logged = bool(was_sent(dry_run_dedupe_key))
                         else:
-                            # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
-                            dry_run_dedupe_key = (
-                                f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{reminder_sent_at.isoformat()}"
-                            )
-                            was_sent = getattr(storage, "was_notification_sent", None)
-                            already_logged = False
-                            if callable(was_sent):
-                                already_logged = bool(was_sent(dry_run_dedupe_key))
-                            else:
-                                audit_events = getattr(storage, "audit_events", None)
-                                if isinstance(audit_events, list):
-                                    already_logged = any(
-                                        isinstance(e, dict)
-                                        and e.get("action") == "issue_inactivity_escalated_dry_run"
-                                        and e.get("repo") == repo
-                                        and e.get("issue_number") == issue_number
-                                        and e.get("github_user") == assignee
-                                        for e in audit_events
-                                    )
-                            if already_logged:
-                                continue
-
-                            logger.info(
-                                "[DRY-RUN / AUDIT] Would unassign inactive contributor after %s",
-                                total_time_label,
-                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                            )
-
-                            audit_fn = getattr(storage, "append_audit_event", None)
-                            if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_escalated_dry_run",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "total_time": total_time_label,
-                                    "timestamp": current_time.isoformat(),
-                                })
-
-                            mark_sent = getattr(storage, "mark_notification_sent", None)
-                            if callable(mark_sent):
-                                event = ContributionEvent(
-                                    github_user=assignee,
-                                    event_type="issue_inactivity_escalated_dry_run",
-                                    repo=repo,
-                                    created_at=current_time,
-                                    payload={"issue_number": issue_number, "total_time": total_time_label},
+                            audit_events = getattr(storage, "audit_events", None)
+                            if isinstance(audit_events, list):
+                                already_logged = any(
+                                    isinstance(e, dict)
+                                    and e.get("action") == "issue_inactivity_escalated_dry_run"
+                                    and e.get("repo") == repo
+                                    and e.get("issue_number") == issue_number
+                                    and e.get("github_user") == assignee
+                                    for e in audit_events
                                 )
-                                mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
+                        if already_logged:
+                            continue
+
+                        logger.info(
+                            "[DRY-RUN / AUDIT] Would unassign inactive contributor after %s",
+                            total_time_label,
+                            extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                        )
+
+                        audit_fn = getattr(storage, "append_audit_event", None)
+                        if callable(audit_fn):
+                            audit_fn({
+                                "action": "issue_inactivity_escalated_dry_run",
+                                "repo": repo,
+                                "issue_number": issue_number,
+                                "github_user": assignee,
+                                "discord_user_id": discord_user_id,
+                                "total_time": total_time_label,
+                                "timestamp": current_time.isoformat(),
+                            })
+
+                        mark_sent = getattr(storage, "mark_notification_sent", None)
+                        if callable(mark_sent):
+                            event = ContributionEvent(
+                                github_user=assignee,
+                                event_type="issue_inactivity_escalated_dry_run",
+                                repo=repo,
+                                created_at=current_time,
+                                payload={"issue_number": issue_number, "total_time": total_time_label},
+                            )
+                            mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
 
                     continue
-
 
                 # Stage 1: Inactive (send check-in DM reminder)
                 if (current_time - last_act) >= inactivity_delta:
@@ -850,9 +874,95 @@ def run_issue_inactivity_lifecycle(
                                 )
                                 mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
                     else:
-                        logger.debug(
-                            "Skipping inactivity check-in DM: unverified contributor",
-                            extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                        )
+                        # Unverified contributor: cannot send Discord DM; warn via GitHub comment
+                        if policy.allow_github_mutations:
+                            comment_fn = getattr(github_writer, "create_issue_comment", None)
+                            posted = False
+                            if callable(comment_fn):
+                                try:
+                                    posted = bool(
+                                        comment_fn(
+                                            github_org,
+                                            repo,
+                                            issue_number,
+                                            build_checkin_comment(assignee, inactivity_label),
+                                        )
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning(
+                                        "Failed to post check-in warning comment for unverified contributor",
+                                        extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+                                    )
+                            if posted:
+                                rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
+                                if callable(rem_fn):
+                                    rem_fn(repo, issue_number, assignee, current_time)
+
+                                mark_sent = getattr(storage, "mark_notification_sent", None)
+                                if callable(mark_sent):
+                                    event = ContributionEvent(
+                                        github_user=assignee,
+                                        event_type="issue_inactivity_checkin",
+                                        repo=repo,
+                                        created_at=current_time,
+                                        payload={"issue_number": issue_number, "days": inactivity_days},
+                                    )
+                                    mark_sent(dedupe_key, event, "", None, assignee)
+
+                                logger.info(
+                                    "Posted %s inactivity check-in comment for unverified contributor",
+                                    inactivity_label,
+                                    extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                                )
+                        elif not policy.allow_github_mutations:
+                            dry_run_dedupe_key = (
+                                f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                            )
+                            was_sent = getattr(storage, "was_notification_sent", None)
+                            already_logged = False
+                            if callable(was_sent):
+                                already_logged = bool(was_sent(dry_run_dedupe_key))
+                            else:
+                                audit_events = getattr(storage, "audit_events", None)
+                                if isinstance(audit_events, list):
+                                    already_logged = any(
+                                        isinstance(e, dict)
+                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
+                                        and e.get("repo") == repo
+                                        and e.get("issue_number") == issue_number
+                                        and e.get("github_user") == assignee
+                                        for e in audit_events
+                                    )
+                            if already_logged:
+                                continue
+
+                            logger.info(
+                                "[DRY-RUN / AUDIT] Would post %s inactivity check-in comment for unverified contributor",
+                                inactivity_label,
+                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                            )
+
+                            audit_fn = getattr(storage, "append_audit_event", None)
+                            if callable(audit_fn):
+                                audit_fn({
+                                    "action": "issue_inactivity_checkin_dry_run",
+                                    "repo": repo,
+                                    "issue_number": issue_number,
+                                    "github_user": assignee,
+                                    "discord_user_id": None,
+                                    "days": inactivity_days,
+                                    "timestamp": current_time.isoformat(),
+                                })
+
+                            mark_sent = getattr(storage, "mark_notification_sent", None)
+                            if callable(mark_sent):
+                                event = ContributionEvent(
+                                    github_user=assignee,
+                                    event_type="issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    created_at=current_time,
+                                    payload={"issue_number": issue_number, "days": inactivity_days},
+                                )
+                                mark_sent(dry_run_dedupe_key, event, "", None, assignee)
     finally:
         _lifecycle_lock.release()
