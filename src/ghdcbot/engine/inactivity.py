@@ -137,16 +137,15 @@ def is_pr_referencing_issue(pr: dict, issue_number: int, repo: str | None = None
       - Hash notation: #42, (#42), [#42], repo#42
       - GH prefix: GH-42
       - Issue URLs or URL paths: /issues/42 (e.g. https://github.com/org/repo/issues/42)
-      - Explicit keywords: 'issue 42', 'issue: 42'
-      - PR head branch name: issue-42, fix/42, feat/42, 42-feature
+      - Explicit token reference: 'issue: 42', 'issue: #42', 'issues: 42'
+
+    Does not treat branch names or bare 'issue N' inside sentences as references.
     """
     _ = repo
     title = str(pr.get("title") or "")
     body = str(pr.get("body") or "")
-    head = pr.get("head")
-    head_ref = str(head.get("ref") or "") if isinstance(head, dict) else str(pr.get("head_ref") or "")
 
-    # 1. Direct hash reference (#42, (#42), [#42])
+    # 1. Direct hash reference (#42, (#42), [#42], repo#42)
     if re.search(rf"#\b{issue_number}\b", title, re.IGNORECASE) or re.search(
         rf"#\b{issue_number}\b", body, re.IGNORECASE
     ):
@@ -164,21 +163,12 @@ def is_pr_referencing_issue(pr: dict, issue_number: int, repo: str | None = None
     ):
         return True
 
-    # 4. Explicit keyword reference ('issue 42', 'issue: 42')
-    if re.search(rf"\bissue\s*[:#]?\s*{issue_number}\b", title, re.IGNORECASE) or re.search(
-        rf"\bissue\s*[:#]?\s*{issue_number}\b", body, re.IGNORECASE
-    ):
-        return True
-
-    # 5. Branch name
-    if head_ref and re.search(
-        rf"(?:^|[/\-_])(?:issue|fix|feat|feature|bug)?[/\-_]?{issue_number}(?:[/\-_]|$)",
-        head_ref,
-        re.IGNORECASE,
-    ):
-        return True
-
-    return False
+    # 4. Explicit token reference with colon ('issue: 42', 'issue: #42', 'issues: 42')
+    # Requiring colon prevents false matches on phrases like "issue 5 minutes" or "issue 2 days"
+    return bool(
+        re.search(rf"\bissues?:\s*#?{issue_number}\b", title, re.IGNORECASE)
+        or re.search(rf"\bissues?:\s*#?{issue_number}\b", body, re.IGNORECASE)
+    )
 
 
 def has_contributor_activity(

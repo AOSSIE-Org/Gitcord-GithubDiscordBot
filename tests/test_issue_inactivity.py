@@ -463,7 +463,7 @@ class TestActivityDetection:
         assert has_act is True
         assert act_time == pr_time
 
-    def test_recent_pr_mentioning_issue_via_branch_name(self, reader: MagicMock) -> None:
+    def test_recent_pr_with_branch_name_alone_does_not_count(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
         since = now - timedelta(days=5)
         pr_time = now - timedelta(days=2)
@@ -486,8 +486,8 @@ class TestActivityDetection:
             github_user="alex",
             since=since,
         )
-        assert has_act is True
-        assert act_time == pr_time
+        assert has_act is False
+        assert act_time is None
 
     def test_recent_pr_with_different_issue_number_does_not_count(self, reader: MagicMock) -> None:
         now = datetime.now(UTC)
@@ -520,16 +520,25 @@ class TestActivityDetection:
         assert is_pr_referencing_issue({"body": "Closes https://github.com/org/repo/issues/42"}, 42)
         assert is_pr_referencing_issue({"title": "GH-42: New feature"}, 42)
         assert is_pr_referencing_issue({"body": "Working on issue: 42"}, 42)
-        assert is_pr_referencing_issue({"head": {"ref": "issue-42"}}, 42)
-        assert is_pr_referencing_issue({"head": {"ref": "fix/42"}}, 42)
-        assert is_pr_referencing_issue({"head": {"ref": "42-auth-support"}}, 42)
-        assert is_pr_referencing_issue({"head_ref": "fix/42"}, 42)
+        assert is_pr_referencing_issue({"body": "Resolves issue: #42"}, 42)
+        assert is_pr_referencing_issue({"title": "issues: 42"}, 42)
 
-        # Negative checks
+        # Negative checks: branches do not count
+        assert not is_pr_referencing_issue({"head": {"ref": "issue-42"}}, 42)
+        assert not is_pr_referencing_issue({"head": {"ref": "fix/42"}}, 42)
+        assert not is_pr_referencing_issue({"head": {"ref": "feat/dark-mode-2"}}, 2)
+        assert not is_pr_referencing_issue({"head": {"ref": "release-2026-10"}}, 10)
+        assert not is_pr_referencing_issue({"head_ref": "fix/42"}, 42)
+
+        # Negative checks: bare "issue N" in unrelated sentences does not count
+        assert not is_pr_referencing_issue({"body": "We ran into an issue 5 minutes after startup"}, 5)
+        assert not is_pr_referencing_issue({"title": "Investigating issue 2 days ago"}, 2)
+        assert not is_pr_referencing_issue({"body": "Fixed the other issue 10 times already"}, 10)
+
+        # Negative checks: boundary numbers and unrelated text
         assert not is_pr_referencing_issue({"title": "Fixes #420"}, 42)
         assert not is_pr_referencing_issue({"title": "Fixes #4"}, 42)
         assert not is_pr_referencing_issue({"body": "https://github.com/org/repo/issues/420"}, 42)
-        assert not is_pr_referencing_issue({"head": {"ref": "fix/420"}}, 42)
         assert not is_pr_referencing_issue({"title": "Unrelated work", "body": "Nothing here"}, 42)
 
 
