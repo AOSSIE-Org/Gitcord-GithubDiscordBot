@@ -251,7 +251,7 @@ class SqliteStorage:
                 SELECT DISTINCT github_user, event_type, repo, created_at, payload_json
                 FROM contributions
                 WHERE created_at >= ?
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, id ASC
                 """,
                 (since_utc.isoformat(),),
             ).fetchall()
@@ -407,8 +407,11 @@ class SqliteStorage:
 
         Impersonation protection:
         - If github_user is already verified for a different discord_user_id, reject.
-        - If an unexpired claim exists for github_user under a different discord_user_id, reject.
-        - If an expired claim exists for github_user under a different discord_user_id, replace it.
+        - Pending claims by different Discord users for the same github_user may coexist, each with
+          its own verification code. Only the user who proves control of the GitHub account can
+          verify, and verifying removes the competing pending claims (see mark_identity_verified).
+          Allowing them keeps one user from locking the real owner out by re-running /link.
+        - Expired pending claims for github_user under a different discord_user_id are removed.
 
         Stale refresh:
         - If already verified for same pair and stale (per max_age_days), allow creating new claim to refresh.
@@ -429,22 +432,7 @@ class SqliteStorage:
             if row and row["discord_user_id"] != discord_user_id:
                 raise ValueError("github_user is already verified for another Discord user")
 
-            # Pending claims for same github_user by other users: check all, reject if any active
-            rows = conn.execute(
-                """
-                SELECT discord_user_id, expires_at
-                FROM identity_links
-                WHERE github_user_normalized = ? AND verified = 0 AND discord_user_id != ?
-                """,
-                (gh_norm, discord_user_id),
-            ).fetchall()
-            for row in rows:
-                existing_expires = row["expires_at"]
-                if existing_expires:
-                    existing_dt = _parse_utc(existing_expires)
-                    if existing_dt > now:
-                        raise ValueError("github_user has an active pending claim by another Discord user")
-            # No other user has an active claim; delete only expired pending rows for this github_user
+            # Delete only expired pending rows for this github_user; active claims by other users stay
             conn.execute(
                 """
                 DELETE FROM identity_links
@@ -532,6 +520,16 @@ class SqliteStorage:
         now = datetime.now(timezone.utc).isoformat()
         gh_norm = github_user.strip().lower()
         with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT discord_user_id
+                FROM identity_links
+                WHERE github_user_normalized = ? AND verified = 1 AND discord_user_id != ?
+                """,
+                (gh_norm, discord_user_id),
+            ).fetchone()
+            if row:
+                raise ValueError("github_user is already verified for another Discord user")
             conn.execute(
                 """
                 UPDATE identity_links
@@ -543,6 +541,14 @@ class SqliteStorage:
                 WHERE discord_user_id = ? AND github_user_normalized = ?
                 """,
                 (now, discord_user_id, gh_norm),
+            )
+            # The owner proved control of the account: drop competing pending claims for it.
+            conn.execute(
+                """
+                DELETE FROM identity_links
+                WHERE github_user_normalized = ? AND verified = 0 AND discord_user_id != ?
+                """,
+                (gh_norm, discord_user_id),
             )
 
     def unlink_identity(

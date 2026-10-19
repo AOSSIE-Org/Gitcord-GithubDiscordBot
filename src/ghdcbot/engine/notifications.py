@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.interfaces import DiscordWriter, Storage
-from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.core.modes import MutationPolicy
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine import pr_timeline as prt
 
@@ -1319,7 +1319,7 @@ def _send_opened_github_link_comment(
         return False
     if event.event_type != expected_event_type:
         return False
-    if policy.mode != RunMode.ACTIVE:
+    if not policy.allow_github_mutations:
         return False
 
     author_github = (event.github_user or "").strip()

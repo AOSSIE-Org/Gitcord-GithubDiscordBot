@@ -276,46 +276,60 @@ def run_issue_inactivity_lifecycle(
         total_time_label = f"{inactivity_days + escalate_days} days"
 
         # Maintainer / mentor check helper
-        maintainer_cache: dict[str, bool] = {}
+        permission_cache: dict[str, bool] = {}
         known_mentors: set[str] = {u.strip().lower() for u in (mentor_github_users or set()) if u}
 
-        def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
+        def _get_assignee_permission_state(login: str, repo_name: str) -> bool | None:
+            """Check contributor permission status for inactivity handling.
+
+            Returns:
+              - True: confirmed elevated (maintainer, admin, write, mentor)
+              - False: confirmed non-elevated (regular contributor)
+              - None: unknown / error / inconclusive lookup
+            """
             clean = (login or "").strip().lower()
             if not clean:
                 return False
             if clean in known_mentors:
                 return True
             cache_key = f"{repo_name.lower()}:{clean}"
-            if cache_key in maintainer_cache:
-                return maintainer_cache[cache_key]
+            if cache_key in permission_cache:
+                return permission_cache[cache_key]
 
-            # Check github_reader.has_write_access
+            # 1. Primary check: github_reader.has_write_access
             has_write_fn = getattr(github_reader, "has_write_access", None)
             if callable(has_write_fn):
                 try:
                     res = has_write_fn(github_org, repo_name, login)
                     if res is True or (isinstance(res, bool) and res):
-                        maintainer_cache[cache_key] = True
+                        permission_cache[cache_key] = True
                         return True
                     if res is False or (isinstance(res, bool) and not res):
-                        maintainer_cache[cache_key] = False
+                        permission_cache[cache_key] = False
                         return False
                 except Exception:
                     logger.debug("Failed to check write access for %s", login, exc_info=True)
 
-            # Check github_reader.check_user_permission
+            # 2. Fallback check: github_reader.check_user_permission
             check_perm_fn = getattr(github_reader, "check_user_permission", None)
             if callable(check_perm_fn):
                 try:
                     perm = check_perm_fn(github_org, repo_name, login)
-                    if isinstance(perm, str) and perm.lower() in {"admin", "maintain", "write"}:
-                        maintainer_cache[cache_key] = True
-                        return True
+                    if isinstance(perm, str):
+                        perm_lower = perm.strip().lower()
+                        if perm_lower in {"admin", "maintain", "write"}:
+                            permission_cache[cache_key] = True
+                            return True
+                        if perm_lower in {"triage", "read", "none"}:
+                            permission_cache[cache_key] = False
+                            return False
                 except Exception:
                     logger.debug("Failed to check user permission for %s", login, exc_info=True)
 
-            maintainer_cache[cache_key] = False
-            return False
+            return None
+
+        def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
+            return _get_assignee_permission_state(login, repo_name) is True
 
 
         # Discover open issues (use passed-in open_issues to avoid duplicate GitHub API calls)
@@ -535,15 +549,37 @@ def run_issue_inactivity_lifecycle(
                     or (reminder_sent_at is None and (current_time - last_act) >= (inactivity_delta + escalate_delta))
                 )
 
-                if not is_inactivity_due and not is_escalation_due:
+                # Without auto-unassign nothing else re-checks activity after a reminder, so a reply
+                # would never reset the clock. Re-check once per escalate window after the reminder.
+                recheck_key: str | None = None
+                if not auto_unassign and reminder_sent_at is not None:
+                    reminder_age = current_time - reminder_sent_at
+                    if reminder_age >= escalate_delta:
+                        recheck_key = (
+                            f"issue_inactivity_recheck:{repo}:{issue_number}:{assignee}:"
+                            f"{reminder_sent_at.isoformat()}:{reminder_age // escalate_delta}"
+                        )
+                        was_checked = getattr(storage, "was_notification_sent", None)
+                        if callable(was_checked) and was_checked(recheck_key):
+                            recheck_key = None
+                is_recheck_due = recheck_key is not None
+
+                if not is_inactivity_due and not is_escalation_due and not is_recheck_due:
                     # Neither reminder nor escalation is due; leave last_activity_at unchanged
                     # and continue using it as since on the next check.
                     continue
 
-                # Skip assignees who are maintainers/mentors (checked only when reminder or unassign is due)
-                if _is_maintainer_or_mentor(assignee, repo):
+                # Skip assignees who are maintainers/mentors or whose permission check is inconclusive
+                perm_state = _get_assignee_permission_state(assignee, repo)
+                if perm_state is True:
                     logger.debug(
                         "Skipping inactivity check for maintainer/mentor assignee",
+                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                    )
+                    continue
+                if perm_state is None:
+                    logger.warning(
+                        "Skipping inactivity check for assignee due to inconclusive permission check",
                         extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                     )
                     continue
@@ -574,6 +610,21 @@ def run_issue_inactivity_lifecycle(
                         "Activity detected for assigned contributor; clock reset",
                         extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                     )
+                    continue
+
+                if is_recheck_due:
+                    # Still inactive after the reminder: no repeat DM and no unassign without
+                    # auto_unassign. Record the check so this window is not re-fetched every sync.
+                    mark_checked = getattr(storage, "mark_notification_sent", None)
+                    if callable(mark_checked):
+                        event = ContributionEvent(
+                            github_user=assignee,
+                            event_type="issue_inactivity_recheck",
+                            repo=repo,
+                            created_at=current_time,
+                            payload={"issue_number": issue_number},
+                        )
+                        mark_checked(recheck_key, event, "", None, assignee)
                     continue
 
                 discord_user_id = resolve_github_to_discord(storage, assignee)
@@ -762,11 +813,55 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
                         elif not policy.allow_discord_mutations:
+                            dry_run_dedupe_key = (
+                                f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                            )
+                            was_sent = getattr(storage, "was_notification_sent", None)
+                            already_logged = False
+                            if callable(was_sent):
+                                already_logged = bool(was_sent(dry_run_dedupe_key))
+                            else:
+                                audit_events = getattr(storage, "audit_events", None)
+                                if isinstance(audit_events, list):
+                                    already_logged = any(
+                                        isinstance(e, dict)
+                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
+                                        and e.get("repo") == repo
+                                        and e.get("issue_number") == issue_number
+                                        and e.get("github_user") == assignee
+                                        for e in audit_events
+                                    )
+                            if already_logged:
+                                continue
+
                             logger.info(
                                 "[DRY-RUN / AUDIT] Would send %s inactivity check-in reminder",
                                 inactivity_label,
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
+
+                            audit_fn = getattr(storage, "append_audit_event", None)
+                            if callable(audit_fn):
+                                audit_fn({
+                                    "action": "issue_inactivity_checkin_dry_run",
+                                    "repo": repo,
+                                    "issue_number": issue_number,
+                                    "github_user": assignee,
+                                    "discord_user_id": discord_user_id,
+                                    "days": inactivity_days,
+                                    "timestamp": current_time.isoformat(),
+                                })
+
+                            mark_sent = getattr(storage, "mark_notification_sent", None)
+                            if callable(mark_sent):
+                                event = ContributionEvent(
+                                    github_user=assignee,
+                                    event_type="issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    created_at=current_time,
+                                    payload={"issue_number": issue_number, "days": inactivity_days},
+                                )
+                                mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
                     else:
                         logger.debug(
                             "Skipping inactivity check-in DM: unverified contributor",
