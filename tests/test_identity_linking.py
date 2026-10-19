@@ -66,21 +66,66 @@ def test_impersonation_attempt_fails_when_github_user_already_verified(tmp_path:
         svc.create_claim("d2", "octocat")
 
 
-def test_duplicate_pending_claim_for_same_github_user_is_rejected(tmp_path: Path) -> None:
+def test_concurrent_pending_claims_for_same_github_user_are_allowed(tmp_path: Path) -> None:
     storage = SqliteStorage(data_dir=str(tmp_path))
     storage.init_schema()
     svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
 
-    first_claim = svc.create_claim("d1", "shubham5080")
+    attacker_claim = svc.create_claim("attacker", "shubham5080")
+    owner_claim = svc.create_claim("owner", "shubham5080")
 
-    with pytest.raises(ValueError, match="active pending claim"):
-        svc.create_claim("d2", "shubham5080")
+    assert attacker_claim.verification_code != owner_claim.verification_code
+    attacker_row = storage.get_identity_link("attacker", "shubham5080")
+    owner_row = storage.get_identity_link("owner", "shubham5080")
+    assert attacker_row is not None
+    assert owner_row is not None
+    assert attacker_row["verification_code"] == attacker_claim.verification_code
+    assert owner_row["verification_code"] == owner_claim.verification_code
 
-    original_row = storage.get_identity_link("d1", "shubham5080")
-    duplicate_row = storage.get_identity_link("d2", "shubham5080")
-    assert original_row is not None
-    assert original_row["verification_code"] == first_claim.verification_code
-    assert duplicate_row is None
+
+def test_attacker_cannot_lock_out_owner_by_relinking(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
+
+    svc.create_claim("attacker", "shubham5080")
+    svc.create_claim("attacker", "shubham5080")
+    owner_claim = svc.create_claim("owner", "shubham5080")
+
+    assert owner_claim.verification_code
+
+
+def test_verifying_a_claim_removes_competing_pending_claims(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(True, "bio"))
+
+    svc.create_claim("attacker", "shubham5080")
+    svc.create_claim("owner", "shubham5080")
+    svc.create_claim("bystander", "someone-else")
+
+    ok, _ = svc.verify_claim("owner", "shubham5080")
+
+    assert ok is True
+    owner_row = storage.get_identity_link("owner", "shubham5080")
+    assert owner_row is not None
+    assert owner_row["verified"] == 1
+    assert storage.get_identity_link("attacker", "shubham5080") is None
+    assert storage.get_identity_link("bystander", "someone-else") is not None
+    with pytest.raises(ValueError, match="already verified"):
+        svc.create_claim("attacker", "shubham5080")
+
+
+def test_mark_identity_verified_rejects_github_user_verified_by_another(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    storage.init_schema()
+    svc = IdentityLinkService(storage=storage, github_identity=_GitHubIdentityAlways(False))
+
+    svc.create_claim("owner", "shubham5080")
+    storage.mark_identity_verified("owner", "shubham5080")
+
+    with pytest.raises(ValueError, match="already verified"):
+        storage.mark_identity_verified("attacker", "shubham5080")
 
 
 def test_create_claim_rejects_already_verified_same_pair(tmp_path: Path) -> None:

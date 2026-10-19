@@ -288,7 +288,7 @@ def create_identity_claim(
 Key storage rules:
 
 - One GitHub username cannot be verified by two Discord users.
-- One active pending GitHub username claim cannot be held by two Discord users.
+- Several Discord users can hold a pending claim for the same GitHub username, each with its own code. Verifying one removes the others, so nobody can lock the real owner out by running `/link` first.
 - One Discord user cannot verify two different GitHub users.
 - Expired pending claims from other users can be cleaned up and replaced.
 - A verified mapping can be refreshed only when it is stale according to `identity.verified_max_age_days`.
@@ -633,7 +633,7 @@ An `identity_verified` event stores the GitHub user and the location where the c
 
 - Verification codes are generated and stored.
 - Already verified GitHub users cannot be claimed by another Discord user.
-- Duplicate pending claims for the same GitHub user are rejected.
+- Concurrent pending claims for the same GitHub user are allowed, and verifying one removes the others.
 - Verified rows clear `verification_code` and `expires_at`.
 - The Verify button marks a claim verified through `IdentityLinkService.verify_claim()`.
 - The Verify button reports expired claims.
