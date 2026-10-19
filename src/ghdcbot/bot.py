@@ -56,7 +56,11 @@ from ghdcbot.engine.metrics import (
     get_rank_for_user,
     rank_by_activity,
 )
-from ghdcbot.engine.open_prs import format_open_prs_report, list_open_prs_for_author
+from ghdcbot.engine.open_prs import (
+    format_open_prs_messages,
+    format_open_prs_report,
+    list_open_prs_for_author,
+)
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
     fetch_pr_context,
@@ -76,6 +80,7 @@ from ghdcbot.engine.pr_status import (
     format_all_pr_status,
     format_single_pr_status,
     get_configured_repo_names,
+    get_repo_suggestions,
     is_repo_allowed,
     resolve_repo_for_pr,
 )
@@ -1263,13 +1268,18 @@ def run_bot(config_path: str) -> None:
             return
 
         prs = list_open_prs_for_author(open_prs, github_user)
-        message = format_open_prs_report(
+        messages = format_open_prs_messages(
             contributor_mention=contributor.mention,
             github_user=github_user,
             prs=prs,
             org=config.github.org,
         )
-        await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
+        for message in messages:
+            await interaction.followup.send(
+                message,
+                ephemeral=True,
+                suppress_embeds=True,
+            )
 
     @tree.command(
         name="pr",
@@ -1766,8 +1776,7 @@ def run_bot(config_path: str) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        configured_repos = get_configured_repo_names(config)
-        suggestions = filter_repo_suggestions(configured_repos, current)
+        suggestions = await get_repo_suggestions(config, github_adapter, current)
         logger.debug(
             "Autocomplete for pr-status repo: current=%r, suggestions=%s",
             current,

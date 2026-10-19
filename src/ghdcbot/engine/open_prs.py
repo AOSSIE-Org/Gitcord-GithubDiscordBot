@@ -54,6 +54,76 @@ def format_open_prs_report(
     return "\n".join(lines)
 
 
+# Discord message hard limit is 2000; keep room for headers and formatting.
+_MAX_MESSAGE_CHARS = 1900
+
+
+def chunk_open_prs_report(
+    report: str,
+    *,
+    max_chars: int = _MAX_MESSAGE_CHARS,
+) -> list[str]:
+    """Split an open-prs report into Discord-safe chunks on line boundaries without cutting PR entries."""
+    if len(report) <= max_chars:
+        return [report]
+
+    lines = report.split("\n")
+    entries: list[list[str]] = []
+    current_entry: list[str] = []
+
+    for line in lines:
+        if line.startswith("   ") and current_entry:
+            current_entry.append(line)
+        else:
+            if current_entry:
+                entries.append(current_entry)
+            current_entry = [line]
+    if current_entry:
+        entries.append(current_entry)
+
+    chunks: list[str] = []
+    current_chunk_lines: list[str] = []
+    current_chunk_len = 0
+
+    for entry in entries:
+        entry_text = "\n".join(entry)
+        add_len = len(entry_text) + (1 if current_chunk_lines else 0)
+
+        if current_chunk_lines and current_chunk_len + add_len > max_chars:
+            chunks.append("\n".join(current_chunk_lines))
+            current_chunk_lines = []
+            current_chunk_len = 0
+            add_len = len(entry_text)
+
+        current_chunk_lines.extend(entry)
+        current_chunk_len += add_len
+
+    if current_chunk_lines:
+        chunks.append("\n".join(current_chunk_lines))
+
+    return chunks or [report]
+
+
+def format_open_prs_messages(
+    *,
+    contributor_mention: str,
+    github_user: str,
+    prs: Sequence[dict],
+    org: str,
+    max_items: int = 20,
+    max_chars: int = _MAX_MESSAGE_CHARS,
+) -> list[str]:
+    """Build one or more Discord messages listing open PRs under the length limit."""
+    report = format_open_prs_report(
+        contributor_mention=contributor_mention,
+        github_user=github_user,
+        prs=prs,
+        org=org,
+        max_items=max_items,
+    )
+    return chunk_open_prs_report(report, max_chars=max_chars)
+
+
 def _opened_at_sort_key(pr: dict) -> datetime:
     parsed = _parse_created_at(pr.get("created_at"))
     return parsed or datetime.min.replace(tzinfo=timezone.utc)

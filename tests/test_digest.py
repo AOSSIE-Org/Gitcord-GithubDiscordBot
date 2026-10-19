@@ -95,13 +95,27 @@ def test_build_digest_pulse_and_still_open() -> None:
         _ev("dave", "pr_opened", "RepoB", now, pr_number=10),
         _ev("eve", "pr_opened", "RepoB", now, pr_number=11),
         _ev("eve", "pr_merged", "RepoB", now, pr_number=11),
+        _ev("frank", "pr_opened", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_closed", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_reopened", "RepoC", now, pr_number=20),
     ]
     pulse = build_digest_pulse(events)
     assert pulse.prs_merged == 2
     assert pulse.issues_closed == 1
     assert pulse.issues_opened == 1
     assert pulse.active_repos == 2
-    assert count_new_prs_still_open(events) == 1  # #10 only
+    assert count_new_prs_still_open(events) == 2  # #10 and #20
+
+
+def test_count_new_prs_still_open_reopened_then_closed() -> None:
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    events = [
+        _ev("frank", "pr_opened", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_closed", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_reopened", "RepoC", now, pr_number=20),
+        _ev("frank", "pr_closed", "RepoC", now, pr_number=20),
+    ]
+    assert count_new_prs_still_open(events) == 0
 
 
 def test_build_digest_report_quiet_week_and_bot_filter(tmp_path) -> None:
