@@ -130,45 +130,77 @@ def build_unassign_dm_message(
     )
 
 
-def is_pr_referencing_issue(pr: dict, issue_number: int, repo: str | None = None) -> bool:
+def is_pr_referencing_issue(
+    pr: dict,
+    issue_number: int,
+    repo: str | None = None,
+    owner: str | None = None,
+) -> bool:
     """Check if a pull request references the given issue number.
 
     Recognizes standard GitHub conventions:
-      - Hash notation: #42, (#42), [#42], repo#42
+      - Direct unqualified hash notation: #42, (#42), [#42]
+      - Qualified repository notation: repo#42, owner/repo#42 (must match repo/owner)
       - GH prefix: GH-42
-      - Issue URLs or URL paths: /issues/42 (e.g. https://github.com/org/repo/issues/42)
+      - Issue URLs or URL paths: /issues/42, https://github.com/owner/repo/issues/42
       - Explicit token reference: 'issue: 42', 'issue: #42', 'issues: 42'
 
-    Does not treat branch names or bare 'issue N' inside sentences as references.
+    Does not treat branch names, bare 'issue N' inside sentences, or references
+    to different repositories (e.g. OtherRepo#42) as references to this issue.
     """
-    _ = repo
     title = str(pr.get("title") or "")
     body = str(pr.get("body") or "")
+    combined = f"{title}\n{body}"
 
-    # 1. Direct hash reference (#42, (#42), [#42], repo#42)
-    if re.search(rf"#\b{issue_number}\b", title, re.IGNORECASE) or re.search(
-        rf"#\b{issue_number}\b", body, re.IGNORECASE
-    ):
-        return True
+    clean_repo = repo.strip().lower() if repo else None
+    clean_owner = owner.strip().lower() if owner else None
 
-    # 2. GH-42 reference
-    if re.search(rf"\bGH-{issue_number}\b", title, re.IGNORECASE) or re.search(
-        rf"\bGH-{issue_number}\b", body, re.IGNORECASE
-    ):
-        return True
-
-    # 3. Issue URL or path (/issues/42)
-    if re.search(rf"/issues/{issue_number}\b", title, re.IGNORECASE) or re.search(
-        rf"/issues/{issue_number}\b", body, re.IGNORECASE
-    ):
-        return True
-
-    # 4. Explicit token reference with colon ('issue: 42', 'issue: #42', 'issues: 42')
-    # Requiring colon prevents false matches on phrases like "issue 5 minutes" or "issue 2 days"
-    return bool(
-        re.search(rf"\bissues?:\s*#?{issue_number}\b", title, re.IGNORECASE)
-        or re.search(rf"\bissues?:\s*#?{issue_number}\b", body, re.IGNORECASE)
+    # 1. Issue URLs: full GitHub URL or path
+    url_pattern = re.compile(
+        r"(?:https?://github\.com/|/)(?:([A-Za-z0-9_.-]+)/)?([A-Za-z0-9_.-]+)/(?:issues|pull)/(\d+)\b",
+        re.IGNORECASE,
     )
+    for m in url_pattern.finditer(combined):
+        m_owner, m_repo, m_num = m.group(1), m.group(2), int(m.group(3))
+        if m_num == issue_number:
+            if clean_repo:
+                if m_repo.lower() != clean_repo:
+                    continue
+                if clean_owner and m_owner and m_owner.lower() != clean_owner:
+                    continue
+            return True
+
+    # Relative path without repo: /issues/<num>
+    if re.search(rf"(?:^|[^\w.-])/issues/{issue_number}\b", combined, re.IGNORECASE):
+        return True
+
+    # 2. Qualified hash reference: [owner/]repo#number
+    qual_hash_pattern = re.compile(
+        r"\b(?:([A-Za-z0-9_.-]+)/)?([A-Za-z0-9_.-]+)#(\d+)\b",
+        re.IGNORECASE,
+    )
+    for m in qual_hash_pattern.finditer(combined):
+        m_owner, m_repo, m_num = m.group(1), m.group(2), int(m.group(3))
+        if m_num == issue_number:
+            if clean_repo:
+                if m_repo.lower() == clean_repo and (
+                    not clean_owner or not m_owner or m_owner.lower() == clean_owner
+                ):
+                    return True
+            else:
+                return True
+
+    # 3. Direct unqualified hash: #<num> (not preceded by repo name, alphanumeric, slash, or dot)
+    if re.search(rf"(?<![A-Za-z0-9_./#-])#{issue_number}\b", combined, re.IGNORECASE):
+        return True
+
+    # 4. GH-42 reference
+    if re.search(rf"\bGH-{issue_number}\b", combined, re.IGNORECASE):
+        return True
+
+    # 5. Explicit token reference with colon ('issue: 42', 'issue: #42', 'issues: 42')
+    # Requiring colon prevents false matches on phrases like "issue 5 minutes" or "issue 2 days"
+    return bool(re.search(rf"\bissues?:\s*#?{issue_number}\b", combined, re.IGNORECASE))
 
 
 def has_contributor_activity(
@@ -256,7 +288,7 @@ def has_contributor_activity(
                 )
         if not fetch_failed and prs is not None:
             for pr in prs:
-                if is_pr_referencing_issue(pr, issue_number, repo=repo):
+                if is_pr_referencing_issue(pr, issue_number, repo=repo, owner=owner):
                     pr_created = _parse_utc_datetime(pr.get("created_at"))
                     if pr_created and pr_created > since and (latest_activity is None or pr_created > latest_activity):
                         latest_activity = pr_created
