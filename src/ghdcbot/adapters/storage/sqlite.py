@@ -23,7 +23,11 @@ class SqliteStorage:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         if self._read_only:
-            conn = sqlite3.connect(f"{self._db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+            conn = sqlite3.connect(
+                f"{self._db_path.resolve().as_uri()}?mode=ro&immutable=1",
+                uri=True,
+                timeout=30.0,
+            )
         else:
             conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
