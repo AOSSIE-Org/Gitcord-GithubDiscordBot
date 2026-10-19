@@ -49,14 +49,12 @@ def resolve_github_to_discord(storage: Any, github_user: str) -> str | None:
 
     target = (github_user or "").strip().lower()
     for mapping in verified():
-        gh = (
-            getattr(mapping, "github_user", None)
-            or (mapping.get("github_user") if isinstance(mapping, dict) else None)
+        gh = getattr(mapping, "github_user", None) or (
+            mapping.get("github_user") if isinstance(mapping, dict) else None
         )
         if gh and gh.strip().lower() == target:
-            return (
-                getattr(mapping, "discord_user_id", None)
-                or (mapping.get("discord_user_id") if isinstance(mapping, dict) else None)
+            return getattr(mapping, "discord_user_id", None) or (
+                mapping.get("discord_user_id") if isinstance(mapping, dict) else None
             )
 
     return None
@@ -87,6 +85,21 @@ def build_checkin_message(
         f"• Commenting on the issue with a progress update\n"
         f"• Opening or linking a pull request referencing this issue\n\n"
         f"*If you need help or more time, let the mentors know on Discord! If you are no longer able to work on this, please let us know so someone else can take it.*"
+    )
+
+
+def build_checkin_comment(
+    github_user: str,
+    time_label: str | int = "7 days",
+    days: str | int | None = None,
+) -> str:
+    """Build check-in comment posted on GitHub issue for unverified assignees."""
+    raw_time = days if days is not None else time_label
+    time_str = f"{raw_time} days" if isinstance(raw_time, int) else str(raw_time)
+    return (
+        f"@{github_user} you were assigned to this issue {time_str} ago with no detected activity. "
+        f"Are you still working on this? Please comment with a progress update or link a pull request referencing this issue.\n\n"
+        f"If you need more time or assistance, please let us know! If you are no longer able to work on this, let us know so someone else can claim it."
     )
 
 
@@ -168,7 +181,11 @@ def has_contributor_activity(
                     login = (user.get("login") or "").strip().lower()
                     if login == target_user:
                         created_at = _parse_utc_datetime(comment.get("created_at"))
-                        if created_at and created_at > since and (latest_activity is None or created_at > latest_activity):
+                        if (
+                            created_at
+                            and created_at > since
+                            and (latest_activity is None or created_at > latest_activity)
+                        ):
                             latest_activity = created_at
         except Exception as exc:  # noqa: BLE001
             fetch_failed = True
@@ -222,10 +239,18 @@ def has_contributor_activity(
                 # Only count PRs that mention this issue (#number in title/body)
                 if pattern.search(title) or pattern.search(body):
                     pr_created = _parse_utc_datetime(pr.get("created_at"))
-                    if pr_created and pr_created > since and (latest_activity is None or pr_created > latest_activity):
+                    if (
+                        pr_created
+                        and pr_created > since
+                        and (latest_activity is None or pr_created > latest_activity)
+                    ):
                         latest_activity = pr_created
                     pr_updated = _parse_utc_datetime(pr.get("updated_at"))
-                    if pr_updated and pr_updated > since and (latest_activity is None or pr_updated > latest_activity):
+                    if (
+                        pr_updated
+                        and pr_updated > since
+                        and (latest_activity is None or pr_updated > latest_activity)
+                    ):
                         latest_activity = pr_updated
     else:
         fetch_failed = True
@@ -331,7 +356,6 @@ def run_issue_inactivity_lifecycle(
         def _is_maintainer_or_mentor(login: str, repo_name: str) -> bool:
             return _get_assignee_permission_state(login, repo_name) is True
 
-
         # Discover open issues (use passed-in open_issues to avoid duplicate GitHub API calls)
         if open_issues is not None:
             active_issues: list[dict] = list(open_issues)
@@ -353,7 +377,9 @@ def run_issue_inactivity_lifecycle(
                 if isinstance(names, (list, set, tuple)):
                     scanned_repos.update(names)
             except Exception:
-                logger.debug("Failed to list org repo names for inactivity reconciliation", exc_info=True)
+                logger.debug(
+                    "Failed to list org repo names for inactivity reconciliation", exc_info=True
+                )
 
         for issue in active_issues:
             repo = issue.get("repo")
@@ -378,10 +404,16 @@ def run_issue_inactivity_lifecycle(
         close_tracker_fn = getattr(storage, "close_issue_inactivity_tracking", None)
         if callable(get_active_trackers_fn) and callable(close_tracker_fn):
             active_trackers = get_active_trackers_fn()
-            repos_to_check = scanned_repos if scanned_repos else {t["repo"] for t in active_trackers if t.get("repo")}
+            repos_to_check = (
+                scanned_repos
+                if scanned_repos
+                else {t["repo"] for t in active_trackers if t.get("repo")}
+            )
 
             successful_repos: set[str] | None = None
-            get_successful_repos_fn = getattr(github_reader, "get_successful_issue_listing_repos", None)
+            get_successful_repos_fn = getattr(
+                github_reader, "get_successful_issue_listing_repos", None
+            )
             if callable(get_successful_repos_fn):
                 try:
                     res = get_successful_repos_fn()
@@ -415,9 +447,8 @@ def run_issue_inactivity_lifecycle(
                     # Prevent incomplete issue listings from closing trackers as resolved:
                     # only mark resolved when the repository's open issues were listed
                     # successfully, or confirm closure via get_issue.
-                    listing_failed = (
-                        t_repo in failed_repos
-                        or (successful_repos is not None and t_repo not in successful_repos)
+                    listing_failed = t_repo in failed_repos or (
+                        successful_repos is not None and t_repo not in successful_repos
                     )
                     confirmed_closed = False
                     if not listing_failed:
@@ -431,7 +462,9 @@ def run_issue_inactivity_lifecycle(
                             if isinstance(issue_obj, dict) and issue_obj.get("state") == "closed":
                                 confirmed_closed = True
                         except Exception:
-                            logger.debug("Failed to verify issue closure via get_issue", exc_info=True)
+                            logger.debug(
+                                "Failed to verify issue closure via get_issue", exc_info=True
+                            )
 
                     if confirmed_closed:
                         close_tracker_fn(t_repo, t_num, t_user, status="resolved")
@@ -527,7 +560,7 @@ def run_issue_inactivity_lifecycle(
                                     github_user=assignee,
                                     assigned_at=current_time,
                                     last_activity_at=current_time,
-                                    )
+                                )
                         record = {
                             "repo": repo,
                             "issue_number": issue_number,
@@ -543,8 +576,14 @@ def run_issue_inactivity_lifecycle(
                 reminder_sent_at = _parse_utc_datetime(record.get("reminder_sent_at"))
 
                 # Skip activity fetches when both inactivity and escalation clocks are below thresholds
-                is_inactivity_due = (reminder_sent_at is None) and ((current_time - last_act) >= inactivity_delta)
-                is_escalation_due = auto_unassign and (reminder_sent_at is not None) and ((current_time - reminder_sent_at) >= escalate_delta)
+                is_inactivity_due = (reminder_sent_at is None) and (
+                    (current_time - last_act) >= inactivity_delta
+                )
+                is_escalation_due = (
+                    auto_unassign
+                    and (reminder_sent_at is not None)
+                    and ((current_time - reminder_sent_at) >= escalate_delta)
+                )
 
                 # Without auto-unassign nothing else re-checks activity after a reminder, so a reply
                 # would never reset the clock. Re-check once per escalate window after the reminder.
@@ -636,11 +675,18 @@ def run_issue_inactivity_lifecycle(
                             unassigned = False
                             if callable(unassign_fn):
                                 try:
-                                    unassigned = bool(unassign_fn(github_org, repo, issue_number, assignee))
+                                    unassigned = bool(
+                                        unassign_fn(github_org, repo, issue_number, assignee)
+                                    )
                                 except Exception as exc:  # noqa: BLE001
                                     logger.error(
                                         "Failed to unassign inactive contributor",
-                                        extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+                                        extra={
+                                            "repo": repo,
+                                            "issue": issue_number,
+                                            "assignee": assignee,
+                                            "error": str(exc),
+                                        },
                                     )
                             if not unassigned:
                                 continue  # retry next run; do not comment, DM, or record
@@ -659,7 +705,11 @@ def run_issue_inactivity_lifecycle(
                                     except Exception as exc:  # noqa: BLE001
                                         logger.warning(
                                             "Failed to post unassignment comment",
-                                            extra={"repo": repo, "issue": issue_number, "error": str(exc)},
+                                            extra={
+                                                "repo": repo,
+                                                "issue": issue_number,
+                                                "error": str(exc),
+                                            },
                                         )
 
                             # 3. Follow-up DM to verified contributor
@@ -684,24 +734,26 @@ def run_issue_inactivity_lifecycle(
                             # Record escalation in storage
                             esc_fn = getattr(storage, "record_issue_inactivity_escalation", None)
                             if callable(esc_fn):
-                                esc_fn(repo, issue_number, assignee, current_time, status="unassigned")
+                                esc_fn(
+                                    repo, issue_number, assignee, current_time, status="unassigned"
+                                )
 
                             audit_fn = getattr(storage, "append_audit_event", None)
                             if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_unassigned",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "total_time": total_time_label,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                                audit_fn(
+                                    {
+                                        "action": "issue_inactivity_unassigned",
+                                        "repo": repo,
+                                        "issue_number": issue_number,
+                                        "github_user": assignee,
+                                        "discord_user_id": discord_user_id,
+                                        "total_time": total_time_label,
+                                        "timestamp": current_time.isoformat(),
+                                    }
+                                )
                         else:
                             # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
-                            dry_run_dedupe_key = (
-                                f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{reminder_sent_at.isoformat()}"
-                            )
+                            dry_run_dedupe_key = f"issue_inactivity_escalated_dry_run:{repo}:{issue_number}:{assignee}:{reminder_sent_at.isoformat()}"
                             was_sent = getattr(storage, "was_notification_sent", None)
                             already_logged = False
                             if callable(was_sent):
@@ -728,15 +780,17 @@ def run_issue_inactivity_lifecycle(
 
                             audit_fn = getattr(storage, "append_audit_event", None)
                             if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_escalated_dry_run",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "total_time": total_time_label,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                                audit_fn(
+                                    {
+                                        "action": "issue_inactivity_escalated_dry_run",
+                                        "repo": repo,
+                                        "issue_number": issue_number,
+                                        "github_user": assignee,
+                                        "discord_user_id": discord_user_id,
+                                        "total_time": total_time_label,
+                                        "timestamp": current_time.isoformat(),
+                                    }
+                                )
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):
@@ -745,18 +799,20 @@ def run_issue_inactivity_lifecycle(
                                     event_type="issue_inactivity_escalated_dry_run",
                                     repo=repo,
                                     created_at=current_time,
-                                    payload={"issue_number": issue_number, "total_time": total_time_label},
+                                    payload={
+                                        "issue_number": issue_number,
+                                        "total_time": total_time_label,
+                                    },
                                 )
-                                mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
+                                mark_sent(
+                                    dry_run_dedupe_key, event, discord_user_id or "", None, assignee
+                                )
 
                     continue
 
-
                 # Stage 1: Inactive (send check-in DM reminder)
                 if (current_time - last_act) >= inactivity_delta:
-                    dedupe_key = (
-                        f"issue_inactivity_checkin:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
-                    )
+                    dedupe_key = f"issue_inactivity_checkin:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
                     was_sent = getattr(storage, "was_notification_sent", None)
                     if callable(was_sent) and was_sent(dedupe_key):
                         continue
@@ -800,9 +856,7 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
                         elif not policy.allow_discord_mutations:
-                            dry_run_dedupe_key = (
-                                f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
-                            )
+                            dry_run_dedupe_key = f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
                             was_sent = getattr(storage, "was_notification_sent", None)
                             already_logged = False
                             if callable(was_sent):
@@ -829,15 +883,17 @@ def run_issue_inactivity_lifecycle(
 
                             audit_fn = getattr(storage, "append_audit_event", None)
                             if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_checkin_dry_run",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "days": inactivity_days,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                                audit_fn(
+                                    {
+                                        "action": "issue_inactivity_checkin_dry_run",
+                                        "repo": repo,
+                                        "issue_number": issue_number,
+                                        "github_user": assignee,
+                                        "discord_user_id": discord_user_id,
+                                        "days": inactivity_days,
+                                        "timestamp": current_time.isoformat(),
+                                    }
+                                )
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):
@@ -848,11 +904,126 @@ def run_issue_inactivity_lifecycle(
                                     created_at=current_time,
                                     payload={"issue_number": issue_number, "days": inactivity_days},
                                 )
-                                mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
+                                mark_sent(
+                                    dry_run_dedupe_key, event, discord_user_id or "", None, assignee
+                                )
                     else:
-                        logger.debug(
-                            "Skipping inactivity check-in DM: unverified contributor",
-                            extra={"repo": repo, "issue": issue_number, "assignee": assignee},
-                        )
+                        # Unverified contributor: cannot send Discord DM. Post a GitHub comment check-in
+                        # first, and start the unassign clock only after the comment exists.
+                        if policy.allow_github_mutations:
+                            comment_fn = getattr(github_writer, "create_issue_comment", None)
+                            comment_posted = False
+                            if not callable(comment_fn):
+                                logger.warning(
+                                    "GitHub writer cannot post inactivity check-in comment",
+                                    extra={
+                                        "repo": repo,
+                                        "issue": issue_number,
+                                        "assignee": assignee,
+                                    },
+                                )
+                            else:
+                                try:
+                                    comment_body = build_checkin_comment(assignee, inactivity_label)
+                                    comment_posted = bool(
+                                        comment_fn(github_org, repo, issue_number, comment_body)
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning(
+                                        "Failed to post inactivity check-in comment",
+                                        extra={
+                                            "repo": repo,
+                                            "issue": issue_number,
+                                            "assignee": assignee,
+                                            "error": str(exc),
+                                        },
+                                    )
+                                    comment_posted = False
+
+                            if comment_posted:
+                                mark_sent = getattr(storage, "mark_notification_sent", None)
+                                if callable(mark_sent):
+                                    event = ContributionEvent(
+                                        github_user=assignee,
+                                        event_type="issue_inactivity_checkin",
+                                        repo=repo,
+                                        created_at=current_time,
+                                        payload={
+                                            "issue_number": issue_number,
+                                            "days": inactivity_days,
+                                            "unverified": True,
+                                            "channel": "github_comment",
+                                        },
+                                    )
+                                    mark_sent(dedupe_key, event, "", None, assignee)
+
+                                rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
+                                if callable(rem_fn):
+                                    rem_fn(repo, issue_number, assignee, current_time)
+
+                                logger.info(
+                                    "Posted %s inactivity check-in comment for unverified contributor",
+                                    inactivity_label,
+                                    extra={
+                                        "repo": repo,
+                                        "issue": issue_number,
+                                        "assignee": assignee,
+                                    },
+                                )
+                        else:
+                            dry_run_dedupe_key = f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                            was_sent = getattr(storage, "was_notification_sent", None)
+                            already_logged = False
+                            if callable(was_sent):
+                                already_logged = bool(was_sent(dry_run_dedupe_key))
+                            else:
+                                audit_events = getattr(storage, "audit_events", None)
+                                if isinstance(audit_events, list):
+                                    already_logged = any(
+                                        isinstance(e, dict)
+                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
+                                        and e.get("repo") == repo
+                                        and e.get("issue_number") == issue_number
+                                        and e.get("github_user") == assignee
+                                        for e in audit_events
+                                    )
+                            if already_logged:
+                                continue
+
+                            logger.info(
+                                "[DRY-RUN / AUDIT] Would post %s inactivity check-in comment for unverified contributor",
+                                inactivity_label,
+                                extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                            )
+
+                            audit_fn = getattr(storage, "append_audit_event", None)
+                            if callable(audit_fn):
+                                audit_fn(
+                                    {
+                                        "action": "issue_inactivity_checkin_dry_run",
+                                        "repo": repo,
+                                        "issue_number": issue_number,
+                                        "github_user": assignee,
+                                        "discord_user_id": None,
+                                        "days": inactivity_days,
+                                        "unverified": True,
+                                        "timestamp": current_time.isoformat(),
+                                    }
+                                )
+
+                            mark_sent = getattr(storage, "mark_notification_sent", None)
+                            if callable(mark_sent):
+                                event = ContributionEvent(
+                                    github_user=assignee,
+                                    event_type="issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    created_at=current_time,
+                                    payload={
+                                        "issue_number": issue_number,
+                                        "days": inactivity_days,
+                                        "unverified": True,
+                                    },
+                                )
+                                mark_sent(dry_run_dedupe_key, event, "", None, assignee)
     finally:
         _lifecycle_lock.release()
