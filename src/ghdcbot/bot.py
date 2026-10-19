@@ -80,6 +80,7 @@ from ghdcbot.engine.pr_status import (
     format_all_pr_status,
     format_single_pr_status,
     get_configured_repo_names,
+    get_repo_suggestions,
     is_repo_allowed,
     resolve_repo_for_pr,
 )
@@ -1775,8 +1776,7 @@ def run_bot(config_path: str) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        configured_repos = get_configured_repo_names(config)
-        suggestions = filter_repo_suggestions(configured_repos, current)
+        suggestions = await get_repo_suggestions(config, github_adapter, current)
         logger.debug(
             "Autocomplete for pr-status repo: current=%r, suggestions=%s",
             current,

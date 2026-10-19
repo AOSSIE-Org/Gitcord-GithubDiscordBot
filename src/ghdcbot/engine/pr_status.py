@@ -118,6 +118,24 @@ def filter_repo_suggestions(configured_repos: list[str], current: str) -> list[s
     return (prefix_matches + substring_matches)[:25]
 
 
+async def get_repo_suggestions(config: Any, github_adapter: Any, current: str) -> list[str]:
+    """Discover permitted org repos off the event loop, with a bounded fallback."""
+    names = get_configured_repo_names(config)
+    list_repos = getattr(github_adapter, "list_org_repo_names", None)
+    if callable(list_repos):
+        try:
+            # The adapter caches discovery; leave time to acknowledge autocomplete.
+            names = await asyncio.wait_for(asyncio.to_thread(list_repos), timeout=1.5)
+        except Exception:
+            logger.warning("Repository autocomplete discovery failed; using config", exc_info=True)
+    repo_filter = cfg_get(cfg_get(config, "github"), "repos")
+    unique = {}
+    for name in names:
+        if isinstance(name, str) and name.strip() and is_repo_allowed(repo_filter, name):
+            unique.setdefault(name.strip().lower(), name.strip())
+    return filter_repo_suggestions(sorted(unique.values(), key=str.lower), current)
+
+
 async def resolve_repo_for_pr(
     config: Any,
     github_adapter: Any,
