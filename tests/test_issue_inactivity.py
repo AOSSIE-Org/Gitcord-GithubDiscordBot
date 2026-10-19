@@ -650,6 +650,12 @@ class TestInactivityLifecycleExecution:
         assert rec is not None
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
+        assert (
+            storage.was_notification_sent(
+                f"issue_inactivity_checkin:Gitcord:42:ghost_user:{assigned_at.isoformat()}"
+            )
+            is True
+        )
 
     def test_stage_1_unverified_contributor_comment_failure_does_not_start_unassign_clock(
         self,
@@ -692,6 +698,49 @@ class TestInactivityLifecycleExecution:
         github_writer.create_issue_comment.assert_called_once()
 
         # Unassign clock must NOT start when comment posting fails
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "ghost_user")
+        assert rec is not None
+        assert rec["status"] == "assigned"
+        assert rec["reminder_sent_at"] is None
+
+    def test_stage_1_unverified_contributor_non_callable_comment_fn_warns_and_does_not_start_clock(
+        self,
+        setup_env: tuple[
+            MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig
+        ],
+    ) -> None:
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=7, hours=1)
+
+        storage.track_issue_assignment("Gitcord", 42, "ghost_user", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Unverified contributor issue",
+                "assignees": [{"login": "ghost_user"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        # github_writer does not support create_issue_comment (or is non-callable)
+        del github_writer.create_issue_comment
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
         rec = storage.get_issue_inactivity_record("Gitcord", 42, "ghost_user")
         assert rec is not None
         assert rec["status"] == "assigned"

@@ -913,7 +913,16 @@ def run_issue_inactivity_lifecycle(
                         if policy.allow_github_mutations:
                             comment_fn = getattr(github_writer, "create_issue_comment", None)
                             comment_posted = False
-                            if callable(comment_fn):
+                            if not callable(comment_fn):
+                                logger.warning(
+                                    "GitHub writer cannot post inactivity check-in comment",
+                                    extra={
+                                        "repo": repo,
+                                        "issue": issue_number,
+                                        "assignee": assignee,
+                                    },
+                                )
+                            else:
                                 try:
                                     comment_body = build_checkin_comment(assignee, inactivity_label)
                                     comment_posted = bool(
@@ -932,10 +941,6 @@ def run_issue_inactivity_lifecycle(
                                     comment_posted = False
 
                             if comment_posted:
-                                rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
-                                if callable(rem_fn):
-                                    rem_fn(repo, issue_number, assignee, current_time)
-
                                 mark_sent = getattr(storage, "mark_notification_sent", None)
                                 if callable(mark_sent):
                                     event = ContributionEvent(
@@ -951,6 +956,10 @@ def run_issue_inactivity_lifecycle(
                                         },
                                     )
                                     mark_sent(dedupe_key, event, "", None, assignee)
+
+                                rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
+                                if callable(rem_fn):
+                                    rem_fn(repo, issue_number, assignee, current_time)
 
                                 logger.info(
                                     "Posted %s inactivity check-in comment for unverified contributor",
