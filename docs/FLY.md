@@ -82,11 +82,13 @@ In the logs you should see, in order:
 - `scheduled run-once finished OK` once the first sync completes
 - The bot coming online in your Discord server (slash commands sync within ~30 seconds)
 
-Read-only config check from the running machine:
+Offline config check from the running machine (makes no API calls):
 
 ```bash
-fly ssh console -u appuser -C "ghdcbot --config /app/config/config.yaml validate"
+fly ssh console -u appuser -C "ghdcbot --config /app/config/config.yaml preflight-sync"
 ```
+
+It prints `Sync preflight OK` when the config loads, `GITHUB_TOKEN` / `DISCORD_TOKEN` resolve, and the sync safety guard passes. A missing secret fails with `Missing required environment variable`. It does not call Discord or GitHub; a bad token shows up in `fly logs` when the bot or first sync runs.
 
 Keep `runtime.mode: "dry-run"` until you have reviewed `/data/reports/audit.md` (see [Audit-first workflow](DOCKER.md#audit-first-workflow-in-docker)).
 
@@ -96,7 +98,7 @@ Keep `runtime.mode: "dry-run"` until you have reviewed `/data/reports/audit.md` 
 
 - **Volume permissions:** the image's entrypoint starts as root, `chown`s `/data` to `appuser` if needed, then drops privileges with `setpriv`. Gitcord itself never runs as root.
 - **Supervision:** `fly-supervisor.sh` watches the bot and the sync loop. If either exits, it stops the other and exits non-zero, and `[[restart]] policy = "always"` brings the machine back. You will not end up with a bot that is online while syncs have silently stopped.
-- **No overlapping syncs:** `scripts/sync-loop.sh` holds a `flock` on `/data/run-once.lock`, so a scheduled run is skipped if another `run-once` (for example a mentor's `/sync`) is still active. Only one machine ever uses the volume.
+- **No overlapping syncs:** the scheduled loop (`scripts/sync-loop.sh`) and the mentor `/sync` command take the same `flock` on `/data/run-once.lock` (override with `GITCORD_SYNC_LOCK_FILE`). If one is running, the scheduled run is skipped, and `/sync` replies that a sync is already running instead of starting a second one. Only one machine ever uses the volume.
 
 ---
 
@@ -136,7 +138,7 @@ Find the id with `fly volumes list`.
 | `fly deploy` fails on `config/config.yaml` | Local file missing (it is referenced by `[[files]]`). | Create it from `config/docker-example.yaml` (step 1). |
 | `fly-start: config file not found` in logs | Config was not shipped to the machine. | Redeploy after creating `config/config.yaml`. |
 | `Missing required environment variable: GITHUB_TOKEN` | Secrets not set. | `fly secrets set GITHUB_TOKEN=... DISCORD_TOKEN=...` |
-| Machine restarts in a loop | The bot or sync loop is crashing; the supervisor exits on purpose. | `fly logs` shows which one (`fly-supervisor: ... exited unexpectedly`). Run `validate` as shown above. |
+| Machine restarts in a loop | The bot or sync loop is crashing; the supervisor exits on purpose. | `fly logs` shows which one (`fly-supervisor: ... exited unexpectedly`). Run the `preflight-sync` check shown above. |
 | State lost after redeploy | Volume not attached, or `data_dir` is not `/data`. | `fly volumes list`, and keep `data_dir: "/data"` in config. |
 | Volume not found on deploy | Volume region differs from `primary_region`. | Create the volume in the same region. |
 
