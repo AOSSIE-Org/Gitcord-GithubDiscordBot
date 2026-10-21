@@ -85,6 +85,7 @@ from ghdcbot.engine.pr_status import (
     resolve_repo_for_pr,
 )
 from ghdcbot.engine.social_profiles import SocialProfileService
+from ghdcbot.engine.sync_lock import SyncAlreadyRunningError, run_once_lock
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
     HELP_LINK_EXPIRY_SECONDS,
@@ -1840,9 +1841,12 @@ def run_bot(config_path: str) -> None:
             # run_once() is synchronous and can take many minutes for large orgs; running it on the
             # event loop blocks Discord heartbeats and delays other slash commands (they then hit
             # "application did not respond"). Run it in a worker thread instead.
+            # Take the same lock as the scheduler (scripts/sync-loop.sh) so a mentor /sync can never
+            # overlap a scheduled run-once on the same data volume.
             def _run_sync_and_close() -> None:
                 try:
-                    orchestrator.run_once()
+                    with run_once_lock(config.runtime.data_dir):
+                        orchestrator.run_once()
                 finally:
                     orchestrator.close()
 
@@ -1851,6 +1855,19 @@ def run_bot(config_path: str) -> None:
             await status_msg.edit(
                 content="✅ Sync complete! Notifications sent for new GitHub events.",
             )
+        except SyncAlreadyRunningError:
+            logger.info("/sync skipped: another run-once is already active")
+            busy_text = (
+                "⏳ A sync is already running (scheduled or started by another mentor). "
+                "Try again once it finishes."
+            )
+            if status_msg is not None:
+                try:
+                    await status_msg.edit(content=busy_text)
+                except discord.HTTPException:
+                    await interaction.followup.send(busy_text, ephemeral=True)
+            else:
+                await interaction.followup.send(busy_text, ephemeral=True)
         except Exception as exc:
             logger.exception("Sync failed")
             err_text = f"❌ Sync failed: {exc}"
