@@ -39,18 +39,19 @@ def test_env_override_matches_sync_loop_script(tmp_path, monkeypatch):
 
 
 def test_second_holder_is_rejected_and_lock_is_released_after(tmp_path):
-    with run_once_lock(tmp_path):
-        with pytest.raises(SyncAlreadyRunningError):
-            with run_once_lock(tmp_path):
-                pytest.fail("a second run-once must not enter while the first holds the lock")
+    with (
+        run_once_lock(tmp_path),
+        pytest.raises(SyncAlreadyRunningError),
+        run_once_lock(tmp_path),
+    ):
+        pytest.fail("a second run-once must not enter while the first holds the lock")
     with run_once_lock(tmp_path):  # released on exit, so it can be taken again
         pass
 
 
 def test_lock_is_released_when_the_body_raises(tmp_path):
-    with pytest.raises(ValueError):
-        with run_once_lock(tmp_path):
-            raise ValueError("sync blew up")
+    with pytest.raises(ValueError), run_once_lock(tmp_path):
+        raise ValueError("sync blew up")
     with run_once_lock(tmp_path):
         pass
 
@@ -75,8 +76,8 @@ def test_python_lock_excludes_the_shell_scheduler(tmp_path):
     """scripts/sync-loop.sh uses `flock -n`; a running /sync must make it skip."""
     lock = tmp_path / "run-once.lock"
     with run_once_lock(tmp_path):
-        assert subprocess.run(["flock", "-n", str(lock), "true"]).returncode == 1
-    assert subprocess.run(["flock", "-n", str(lock), "true"]).returncode == 0
+        assert subprocess.run(["flock", "-n", str(lock), "true"], check=False).returncode == 1
+    assert subprocess.run(["flock", "-n", str(lock), "true"], check=False).returncode == 0
 
 
 @needs_flock_binary
@@ -95,9 +96,8 @@ def test_running_scheduler_blocks_manual_sync(tmp_path):
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert ready.exists(), "scheduler stand-in never acquired the lock"
-        with pytest.raises(SyncAlreadyRunningError):
-            with run_once_lock(tmp_path):
-                pytest.fail("/sync must not run while the scheduler holds the lock")
+        with pytest.raises(SyncAlreadyRunningError), run_once_lock(tmp_path):
+            pytest.fail("/sync must not run while the scheduler holds the lock")
     finally:
         os.killpg(holder.pid, signal.SIGTERM)
         holder.wait(timeout=5)

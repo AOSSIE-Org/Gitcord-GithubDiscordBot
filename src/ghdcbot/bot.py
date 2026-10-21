@@ -1864,7 +1864,7 @@ def run_bot(config_path: str) -> None:
             if status_msg is not None:
                 try:
                     await status_msg.edit(content=busy_text)
-                except Exception:
+                except discord.HTTPException:
                     await interaction.followup.send(busy_text, ephemeral=True)
             else:
                 await interaction.followup.send(busy_text, ephemeral=True)
