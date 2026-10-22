@@ -7,8 +7,8 @@ CodeRabbit review comments, merge conflicts, and review state.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -618,6 +618,7 @@ def format_all_pr_status(
     org: str,
     skip: int = 0,
     total: int = 0,
+    filter_health: str | None = None,
 ) -> list[str]:
     """Format a triage-priority sorted summary for multiple PRs.
 
@@ -627,9 +628,11 @@ def format_all_pr_status(
         if total == 0:
             return ["📋 **PR Status Dashboard**\n\nNo open PRs found in configured repos."]
         return [
-            f"📋 **PR Status Dashboard**\n\n"
-            f"No PRs in range (skip={skip}, total={total}). "
-            f"Use **Show All Open PRs** to restart from the beginning."
+            (
+                f"📋 **PR Status Dashboard**\n\n"
+                f"No PRs in range (skip={skip}, total={total}). "
+                f"Use **Show All Open PRs** to restart from the beginning."
+            )
         ]
 
     # Sort by triage priority
@@ -638,16 +641,26 @@ def format_all_pr_status(
         key=lambda s: (_HEALTH_SORT_ORDER.get(s.health_indicator, 99), s.repo, s.number),
     )
 
-    # Count by health
+    # Count by health across all loaded statuses
     counts = {"safe_to_merge": 0, "needs_attention": 0, "blocked": 0, "draft": 0}
     for s in sorted_statuses:
         counts[s.health_indicator] = counts.get(s.health_indicator, 0) + 1
 
+    if filter_health:
+        filtered_statuses = [s for s in sorted_statuses if s.health_indicator == filter_health]
+    else:
+        filtered_statuses = sorted_statuses
+
     # Build header
+    header_title = "📋 **PR Status Dashboard**"
+    if filter_health:
+        filter_label = _HEALTH_LABEL.get(filter_health, filter_health)
+        header_title += f" *(Filtered: {filter_label})*"
+
     header_lines = [
-        "📋 **PR Status Dashboard**",
+        header_title,
         "",
-        f"Showing {len(statuses)} of {total} open PR{'s' if total != 1 else ''}",
+        f"Showing {len(filtered_statuses)} of {total} open PR{'s' if total != 1 else ''}",
     ]
     summary_parts = []
     if counts["blocked"] > 0:
@@ -664,45 +677,53 @@ def format_all_pr_status(
 
     header = "\n".join(header_lines)
 
-    # Build PR lines
-    pr_lines: list[str] = []
-    for s in sorted_statuses:
-        health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
-        detail_parts = []
+    if not filtered_statuses:
+        filter_label = _HEALTH_LABEL.get(filter_health, filter_health) if filter_health else ""
+        pr_lines = [f"*No PRs currently matching filter '{filter_label}'.*"]
+    else:
+        # Build PR lines
+        pr_lines: list[str] = []
+        for s in filtered_statuses:
+            health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
+            detail_parts = []
 
-        # CI
-        ci_emoji = _CI_EMOJI.get(s.ci_status, "❓")
-        detail_parts.append(f"CI {ci_emoji}")
+            # CI
+            ci_emoji = _CI_EMOJI.get(s.ci_status, "❓")
+            detail_parts.append(f"CI {ci_emoji}")
 
-        # Reviews
-        if s.review_state == "approved":
-            detail_parts.append("Reviews ✅")
-        elif s.review_state == "changes_requested":
-            detail_parts.append("Reviews: changes requested")
-        elif s.review_state == "awaiting_review":
-            detail_parts.append("Reviews: awaiting")
-        else:
-            detail_parts.append("Reviews: comment")
+            # Reviews
+            if s.review_state == "approved":
+                detail_parts.append("Reviews ✅")
+            elif s.review_state == "changes_requested":
+                detail_parts.append("Reviews: changes requested")
+            elif s.review_state == "awaiting_review":
+                detail_parts.append("Reviews: awaiting")
+            else:
+                detail_parts.append("Reviews: comment")
 
-        # Mergeable
-        if s.mergeable is False:
-            detail_parts.append("Conflicts ⚠️")
-        elif s.mergeable is True:
-            detail_parts.append("Mergeable ✅")
+            # Mergeable
+            if s.mergeable is False:
+                detail_parts.append("Conflicts ⚠️")
+            elif s.mergeable is True:
+                detail_parts.append("Mergeable ✅")
 
-        # CodeRabbit
-        if s.has_coderabbit_comments:
-            detail_parts.append(f"CodeRabbit: {s.coderabbit_comment_count} pending")
+            # CodeRabbit
+            if s.has_coderabbit_comments:
+                detail_parts.append(f"CodeRabbit: {s.coderabbit_comment_count} pending")
 
-        # Draft
-        if s.is_draft:
-            detail_parts.append("Draft")
+            # Draft
+            if s.is_draft:
+                detail_parts.append("Draft")
 
-        detail = " · ".join(detail_parts)
-        title = _truncate(s.title, 50)
-        pr_lines.append(
-            f"{health_emoji} **{s.repo}#{s.number}** — \"{title}\" ({detail})"
-        )
+            detail = " · ".join(detail_parts)
+            title = _truncate(s.title, 70)
+            url_part = f"<{s.html_url}>" if s.html_url else ""
+            repo_pr = f"{s.repo}#{s.number}"
+            link_md = f"[{repo_pr}]({url_part})" if url_part else repo_pr
+            pr_lines.append(
+                f"{health_emoji} **{link_md}** — {title}\n"
+                f"> {detail}"
+            )
 
     # Pagination footer
     footer_lines: list[str] = []
@@ -805,7 +826,8 @@ def _split_messages(
     current = header
 
     for line in lines:
-        candidate = current + "\n" + line if current else line
+        sep = "\n\n" if current else ""
+        candidate = current + sep + line if current else line
         if len(candidate) > max_length and current:
             messages.append(current)
             current = line
