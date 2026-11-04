@@ -58,7 +58,6 @@ from ghdcbot.engine.metrics import (
 )
 from ghdcbot.engine.open_prs import (
     format_open_prs_messages,
-    format_open_prs_report,
     list_open_prs_for_author,
 )
 from ghdcbot.engine.pr_context import (
@@ -74,6 +73,15 @@ from ghdcbot.engine.pr_list import (
 )
 from ghdcbot.engine.pr_status import (
     PR_STATUS_MAX_PRS,
+    PRHealthStatus,
+    _CI_EMOJI,
+    _CI_LABEL,
+    _HEALTH_EMOJI,
+    _HEALTH_LABEL,
+    _HEALTH_SORT_ORDER,
+    _REVIEW_EMOJI,
+    _REVIEW_LABEL,
+    _truncate,
     fetch_all_open_pr_health,
     fetch_pr_health,
     filter_repo_suggestions,
@@ -604,6 +612,277 @@ class PRStatusModal(discord.ui.Modal, title="Check Specific PR"):
         await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
 
 
+def build_pr_status_initial_embed(repo: str | None, org: str) -> discord.Embed:
+    """Build an attractive landing card embed for /pr-status before options are selected."""
+    repo_display = f"`{repo}`" if repo else f"all `{org}` repositories"
+    embed = discord.Embed(
+        title="📋 Pull Request Health Monitor",
+        description=(
+            f"Select an option below to inspect open pull requests for **{repo_display}**.\n\n"
+            "**Available Actions:**\n"
+            "> • **📄 Show All Open PRs** — View interactive health dashboard with CI checks, reviews, and merge conflicts.\n"
+            "> • **🔍 Check Specific PR** — Look up detailed status and diagnostics for a single pull request."
+        ),
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name="⚡ Health Insights",
+        value=(
+            "> • Real-time CI check runs\n"
+            "> • Review approval & changes tracking\n"
+            "> • Merge conflict detection\n"
+            "> • CodeRabbit pending comments"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=f"Gitcord • {org} • Click a button below to get started")
+    return embed
+
+
+def build_pr_status_embed(
+    statuses: list[PRHealthStatus],
+    org: str,
+    skip: int = 0,
+    total: int = 0,
+    filter_health: str | None = None,
+) -> discord.Embed:
+    """Build a rich, attractive dashboard card embed for PR status."""
+    sorted_statuses = sorted(
+        statuses,
+        key=lambda s: (_HEALTH_SORT_ORDER.get(s.health_indicator, 99), s.repo, s.number),
+    )
+
+    counts = {"safe_to_merge": 0, "needs_attention": 0, "blocked": 0, "draft": 0}
+    for s in sorted_statuses:
+        counts[s.health_indicator] = counts.get(s.health_indicator, 0) + 1
+
+    if filter_health:
+        filtered = [s for s in sorted_statuses if s.health_indicator == filter_health]
+    else:
+        filtered = sorted_statuses
+
+    if counts["blocked"] > 0:
+        color = 0xED4245
+    elif counts["needs_attention"] > 0:
+        color = 0xFEE75C
+    elif counts["safe_to_merge"] > 0:
+        color = 0x57F287
+    else:
+        color = 0x5865F2
+
+    title = "📊 PR Status Dashboard"
+    if filter_health:
+        label = _HEALTH_LABEL.get(filter_health, filter_health)
+        title += f" • Filtered: {label}"
+
+    desc_lines = [
+        f"Showing **{len(filtered)}** of **{total}** open pull requests across **{org}**",
+    ]
+    summary_parts = []
+    if counts["blocked"] > 0:
+        summary_parts.append(f"🔴 **{counts['blocked']}** blocked")
+    if counts["needs_attention"] > 0:
+        summary_parts.append(f"🟡 **{counts['needs_attention']}** attention")
+    if counts["safe_to_merge"] > 0:
+        summary_parts.append(f"🟢 **{counts['safe_to_merge']}** safe")
+    if counts["draft"] > 0:
+        summary_parts.append(f"⬜ **{counts['draft']}** draft")
+    if summary_parts:
+        desc_lines.append(" • ".join(summary_parts))
+    desc_lines.append("")
+
+    if not filtered:
+        filter_label = _HEALTH_LABEL.get(filter_health, filter_health) if filter_health else ""
+        desc_lines.append(f"*No open PRs currently matching filter '{filter_label}'.*")
+    else:
+        for s in filtered:
+            health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
+            detail_chips = []
+
+            ci_emoji = _CI_EMOJI.get(s.ci_status, "❓")
+            detail_chips.append(f"`CI: {ci_emoji}`")
+
+            if s.review_state == "approved":
+                detail_chips.append("`Review: ✅ Approved`")
+            elif s.review_state == "changes_requested":
+                detail_chips.append("`Review: 🔄 Changes requested`")
+            elif s.review_state == "awaiting_review":
+                detail_chips.append("`Review: ⏳ Awaiting`")
+            else:
+                detail_chips.append("`Review: 💬 Comment`")
+
+            if s.mergeable is False:
+                detail_chips.append("`⚠️ Conflicts`")
+            elif s.mergeable is True:
+                detail_chips.append("`Mergeable: ✅`")
+
+            if s.has_coderabbit_comments:
+                detail_chips.append(f"`🐰 CodeRabbit: {s.coderabbit_comment_count} pending`")
+
+            if s.is_draft:
+                detail_chips.append("`Draft`")
+
+            title_text = _truncate(s.title, 60)
+            url_part = f"<{s.html_url}>" if s.html_url else ""
+            repo_pr = f"{s.repo}#{s.number}"
+            link_md = f"[{repo_pr}]({url_part})" if url_part else repo_pr
+            chips_line = " ".join(detail_chips)
+            author_chip = f"`@{s.author}` • " if s.author else ""
+
+            desc_lines.append(f"{health_emoji} **{link_md}** — {title_text}")
+            desc_lines.append(f"> {author_chip}{chips_line}\n")
+
+    shown_end = skip + len(statuses)
+    if shown_end < total:
+        desc_lines.append(f"*…and {total - shown_end} more. Use **Next** below to paginate.*")
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(desc_lines),
+        color=color,
+    )
+    embed.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
+    return embed
+
+
+def build_single_pr_embed(status: PRHealthStatus, org: str) -> discord.Embed:
+    """Build an attractive detail card embed for a single pull request."""
+    if status.health_indicator == "blocked":
+        color = 0xED4245
+    elif status.health_indicator == "needs_attention":
+        color = 0xFEE75C
+    elif status.health_indicator == "safe_to_merge":
+        color = 0x57F287
+    else:
+        color = 0x5865F2
+
+    health_label = _HEALTH_LABEL.get(status.health_indicator, "Unknown")
+    embed = discord.Embed(
+        title=f"📋 PR Health: {status.repo}#{status.number}",
+        url=status.html_url if status.html_url else None,
+        description=f"**{_truncate(status.title, 80)}**",
+        color=color,
+    )
+    if status.repo:
+        embed.set_author(name=f"{org}/{status.repo}", url=f"https://github.com/{org}/{status.repo}")
+    embed.add_field(name="👤 Author", value=f"`@{status.author}`" if status.author else "`Unknown`", inline=True)
+    embed.add_field(name="📊 Health", value=f"**{health_label}**", inline=True)
+    embed.add_field(name="State", value=f"`{status.state.capitalize()}`", inline=True)
+
+    if status.state not in ("merged", "closed"):
+        ci_emoji = _CI_EMOJI.get(status.ci_status, "❓")
+        ci_label = _CI_LABEL.get(status.ci_status, "Unknown")
+        embed.add_field(name="CI Status", value=f"{ci_emoji} {ci_label}", inline=True)
+
+        rev_emoji = _REVIEW_EMOJI.get(status.review_state, "❓")
+        rev_label = _REVIEW_LABEL.get(status.review_state, "Unknown")
+        rev_detail = rev_label
+        if status.approved_count > 0:
+            rev_detail += f" ({status.approved_count} approval{'s' if status.approved_count != 1 else ''})"
+        if status.changes_requested_count > 0:
+            rev_detail += f" ({status.changes_requested_count} change request{'s' if status.changes_requested_count != 1 else ''})"
+        embed.add_field(name="Reviews", value=f"{rev_emoji} {rev_detail}", inline=True)
+
+        if status.mergeable is False:
+            merge_str = "⚠️ Conflicts"
+        elif status.mergeable is True:
+            merge_str = "✅ Yes"
+        else:
+            merge_str = "❓ Unknown"
+        embed.add_field(name="Mergeable", value=merge_str, inline=True)
+
+        if status.has_coderabbit_comments:
+            cr_str = f"🟡 {status.coderabbit_comment_count} suggestion{'s' if status.coderabbit_comment_count != 1 else ''} pending"
+        else:
+            cr_str = "✅ No pending suggestions"
+        embed.add_field(name="CodeRabbit", value=cr_str, inline=True)
+
+        if status.is_draft:
+            embed.add_field(name="Draft", value="📝 Yes", inline=True)
+
+    embed.set_footer(text="Gitcord • Use 'Back to Dashboard' to return")
+    return embed
+
+
+class PRDetailView(discord.ui.View):
+    """View displayed when drilling into a single PR's health breakdown."""
+
+    def __init__(self, status: PRHealthStatus, parent_view: PRStatusView, timeout: float = 300.0) -> None:
+        super().__init__(timeout=timeout)
+        self.status = status
+        self.parent_view = parent_view
+
+        if status.html_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Open on GitHub",
+                    url=status.html_url,
+                    style=discord.ButtonStyle.link,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
+
+    @discord.ui.button(label="Back to Dashboard", style=discord.ButtonStyle.primary, emoji="⬅️", row=0)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._on_back(interaction)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self.parent_view._build_components()
+        embed = build_pr_status_embed(
+            self.parent_view.statuses,
+            self.parent_view.config.github.org,
+            skip=self.parent_view.skip,
+            total=self.parent_view.total,
+            filter_health=self.parent_view.active_filter,
+        )
+        messages = format_all_pr_status(
+            self.parent_view.statuses,
+            self.parent_view.config.github.org,
+            skip=self.parent_view.skip,
+            total=self.parent_view.total,
+            filter_health=self.parent_view.active_filter,
+        )
+        first_msg = messages[0] if messages else "📋 **PR Status Dashboard**\n\nNo open PRs found."
+        try:
+            await interaction.response.edit_message(content="", embed=embed, view=self.parent_view)
+        except Exception:
+            await interaction.response.edit_message(content=first_msg, view=self.parent_view)
+
+
+class PRSelectDropdown(discord.ui.Select):
+    """Dropdown menu to quickly inspect health details for any PR on the dashboard."""
+
+    def __init__(self, pr_view: PRStatusView, options: list[discord.SelectOption]) -> None:
+        super().__init__(
+            placeholder="🔍 Select a PR to inspect health details...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+        self.pr_view = pr_view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            selected_num = int(self.values[0])
+        except (ValueError, IndexError):
+            return
+
+        matched = next((s for s in self.pr_view.statuses if s.number == selected_num), None)
+        if not matched:
+            await interaction.response.send_message("❌ PR not found in current view.", ephemeral=True)
+            return
+
+        embed = build_single_pr_embed(matched, self.pr_view.config.github.org)
+        detail_content = format_single_pr_status(matched, self.pr_view.config.github.org)
+        detail_view = PRDetailView(matched, self.pr_view)
+        try:
+            await interaction.response.edit_message(content="", embed=embed, view=detail_view)
+        except Exception:
+            await interaction.response.edit_message(content=detail_content, view=detail_view)
+
+
 class PRStatusView(discord.ui.View):
     def __init__(self, repo: str | None, config: Any, github_adapter: Any, timeout: float = 300.0) -> None:
         super().__init__(timeout=timeout)
@@ -612,14 +891,243 @@ class PRStatusView(discord.ui.View):
         self.github_adapter = github_adapter
         self.skip = 0
         self.total = 0
+        self.statuses: list[PRHealthStatus] = []
+        self.active_filter: str | None = None
         self.message: discord.Message | None = None
-        self._sync_next_button()
+        self._build_components()
 
     def _sync_next_button(self) -> None:
         for item in self.children:
             if isinstance(item, discord.ui.Button) and item.custom_id == "pr_status_next_page":
                 item.disabled = self.total <= 0 or (self.skip + PR_STATUS_MAX_PRS) >= self.total
                 break
+
+    def _build_components(self) -> None:
+        self.clear_items()
+
+        # If not self.statuses (initial view before user clicks Show All Open PRs)
+        if not self.statuses:
+            show_all_btn = discord.ui.Button(
+                label="Show All Open PRs",
+                style=discord.ButtonStyle.primary,
+                emoji="📄",
+                row=0,
+            )
+
+            async def _show_all_callback(interaction: discord.Interaction) -> None:
+                await self.show_all(interaction)
+
+            show_all_btn.callback = _show_all_callback
+            self.add_item(show_all_btn)
+
+            modal_btn = discord.ui.Button(
+                label="Check Specific PR",
+                style=discord.ButtonStyle.secondary,
+                emoji="🔍",
+                row=0,
+            )
+
+            async def _modal_callback(interaction: discord.Interaction) -> None:
+                await self.specific_pr(interaction)
+
+            modal_btn.callback = _modal_callback
+            self.add_item(modal_btn)
+
+            next_btn = discord.ui.Button(
+                label="Next page",
+                style=discord.ButtonStyle.secondary,
+                emoji="➡️",
+                custom_id="pr_status_next_page",
+                disabled=True,
+                row=0,
+            )
+
+            async def _next_callback(interaction: discord.Interaction) -> None:
+                await self.next_page(interaction)
+
+            next_btn.callback = _next_callback
+            self.add_item(next_btn)
+            return
+
+        # Populated dashboard view with interactive dropdown & filters
+        filtered_for_dropdown = (
+            [s for s in self.statuses if s.health_indicator == self.active_filter]
+            if self.active_filter
+            else self.statuses
+        )
+        dropdown_items = filtered_for_dropdown[:25]
+        if dropdown_items:
+            options = [
+                discord.SelectOption(
+                    label=f"#{s.number}: {_truncate(s.title, 40)}",
+                    value=str(s.number),
+                    description=_truncate(f"{s.repo} · {_REVIEW_LABEL.get(s.review_state, s.review_state)}", 50),
+                    emoji=_HEALTH_EMOJI.get(s.health_indicator, "❓"),
+                )
+                for s in dropdown_items
+            ]
+            self.add_item(PRSelectDropdown(self, options))
+
+        # Row 1: Filter buttons
+        counts = {"blocked": 0, "needs_attention": 0, "safe_to_merge": 0}
+        for s in self.statuses:
+            if s.health_indicator in counts:
+                counts[s.health_indicator] += 1
+
+        all_btn = discord.ui.Button(
+            label=f"All ({len(self.statuses)})",
+            style=discord.ButtonStyle.primary if self.active_filter is None else discord.ButtonStyle.secondary,
+            emoji="📋",
+            row=1,
+        )
+
+        async def _all_callback(interaction: discord.Interaction) -> None:
+            self.active_filter = None
+            self._build_components()
+            embed = build_pr_status_embed(
+                self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=None
+            )
+            msgs = format_all_pr_status(
+                self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=None
+            )
+            try:
+                await interaction.response.edit_message(content="", embed=embed, view=self)
+            except Exception:
+                await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
+
+        all_btn.callback = _all_callback
+        self.add_item(all_btn)
+
+        if counts["blocked"] > 0:
+            blocked_btn = discord.ui.Button(
+                label=f"Blocked ({counts['blocked']})",
+                style=discord.ButtonStyle.danger if self.active_filter == "blocked" else discord.ButtonStyle.secondary,
+                emoji="🔴",
+                row=1,
+            )
+
+            async def _blocked_callback(interaction: discord.Interaction) -> None:
+                self.active_filter = "blocked" if self.active_filter != "blocked" else None
+                self._build_components()
+                embed = build_pr_status_embed(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                msgs = format_all_pr_status(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                try:
+                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                except Exception:
+                    await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
+
+            blocked_btn.callback = _blocked_callback
+            self.add_item(blocked_btn)
+
+        if counts["needs_attention"] > 0:
+            attention_btn = discord.ui.Button(
+                label=f"Attention ({counts['needs_attention']})",
+                style=discord.ButtonStyle.primary if self.active_filter == "needs_attention" else discord.ButtonStyle.secondary,
+                emoji="🟡",
+                row=1,
+            )
+
+            async def _attention_callback(interaction: discord.Interaction) -> None:
+                self.active_filter = "needs_attention" if self.active_filter != "needs_attention" else None
+                self._build_components()
+                embed = build_pr_status_embed(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                msgs = format_all_pr_status(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                try:
+                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                except Exception:
+                    await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
+
+            attention_btn.callback = _attention_callback
+            self.add_item(attention_btn)
+
+        if counts["safe_to_merge"] > 0:
+            safe_btn = discord.ui.Button(
+                label=f"Safe ({counts['safe_to_merge']})",
+                style=discord.ButtonStyle.success if self.active_filter == "safe_to_merge" else discord.ButtonStyle.secondary,
+                emoji="🟢",
+                row=1,
+            )
+
+            async def _safe_callback(interaction: discord.Interaction) -> None:
+                self.active_filter = "safe_to_merge" if self.active_filter != "safe_to_merge" else None
+                self._build_components()
+                embed = build_pr_status_embed(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                msgs = format_all_pr_status(
+                    self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
+                )
+                try:
+                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                except Exception:
+                    await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
+
+            safe_btn.callback = _safe_callback
+            self.add_item(safe_btn)
+
+        # Row 2: Action & Navigation buttons
+        refresh_btn = discord.ui.Button(
+            label="Refresh",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔄",
+            row=2,
+        )
+
+        async def _refresh_callback(interaction: discord.Interaction) -> None:
+            await self._send_dashboard(interaction, skip=self.skip)
+
+        refresh_btn.callback = _refresh_callback
+        self.add_item(refresh_btn)
+
+        modal_btn = discord.ui.Button(
+            label="Custom PR #",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔍",
+            row=2,
+        )
+
+        async def _modal_callback(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(PRStatusModal(self.repo, self.config, self.github_adapter))
+
+        modal_btn.callback = _modal_callback
+        self.add_item(modal_btn)
+
+        prev_btn = discord.ui.Button(
+            label="Prev",
+            style=discord.ButtonStyle.secondary,
+            emoji="⬅️",
+            disabled=(self.skip <= 0),
+            row=2,
+        )
+
+        async def _prev_callback(interaction: discord.Interaction) -> None:
+            await self._send_dashboard(interaction, skip=max(0, self.skip - PR_STATUS_MAX_PRS))
+
+        prev_btn.callback = _prev_callback
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.secondary,
+            emoji="➡️",
+            custom_id="pr_status_next_page",
+            disabled=(self.total <= 0 or (self.skip + PR_STATUS_MAX_PRS) >= self.total),
+            row=2,
+        )
+
+        async def _next_callback(interaction: discord.Interaction) -> None:
+            await self._send_dashboard(interaction, skip=self.skip + PR_STATUS_MAX_PRS)
+
+        next_btn.callback = _next_callback
+        self.add_item(next_btn)
 
     async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
         user_id = interaction.user.id
@@ -659,43 +1167,60 @@ class PRStatusView(discord.ui.View):
 
         self.skip = skip
         self.total = total
-        self._sync_next_button()
-        if self.message is not None:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                logging.getLogger("ghdcbot.bot").debug(
-                    "Could not refresh PRStatusView buttons after dashboard fetch",
-                    exc_info=True,
-                )
+        self.statuses = statuses
+        self._build_components()
+
+        embed = build_pr_status_embed(
+            statuses, self.config.github.org, skip=skip, total=total, filter_health=self.active_filter
+        )
 
         messages = format_all_pr_status(
-            statuses, self.config.github.org, skip=skip, total=total
+            statuses, self.config.github.org, skip=skip, total=total, filter_health=self.active_filter
         )
-        for msg in messages:
-            await interaction.followup.send(msg, ephemeral=True, suppress_embeds=True)
+        first_msg = messages[0] if messages else "📋 **PR Status Dashboard**\n\nNo open PRs found."
 
-    @discord.ui.button(label="Show All Open PRs", style=discord.ButtonStyle.primary, emoji="📄")
-    async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        updated = False
+        try:
+            edit_orig = getattr(interaction, "edit_original_response", None)
+            if callable(edit_orig):
+                await edit_orig(content="", embed=embed, view=self)
+                updated = True
+        except Exception:
+            pass
+
+        if not updated:
+            try:
+                await interaction.followup.send(embed=embed, view=self, ephemeral=True)
+            except Exception:
+                await interaction.followup.send(first_msg, view=self, ephemeral=True, suppress_embeds=True)
+
+        try:
+            get_orig = getattr(interaction, "original_response", None)
+            if callable(get_orig):
+                self.message = await get_orig()
+        except Exception:
+            pass
+
+        for extra in messages[1:]:
+            try:
+                await interaction.followup.send(extra, ephemeral=True, suppress_embeds=True)
+            except Exception:
+                pass
+
+    async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button | None = None) -> None:
+        self.active_filter = None
         await self._send_dashboard(interaction, skip=0)
 
-    @discord.ui.button(
-        label="Next page",
-        style=discord.ButtonStyle.secondary,
-        emoji="➡️",
-        custom_id="pr_status_next_page",
-        disabled=True,
-    )
-    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button | None = None) -> None:
         await self._send_dashboard(interaction, skip=self.skip + PR_STATUS_MAX_PRS)
 
-    @discord.ui.button(label="Check Specific PR", style=discord.ButtonStyle.secondary, emoji="🔍")
-    async def specific_pr(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def specific_pr(self, interaction: discord.Interaction, button: discord.ui.Button | None = None) -> None:
         await interaction.response.send_modal(PRStatusModal(self.repo, self.config, self.github_adapter))
 
     async def on_timeout(self) -> None:
         for item in self.children:
-            item.disabled = True
+            if hasattr(item, "disabled"):
+                item.disabled = True
         if self.message is None:
             return
         try:
@@ -1751,21 +2276,46 @@ def run_bot(config_path: str) -> None:
     )
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from config if omitted)",
+        pr_number="Pull Request number (optional; checks specific PR if provided)",
     )
     @app_commands.checks.cooldown(1, 5.0)
     @app_commands.check(command_permission_check(SLASH_CMD_PR_STATUS, allow_all_by_default=True))
     async def pr_status_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
+        pr_number: int | None = None,
     ) -> None:
         """Show health status of a pull request or all open PRs."""
+        if pr_number is not None:
+            modal = PRStatusModal(repo, config, github_adapter)
+            modal.pr_number._value = str(pr_number)
+            user_id = interaction.user.id
+            refusal = _claim_pr_status_fetch(user_id)
+            if refusal:
+                await interaction.response.send_message(refusal, ephemeral=True)
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+                await modal._lookup(interaction, pr_number)
+            finally:
+                _release_pr_status_fetch(user_id)
+            return
+
         repo_display = f"`{repo}`" if repo else "auto-detected repository"
         view = PRStatusView(repo, config, github_adapter)
-        await interaction.response.send_message(
-            f"Select an option for **{repo_display}** (or the org dashboard):",
-            view=view,
-            ephemeral=True
-        )
+        initial_embed = build_pr_status_initial_embed(repo, config.github.org)
+        try:
+            await interaction.response.send_message(
+                embed=initial_embed,
+                view=view,
+                ephemeral=True,
+            )
+        except TypeError:
+            await interaction.response.send_message(
+                f"Select an option for **{repo_display}** (or the org dashboard):",
+                view=view,
+                ephemeral=True,
+            )
         try:
             view.message = await interaction.original_response()
         except Exception:
@@ -2293,7 +2843,10 @@ def run_bot(config_path: str) -> None:
             )
             return
 
-        from ghdcbot.engine.issue_assignment import fetch_issue_context, build_assignment_confirmation_embed
+        from ghdcbot.engine.issue_assignment import (
+            build_assignment_confirmation_embed,
+            fetch_issue_context,
+        )
         issue = await asyncio.to_thread(fetch_issue_context, github_adapter, owner, repo, issue_number)
         if not issue:
             await interaction.followup.send(f"❌ Could not find issue {owner}/{repo}#{issue_number}", ephemeral=True)
@@ -2371,9 +2924,9 @@ def run_bot(config_path: str) -> None:
         
         # 1. Verify user
         from ghdcbot.engine.issue_creation import (
-            validate_issue_params,
             build_issue_created_embed,
             format_issue_creation_audit_context,
+            validate_issue_params,
         )
         
         github_username = resolve_discord_to_github(storage, discord_user_id)
