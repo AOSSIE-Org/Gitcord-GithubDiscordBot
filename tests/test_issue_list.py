@@ -636,3 +636,24 @@ def test_format_single_issue_entry_escapes_masked_link_in_label():
     assert "[x](" not in lines[1]
     # Ordinary labels read naturally.
     assert "good_first_issue" in lines[1]
+
+
+def test_format_single_issue_entry_does_not_truncate_long_title_or_label():
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    label = "[x](https://evil.example) " + "l" * 120 + "END"
+    assert len(title) > 100 and len(label) > 100
+    issue = {
+        "number": 5,
+        "title": title,
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [{"name": label}],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert lines[0].endswith("END**")
+    assert r"\[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END" in lines[0]
+    assert "[Re-verify](" not in lines[0]
+    assert lines[1].endswith("l" * 120 + "END")
+    assert r"\[x\]\(https://evil.example\) " in lines[1]
