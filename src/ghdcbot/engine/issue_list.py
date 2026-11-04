@@ -87,7 +87,7 @@ def format_single_issue_entry(
     # Labels
     raw_labels = issue.get("labels") or []
     label_names = [
-        _sanitize_discord_title(str(lbl["name"]))
+        _sanitize_discord_title(str(lbl.get("name")))
         for lbl in raw_labels
         if isinstance(lbl, dict) and lbl.get("name")
     ]
