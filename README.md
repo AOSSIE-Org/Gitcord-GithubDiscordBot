@@ -191,7 +191,17 @@ Protect `.env`, restrict SSH access, and back up the `gitcord_data` volume. Neve
 
 #### Fly.io and similar container platforms
 
-Fly.io is possible, but the repository is not currently a one-command Fly deployment: its Compose file uses host networking and a local named volume. A Fly deployment must remove `network_mode: host`, provide secrets through `fly secrets`, mount a persistent volume at `/data`, and run the bot and scheduler without allowing overlapping syncs. Use a Linux VPS for the supported copy-and-run path until platform-specific deployment files are added.
+Gitcord ships a Fly.io setup (`fly.toml` + `Dockerfile.fly`) that runs the bot and the scheduled sync on a single machine, with secrets from `fly secrets` and state on a persistent volume at `/data`. The Compose files are not used on Fly. See **[docs/FLY.md](docs/FLY.md)** for step-by-step instructions.
+
+```bash
+cp config/docker-example.yaml config/config.yaml   # set github.org + discord.guild_id
+fly launch --copy-config --no-deploy
+fly volumes create gitcord_data --size 1 --region <primary_region>
+fly secrets set GITHUB_TOKEN=... DISCORD_TOKEN=...
+fly deploy --ha=false
+```
+
+Other container platforms are not covered; use a Linux VPS (above) for those.
 
 ### Quick Setup Overview (local Python install)
 
