@@ -14,7 +14,7 @@ from ghdcbot.config.models import NotificationConfig
 from ghdcbot.core.interfaces import DiscordWriter
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.core.modes import MutationPolicy
-from ghdcbot.engine.notifications import _send_discord_notification
+from ghdcbot.engine.notifications import _sanitize_discord_title, _send_discord_notification
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def build_checkin_message(
 ) -> str:
     """Build the polite check-in reminder DM message."""
     display_name = f"<@{discord_user_id}>" if discord_user_id else github_user
-    title_str = issue_title.strip() if issue_title else f"Issue #{issue_number}"
+    title_str = _sanitize_discord_title(issue_title.strip()) if issue_title else f"Issue #{issue_number}"
     repo_full = f"{github_org}/{repo}" if github_org else repo
     raw_time = days if days is not None else time_label
     time_str = f"{raw_time} days" if isinstance(raw_time, int) else str(raw_time)
@@ -131,7 +131,7 @@ def build_unassign_dm_message(
 ) -> str:
     """Build follow-up DM notifying contributor of unassignment."""
     display_name = f"<@{discord_user_id}>" if discord_user_id else github_user
-    title_str = issue_title.strip() if issue_title else f"Issue #{issue_number}"
+    title_str = _sanitize_discord_title(issue_title.strip()) if issue_title else f"Issue #{issue_number}"
     repo_full = f"{github_org}/{repo}" if github_org else repo
     raw_time = total_days if total_days is not None else time_label
     time_str = f"{raw_time} days" if isinstance(raw_time, int) else str(raw_time)

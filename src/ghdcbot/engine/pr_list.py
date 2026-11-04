@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
+from ghdcbot.engine.notifications import _sanitize_discord_title
+
 # Discord message hard limit is 2000; keep room for headers.
 _MAX_MESSAGE_CHARS = 1900
 _DEFAULT_COUNT = 10
@@ -205,7 +207,7 @@ def _format_pr_lines(pr: dict, *, org: str, index: int) -> list[str]:
     when = _format_timestamp(pr.get("updated_at") or pr.get("created_at"))
     # Keep link on repo#N only (<> suppresses Discord preview embed).
     linked = f"[{repo} #{number}]({_suppress_discord_embed(str(url))})"
-    return [f"{index}. {linked} -- {title} ({when})"]
+    return [f"{index}. {linked} -- {_sanitize_discord_title(title)} ({when})"]
 
 
 def _suppress_discord_embed(url: str) -> str:

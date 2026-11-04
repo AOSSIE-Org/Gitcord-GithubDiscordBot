@@ -1431,15 +1431,18 @@ def _suppress_discord_embed(url: str) -> str:
     return f"<{text}>"
 
 
-def _sanitize_discord_title(title: str) -> str:
+def _sanitize_discord_title(title: str, max_len: int | None = 100) -> str:
     """Escape markdown link delimiters and neutralize mention tokens in titles.
 
     Used for PR and issue channel titles. Neutralizes ``@everyone`` / ``@here`` and
     structured Discord mentions (``<@…>``, ``<@!…>``, ``<@&…>``, ``<#…>``) so
     attacker-controlled titles cannot ping users/roles/channels. Trusted author /
     assignee ``<@id>`` lines are built separately and are not passed through here.
+
+    Titles are cut to ``max_len`` characters (default 100) before escaping; pass
+    ``max_len=None`` to escape without truncating.
     """
-    text = (title or "Untitled")[:100]
+    text = (title or "Untitled")[:max_len]
     text = text.replace("\\", "\\\\")
     for ch in ("[", "]", "(", ")"):
         text = text.replace(ch, f"\\{ch}")
