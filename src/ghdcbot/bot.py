@@ -48,6 +48,7 @@ from ghdcbot.engine.issue_list import (
     clamp_issue_limit,
     filter_open_issues,
     format_issue_list_messages,
+    normalize_issue_labels,
     resolve_repo_for_issue,
 )
 from ghdcbot.engine.metrics import (
@@ -1414,12 +1415,16 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from channel or config if omitted)",
         limit="How many recent open issues to show (optional, default 10, max 50)",
+        label="Only show issues with this label, e.g. good first issue (optional; comma-separate several)",
+        unassigned="Only show issues that have no assignee (optional)",
     )
     @app_commands.checks.cooldown(1, 15.0)
     async def issue_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
         limit: app_commands.Range[int, 1, 50] = 10,
+        label: str | None = None,
+        unassigned: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -1439,12 +1444,20 @@ def run_bot(config_path: str) -> None:
             return
 
         effective_limit = clamp_issue_limit(limit)
+        labels = normalize_issue_labels(label)
+        filter_kwargs: dict[str, Any] = {}
+        if labels:
+            filter_kwargs["labels"] = labels
+        if unassigned:
+            filter_kwargs["unassigned"] = True
         logger.info(
             "/issue requested",
             extra={
                 "repo": resolved_repo,
                 "requested_limit": limit,
                 "effective_limit": effective_limit,
+                "labels": labels,
+                "unassigned": unassigned,
                 "user_id": str(interaction.user.id),
             },
         )
@@ -1462,6 +1475,7 @@ def run_bot(config_path: str) -> None:
                 config.github.org,
                 resolved_repo,
                 effective_limit,
+                **filter_kwargs,
             )
         except Exception:
             logger.exception(
@@ -1488,6 +1502,8 @@ def run_bot(config_path: str) -> None:
             repo=resolved_repo,
             limit=effective_limit,
             storage=storage,
+            label=labels,
+            unassigned=unassigned,
         )
         for message in messages:
             await interaction.followup.send(

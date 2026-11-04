@@ -9,6 +9,7 @@ from ghdcbot.engine.issue_list import (
     filter_open_issues,
     format_issue_list_messages,
     format_single_issue_entry,
+    normalize_issue_labels,
     resolve_repo_for_issue,
 )
 
@@ -601,3 +602,164 @@ def test_issue_cmd_with_explicit_repo() -> None:
 
 
 
+
+
+def test_normalize_issue_labels():
+    assert normalize_issue_labels(None) is None
+    assert normalize_issue_labels("   ") is None
+    assert normalize_issue_labels(" , ,") is None
+    assert normalize_issue_labels("good first issue") == "good first issue"
+    assert normalize_issue_labels(" bug , help wanted,, ") == "bug,help wanted"
+
+
+def test_format_issue_list_messages_empty_names_applied_filters():
+    assert format_issue_list_messages([], org="org", repo="repo") == [
+        "No open issues found in **repo**."
+    ]
+    assert format_issue_list_messages([], org="org", repo="repo", label="bug") == [
+        "No open issues found in **repo** with label **bug**."
+    ]
+    assert format_issue_list_messages([], org="org", repo="repo", unassigned=True) == [
+        "No open issues found in **repo** with no assignee."
+    ]
+    assert format_issue_list_messages(
+        [], org="org", repo="repo", label="good first issue", unassigned=True
+    ) == ["No open issues found in **repo** with label **good first issue** and no assignee."]
+
+
+def test_list_repo_open_issues_label_and_unassigned_params():
+    from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+    base = {"state": "open", "sort": "created", "direction": "desc", "per_page": 100}
+    items = [
+        {"number": 1, "state": "open"},
+        {"number": 2, "state": "open", "pull_request": {"url": "..."}},
+        {"number": 3, "state": "open"},
+        {"number": 4, "state": "open"},
+    ]
+
+    with GitHubRestAdapter("fake-token", "fake-org", "https://api.github.com") as adapter:
+        adapter._paginate = MagicMock(return_value=[items])
+
+        # Both filters are sent to GitHub; pull requests are still dropped and the
+        # limit applies to what is left.
+        issues = adapter.list_repo_open_issues(
+            "fake-org", "fake-repo", limit=2, labels="good first issue,bug", unassigned=True
+        )
+        assert [i["number"] for i in issues] == [1, 3]
+        adapter._paginate.assert_called_once_with(
+            "/repos/fake-org/fake-repo/issues",
+            params={**base, "labels": "good first issue,bug", "assignee": "none"},
+            raise_on_error=True,
+        )
+
+        # Only the requested filter is sent.
+        adapter._paginate.reset_mock()
+        adapter.list_repo_open_issues("fake-org", "fake-repo", labels="bug")
+        assert adapter._paginate.call_args.kwargs["params"] == {**base, "labels": "bug"}
+
+        adapter._paginate.reset_mock()
+        adapter.list_repo_open_issues("fake-org", "fake-repo", unassigned=True)
+        assert adapter._paginate.call_args.kwargs["params"] == {**base, "assignee": "none"}
+
+        # Default call: no labels and no assignee key at all.
+        adapter._paginate.reset_mock()
+        adapter.list_repo_open_issues("fake-org", "fake-repo")
+        assert adapter._paginate.call_args.kwargs["params"] == base
+
+
+def test_issue_cmd_passes_label_and_unassigned_filters() -> None:
+    """/issue forwards normalized filters, leaves the default call unchanged, names filters when empty."""
+    import asyncio
+    from typing import Any
+    from unittest.mock import AsyncMock, patch
+
+    import discord
+
+    from ghdcbot.bot import run_bot
+    from ghdcbot.config.models import (
+        BotConfig,
+        DiscordConfig,
+        GitHubConfig,
+        RepoFilterConfig,
+        RuntimeConfig,
+    )
+
+    cfg = BotConfig(
+        runtime=RuntimeConfig(
+            data_dir="./data",
+            github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+            discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+            storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+        ),
+        github=GitHubConfig(
+            org="test-org",
+            repos=RepoFilterConfig(mode="allow", names=["Devr.AI"]),
+        ),
+        discord=DiscordConfig(guild_id="123", token="fake"),
+    )
+
+    captured = []
+    orig_tree_init = discord.app_commands.CommandTree.__init__
+
+    def mock_tree_init(tree_self: Any, client: Any) -> None:
+        captured.append(tree_self)
+        orig_tree_init(tree_self, client)
+
+    mock_gh = MagicMock()
+
+    with (
+        patch("ghdcbot.bot.load_config", return_value=cfg),
+        patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+        patch("ghdcbot.bot.build_adapter", return_value=mock_gh),
+        patch("ghdcbot.bot.GitHubIdentityReader"),
+        patch("ghdcbot.bot.IdentityLinkService"),
+        patch("ghdcbot.bot.SocialProfileService"),
+        patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+        patch("discord.Client.run", side_effect=SystemExit(0)),
+    ):
+        try:
+            run_bot("dummy.yaml")
+        except SystemExit:
+            pass
+
+    tree = captured[0]
+    issue_cmd = next(c for c in tree.get_commands(guild=discord.Object(id=123)) if c.name == "issue")
+    assert {p.name for p in issue_cmd.parameters} >= {"label", "unassigned"}
+
+    mock_interaction = MagicMock()
+    mock_interaction.response.defer = AsyncMock()
+    mock_interaction.followup.send = AsyncMock()
+    mock_interaction.channel_id = 99999
+    mock_interaction.channel.name = "general"
+    mock_interaction.user.id = 456
+
+    # Default call is unchanged: no extra arguments.
+    mock_gh.list_repo_open_issues.return_value = []
+    asyncio.run(issue_cmd.callback(mock_interaction, repo="Devr.AI", limit=5))
+    mock_gh.list_repo_open_issues.assert_called_once_with("test-org", "Devr.AI", 5)
+
+    # A blank label and unassigned=False are treated as no filter.
+    mock_gh.list_repo_open_issues.reset_mock()
+    asyncio.run(issue_cmd.callback(mock_interaction, repo="Devr.AI", limit=5, label="  ,"))
+    mock_gh.list_repo_open_issues.assert_called_once_with("test-org", "Devr.AI", 5)
+
+    # Filters are forwarded and the empty reply says which ones were applied.
+    mock_gh.list_repo_open_issues.reset_mock()
+    mock_interaction.followup.send.reset_mock()
+    asyncio.run(
+        issue_cmd.callback(
+            mock_interaction,
+            repo="Devr.AI",
+            limit=5,
+            label=" good first issue , bug",
+            unassigned=True,
+        )
+    )
+    mock_gh.list_repo_open_issues.assert_called_once_with(
+        "test-org", "Devr.AI", 5, labels="good first issue,bug", unassigned=True
+    )
+    sent_text = mock_interaction.followup.send.call_args[0][0]
+    assert sent_text == (
+        "No open issues found in **Devr.AI** with label **good first issue,bug** and no assignee."
+    )
