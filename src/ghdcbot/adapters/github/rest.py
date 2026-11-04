@@ -27,6 +27,7 @@ _GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
 _GITHUB_MAX_RATE_LIMIT_RECOVERIES = 10
 _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS = 1.0
+_GITHUB_DEFAULT_429_RETRY_AFTER_SECONDS = 60.0
 _GRAPHQL_MAX_REVIEW_THREADS_PAGES = 10
 _GRAPHQL_MAX_THREAD_COMMENTS_PAGES = 5
 
@@ -41,6 +42,8 @@ def _github_retry_sleep_seconds(failed_attempt: int) -> float:
 
 
 def _is_rate_limit_exhausted(response: httpx.Response) -> bool:
+    if response.status_code == 429:
+        return True
     if response.status_code != 403:
         return False
     rate_limit = _parse_rate_limit(response.headers)
@@ -60,7 +63,9 @@ def _rate_limit_reset_timestamp(headers: dict) -> int | None:
     return int(reset_str)
 
 
-def _rate_limit_sleep_seconds(headers: dict) -> float | None:
+def _rate_limit_sleep_seconds(
+    headers: dict, *, status_code: int | None = None
+) -> float | None:
     retry_after = headers.get("Retry-After")
     if retry_after is not None:
         retry_str = str(retry_after).strip()
@@ -69,12 +74,14 @@ def _rate_limit_sleep_seconds(headers: dict) -> float | None:
         except ValueError:
             pass
     reset_ts = _rate_limit_reset_timestamp(headers)
-    if reset_ts is None:
-        return None
-    sleep_seconds = reset_ts - time.time()
-    if sleep_seconds < 0:
-        sleep_seconds = 0.0
-    return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
+    if reset_ts is not None:
+        sleep_seconds = reset_ts - time.time()
+        if sleep_seconds < 0:
+            sleep_seconds = 0.0
+        return max(sleep_seconds, _GITHUB_MIN_RATE_LIMIT_SLEEP_SECONDS)
+    if status_code == 429:
+        return _GITHUB_DEFAULT_429_RETRY_AFTER_SECONDS
+    return None
 
 
 _GITHUB_SEARCH_MAX_PAGES = 5
@@ -446,6 +453,8 @@ class GitHubRestAdapter:
         response = self._request(
             "GET",
             f"/repos/{org}/{repo_name}/collaborators/{user}/permission",
+            params=None,
+            allow_404=True,
         )
         if response is None:
             return None
@@ -460,7 +469,11 @@ class GitHubRestAdapter:
                     perms = user_info.get("permissions") or {}
                     for p in ("admin", "maintain", "push", "triage", "pull"):
                         if perms.get(p):
-                            return "write" if p == "push" else p
+                            if p == "push":
+                                return "write"
+                            if p == "pull":
+                                return "read"
+                            return p
         elif response.status_code == 404:
             return "none"
         return None
@@ -475,7 +488,7 @@ class GitHubRestAdapter:
         if perm in {"admin", "maintain", "write"}:
             return True
         # Check org membership
-        org_resp = self._request("GET", f"/orgs/{org}/members/{user}")
+        org_resp = self._request("GET", f"/orgs/{org}/members/{user}", params=None, allow_404=True)
         if org_resp is not None and org_resp.status_code == 204:
             return True
         if perm is None or org_resp is None or org_resp.status_code != 404:
@@ -2052,7 +2065,7 @@ class GitHubRestAdapter:
         self,
         method: str,
         path: str,
-        params: dict,
+        params: dict | None = None,
         *,
         json_body: dict | None = None,
     ) -> httpx.Response | None:
@@ -2098,7 +2111,9 @@ class GitHubRestAdapter:
                             },
                         )
                         return None
-                    sleep_seconds = _rate_limit_sleep_seconds(response.headers)
+                    sleep_seconds = _rate_limit_sleep_seconds(
+                        response.headers, status_code=response.status_code
+                    )
                     reset_timestamp = _rate_limit_reset_timestamp(response.headers)
                     if sleep_seconds is None:
                         self._log_github_rate_limit_missing_reset(
@@ -2150,9 +2165,10 @@ class GitHubRestAdapter:
         self,
         method: str,
         path: str,
-        params: dict,
+        params: dict | None = None,
         *,
         json_body: dict | None = None,
+        allow_404: bool = False,
     ) -> httpx.Response | None:
         response = self._execute_request_with_retries(
             method, path, params, json_body=json_body
@@ -2180,12 +2196,16 @@ class GitHubRestAdapter:
             self._log_permission_issue(path, response)
             return None
         if response.status_code == 404:
-            self._log_not_found(path, response)
-            return None
+            if not allow_404:
+                self._log_not_found(path, response)
+                return None
+            return response
 
         return response
 
-    def _request_with_status(self, method: str, path: str, params: dict) -> httpx.Response | None:
+    def _request_with_status(
+        self, method: str, path: str, params: dict | None = None
+    ) -> httpx.Response | None:
         response = self._execute_request_with_retries(method, path, params)
         if response is None:
             return None
