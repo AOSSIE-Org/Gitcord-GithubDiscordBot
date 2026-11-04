@@ -7,6 +7,7 @@ from typing import Any
 
 from ghdcbot.config.access import cfg_get
 from ghdcbot.engine.issue_assignment import resolve_github_to_discord
+from ghdcbot.engine.notifications import _sanitize_discord_title
 from ghdcbot.engine.pr_status import (
     get_configured_repo_names,
     is_repo_allowed,
@@ -67,7 +68,7 @@ def format_single_issue_entry(
     - Labels (if any)
     """
     number = issue.get("number", "?")
-    title = (issue.get("title") or "No title").strip()
+    title = _sanitize_discord_title((issue.get("title") or "No title").strip())
     url = issue.get("html_url") or f"https://github.com/{org}/{repo}/issues/{number}"
     suppressed_url = _suppress_discord_embed(str(url))
 
@@ -86,7 +87,7 @@ def format_single_issue_entry(
     # Labels
     raw_labels = issue.get("labels") or []
     label_names = [
-        lbl.get("name")
+        _sanitize_discord_title(str(lbl["name"]))
         for lbl in raw_labels
         if isinstance(lbl, dict) and lbl.get("name")
     ]
