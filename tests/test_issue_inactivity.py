@@ -764,6 +764,180 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "reminded"
         assert rec["escalated_at"] is None
 
+    def test_unverified_contributor_stage_1_posts_comment_and_records_reminder(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Unverified contributor receives a Stage 1 check-in warning comment on GitHub and records reminder."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.create_issue_comment.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.create_issue_comment.assert_called_once()
+        call_args = github_writer.create_issue_comment.call_args[0]
+        assert call_args[0] == "AOSSIE-Org"
+        assert call_args[1] == "Gitcord"
+        assert call_args[2] == 42
+        assert "@unverified_bob you were assigned to this issue 7 days ago" in call_args[3]
+
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "unverified_bob")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
+    def test_unverified_contributor_stage_1_dry_run_records_audit_event_without_comment(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """In dry-run mode, Stage 1 records check-in audit event for unverified contributor without posting comment."""
+        github_reader, github_writer, discord_writer, storage, _, config = setup_env
+        dry_run_policy = MutationPolicy(mode=RunMode.DRY_RUN, github_write_allowed=False, discord_write_allowed=False)
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=dry_run_policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        github_writer.create_issue_comment.assert_not_called()
+        discord_writer.send_dm.assert_not_called()
+        assert len(storage.audit_events) == 1
+        assert storage.audit_events[0]["action"] == "issue_inactivity_checkin_dry_run"
+        assert storage.audit_events[0]["github_user"] == "unverified_bob"
+        assert storage.audit_events[0]["discord_user_id"] is None
+
+    def test_unverified_contributor_stage_2_escalates_and_unassigns(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Unverified contributor with recorded reminder is unassigned after escalate_delta without DM."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+        reminded_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "unverified_bob", reminded_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.unassign_issue.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        github_writer.unassign_issue.assert_called_once_with("AOSSIE-Org", "Gitcord", 42, "unverified_bob")
+        discord_writer.send_dm.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "unverified_bob")
+        assert rec is not None
+        assert rec["status"] == "unassigned"
+        assert rec["escalated_at"] is not None
+
+    def test_unverified_contributor_receives_stage_1_comment_even_if_first_seen_past_14_days(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Unverified contributor inactive for 14+ days receives Stage 1 warning comment before Stage 2 unassign."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.create_issue_comment.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # Must NOT unassign without prior warning comment
+        github_writer.unassign_issue.assert_not_called()
+        github_writer.create_issue_comment.assert_called_once()
+        discord_writer.send_dm.assert_not_called()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "unverified_bob")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
     def test_activity_after_reminder_resets_clock_when_auto_unassign_disabled(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
@@ -809,6 +983,48 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "assigned"
         assert rec["reminder_sent_at"] is None
         assert rec["last_activity_at"] == reply_at.isoformat()
+
+    def test_verified_contributor_receives_stage_1_dm_even_if_first_seen_past_14_days(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Verified contributor must always receive Stage 1 reminder DM before Stage 2 unassignment."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        # Must NOT unassign without prior reminder DM
+        github_writer.unassign_issue.assert_not_called()
+        discord_writer.send_dm.assert_called_once()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
 
     def test_no_activity_after_reminder_rechecked_once_per_window_when_auto_unassign_disabled(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
