@@ -1,7 +1,7 @@
 """Tests for inactive issue check-in, reminder, and escalation lifecycle."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 
@@ -2053,20 +2053,22 @@ class TestGitHubRestAdapterInactivityHelpers:
 
     def test_has_write_access_via_collaborator_permission(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"permission": "admin"}
-        adapter._request = MagicMock(return_value=mock_resp)
+        adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "mentor_lead") is True
 
     def test_has_write_access_via_org_membership(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
-        def mock_request(method: str, path: str, **kwargs):
+        def mock_request(method: str, path: str, *args, **kwargs):
             resp = MagicMock()
             if "collaborators" in path:
                 resp.status_code = 404
@@ -2074,29 +2076,325 @@ class TestGitHubRestAdapterInactivityHelpers:
                 resp.status_code = 204
             return resp
 
-        adapter._request = MagicMock(side_effect=mock_request)
+        adapter._request = create_autospec(adapter._request, side_effect=mock_request)
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is True
 
     def test_has_write_access_returns_false_when_not_collaborator_or_member(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
-        def mock_request(method: str, path: str, **kwargs):
+        def mock_request(method: str, path: str, *args, **kwargs):
             resp = MagicMock()
             if "collaborators" in path or "members" in path:
                 resp.status_code = 404
             return resp
 
-        adapter._request = MagicMock(side_effect=mock_request)
+        adapter._request = create_autospec(adapter._request, side_effect=mock_request)
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "external_contributor") is False
 
     def test_has_write_access_returns_none_on_api_error(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 502
-        adapter._request = MagicMock(return_value=mock_resp)
+        adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "someone") is None
+
+    def test_permission_checks_call_helper_with_correct_arguments(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+        adapter._request = create_autospec(adapter._request)
+
+        # 1. check_user_permission call
+        mock_perm_resp = MagicMock()
+        mock_perm_resp.status_code = 200
+        mock_perm_resp.json.return_value = {"permission": "read"}
+        adapter._request.return_value = mock_perm_resp
+
+        perm = adapter.check_user_permission("AOSSIE-Org", "Gitcord", "alice")
+        assert perm == "read"
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/alice/permission",
+            params=None,
+            allow_404=True,
+        )
+
+        # 2. has_write_access call
+        adapter._request.reset_mock()
+        mock_404_resp = MagicMock()
+        mock_404_resp.status_code = 404
+        adapter._request.return_value = mock_404_resp
+
+        has_write = adapter.has_write_access("AOSSIE-Org", "Gitcord", "bob")
+        assert has_write is False
+        assert adapter._request.call_count == 2
+        adapter._request.assert_any_call(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/bob/permission",
+            params=None,
+            allow_404=True,
+        )
+        adapter._request.assert_any_call(
+            "GET",
+            "/orgs/AOSSIE-Org/members/bob",
+            params=None,
+            allow_404=True,
+        )
+
+    def test_check_user_permission_levels_and_status_codes_against_http_layer(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        # Direct permission levels
+        for level in ("admin", "maintain", "write", "triage", "read", "none"):
+            resp = MagicMock(status_code=200, headers={})
+            resp.json.return_value = {"permission": level}
+            mock_client.request.return_value = resp
+            assert adapter.check_user_permission("AOSSIE-Org", "Gitcord", "user1") == level
+
+        # user.permissions dict mapping: push -> write, pull -> read
+        perms_map = [
+            ("admin", "admin"),
+            ("maintain", "maintain"),
+            ("push", "write"),
+            ("triage", "triage"),
+            ("pull", "read"),
+        ]
+        for key, expected in perms_map:
+            resp = MagicMock(status_code=200, headers={})
+            resp.json.return_value = {"user": {"permissions": {key: True}}}
+            mock_client.request.return_value = resp
+            assert adapter.check_user_permission("AOSSIE-Org", "Gitcord", "user2") == expected
+
+        # 404 -> not a collaborator, returns 'none'
+        resp_404 = MagicMock(status_code=404, headers={})
+        mock_client.request.return_value = resp_404
+        assert adapter.check_user_permission("AOSSIE-Org", "Gitcord", "external") == "none"
+
+        # 401 and 403 -> token lacks access, returns None
+        for code in (401, 403):
+            resp_err = MagicMock(status_code=code, headers={}, text="denied")
+            mock_client.request.return_value = resp_err
+            assert adapter.check_user_permission("AOSSIE-Org", "Gitcord", "user3") is None
+
+        # Empty inputs
+        assert adapter.check_user_permission("AOSSIE-Org", "Gitcord", "") is None
+        assert adapter.check_user_permission("AOSSIE-Org", "", "user") is None
+
+    def test_has_write_access_levels_and_status_codes_against_http_layer(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        # 1. Elevated collaborator permissions -> True without checking org membership
+        for level in ("admin", "maintain", "write"):
+            mock_client.reset_mock()
+            resp = MagicMock(status_code=200, headers={})
+            resp.json.return_value = {"permission": level}
+            mock_client.request.return_value = resp
+            assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "maintainer") is True
+            assert mock_client.request.call_count == 1
+
+        # 2. Non-elevated collaborator ("read") but org member (204) -> True
+        def mock_read_member(method: str, path: str, **kwargs):
+            if "collaborators" in path:
+                r = MagicMock(status_code=200, headers={})
+                r.json.return_value = {"permission": "read"}
+                return r
+            if "members" in path:
+                return MagicMock(status_code=204, headers={})
+            return MagicMock(status_code=404, headers={})
+
+        mock_client.request.side_effect = mock_read_member
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_user") is True
+
+        # 3. Not a collaborator (404) and not an org member (404) -> False
+        def mock_external(method: str, path: str, **kwargs):
+            return MagicMock(status_code=404, headers={})
+
+        mock_client.request.side_effect = mock_external
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "ext_contributor") is False
+
+        # 4. Error on collaborator check (403) and not org member (404) -> None (inconclusive)
+        def mock_collab_error(method: str, path: str, **kwargs):
+            if "collaborators" in path:
+                return MagicMock(status_code=403, headers={}, text="Forbidden")
+            return MagicMock(status_code=404, headers={})
+
+        mock_client.request.side_effect = mock_collab_error
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "unknown") is None
+
+        # 5. Collaborator 404, but org membership returns 502/error -> None (inconclusive)
+        def mock_org_error(method: str, path: str, **kwargs):
+            if "collaborators" in path:
+                return MagicMock(status_code=404, headers={})
+            return MagicMock(status_code=502, headers={}, reason_phrase="Bad Gateway")
+
+        mock_client.request.side_effect = mock_org_error
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "unknown2") is None
+
+        # 6. Empty username -> False
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "") is False
+
+    def test_inactivity_lifecycle_processes_contributor_with_rest_adapter(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        # External contributor: 404 for collaborator check, 404 for org membership
+        def mock_http(method: str, path: str, **kwargs):
+            if "collaborators" in path or "members" in path:
+                return MagicMock(status_code=404, headers={})
+            if "issues" in path:
+                r = MagicMock(status_code=200, headers={})
+                r.json.return_value = []
+                return r
+            return MagicMock(status_code=404, headers={})
+
+        mock_client.request.side_effect = mock_http
+
+        storage = MockStorage()
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="12345", github_user="active_contrib"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+        storage.track_issue_assignment("Gitcord", 77, "active_contrib", assigned_at)
+
+        adapter.list_open_issues = MagicMock(return_value=[{
+            "repo": "Gitcord",
+            "number": 77,
+            "title": "Fix something",
+            "assignees": [{"login": "active_contrib"}],
+            "created_at": assigned_at.isoformat(),
+        }])
+        adapter.list_org_repo_names = MagicMock(return_value=["Gitcord"])
+        adapter.list_pull_requests_for_author = MagicMock(return_value=[])
+        adapter.get_author_prs_for_inactivity = MagicMock(return_value=[])
+        adapter.get_issue_comments = MagicMock(return_value=[])
+
+        discord_writer = MagicMock()
+        discord_writer.send_dm.return_value = True
+        github_writer = MagicMock()
+        policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+        config = NotificationConfig(issue_inactivity_reminders=True, issue_inactivity_days=7)
+
+        run_issue_inactivity_lifecycle(
+            github_reader=adapter,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        rec = storage.get_issue_inactivity_record("Gitcord", 77, "active_contrib")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
+    def test_inactivity_lifecycle_skips_write_access_user_with_rest_adapter(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        # Maintainer: 200 admin for collaborator check
+        resp = MagicMock(status_code=200, headers={})
+        resp.json.return_value = {"permission": "admin"}
+        mock_client.request.return_value = resp
+
+        storage = MockStorage()
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="12345", github_user="admin_user"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+        storage.track_issue_assignment("Gitcord", 88, "admin_user", assigned_at)
+
+        adapter.list_open_issues = MagicMock(return_value=[{
+            "repo": "Gitcord",
+            "number": 88,
+            "title": "Maintainer task",
+            "assignees": [{"login": "admin_user"}],
+            "created_at": assigned_at.isoformat(),
+        }])
+        adapter.list_org_repo_names = MagicMock(return_value=["Gitcord"])
+
+        discord_writer = MagicMock()
+        github_writer = MagicMock()
+        policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+        config = NotificationConfig(issue_inactivity_reminders=True, issue_inactivity_days=7)
+
+        run_issue_inactivity_lifecycle(
+            github_reader=adapter,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        github_writer.unassign_issue.assert_not_called()
+
+    def test_inactivity_lifecycle_logs_warning_on_permission_exception(self, caplog) -> None:
+        github_reader = MagicMock()
+        github_reader.has_write_access.side_effect = TypeError("missing params")
+        github_reader.check_user_permission.side_effect = TypeError("missing params")
+
+        storage = MockStorage()
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="12345", github_user="test_dev"))
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=20)
+        storage.track_issue_assignment("Gitcord", 99, "test_dev", assigned_at)
+
+        github_reader.list_open_issues.return_value = [{
+            "repo": "Gitcord",
+            "number": 99,
+            "title": "Exception task",
+            "assignees": [{"login": "test_dev"}],
+            "created_at": assigned_at.isoformat(),
+        }]
+        github_reader.list_org_repo_names.return_value = ["Gitcord"]
+
+        discord_writer = MagicMock()
+        github_writer = MagicMock()
+        policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+        config = NotificationConfig(issue_inactivity_reminders=True, issue_inactivity_days=7)
+
+        caplog.set_level("WARNING")
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_not_called()
+        # Verify that the exception was logged at WARNING level, not swallowed at DEBUG
+        warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("Failed to check write access for assignee in Gitcord: test_dev" in m for m in warning_messages)
+        assert any("Failed to check user permission for assignee in Gitcord: test_dev" in m for m in warning_messages)
+        assert any("Skipping inactivity check for assignee due to inconclusive permission check" in m for m in warning_messages)
+
 

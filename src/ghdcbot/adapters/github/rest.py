@@ -446,6 +446,8 @@ class GitHubRestAdapter:
         response = self._request(
             "GET",
             f"/repos/{org}/{repo_name}/collaborators/{user}/permission",
+            params=None,
+            allow_404=True,
         )
         if response is None:
             return None
@@ -460,7 +462,11 @@ class GitHubRestAdapter:
                     perms = user_info.get("permissions") or {}
                     for p in ("admin", "maintain", "push", "triage", "pull"):
                         if perms.get(p):
-                            return "write" if p == "push" else p
+                            if p == "push":
+                                return "write"
+                            if p == "pull":
+                                return "read"
+                            return p
         elif response.status_code == 404:
             return "none"
         return None
@@ -475,7 +481,7 @@ class GitHubRestAdapter:
         if perm in {"admin", "maintain", "write"}:
             return True
         # Check org membership
-        org_resp = self._request("GET", f"/orgs/{org}/members/{user}")
+        org_resp = self._request("GET", f"/orgs/{org}/members/{user}", params=None, allow_404=True)
         if org_resp is not None and org_resp.status_code == 204:
             return True
         if perm is None or org_resp is None or org_resp.status_code != 404:
@@ -2052,7 +2058,7 @@ class GitHubRestAdapter:
         self,
         method: str,
         path: str,
-        params: dict,
+        params: dict | None = None,
         *,
         json_body: dict | None = None,
     ) -> httpx.Response | None:
@@ -2150,9 +2156,10 @@ class GitHubRestAdapter:
         self,
         method: str,
         path: str,
-        params: dict,
+        params: dict | None = None,
         *,
         json_body: dict | None = None,
+        allow_404: bool = False,
     ) -> httpx.Response | None:
         response = self._execute_request_with_retries(
             method, path, params, json_body=json_body
@@ -2180,12 +2187,16 @@ class GitHubRestAdapter:
             self._log_permission_issue(path, response)
             return None
         if response.status_code == 404:
-            self._log_not_found(path, response)
-            return None
+            if not allow_404:
+                self._log_not_found(path, response)
+                return None
+            return response
 
         return response
 
-    def _request_with_status(self, method: str, path: str, params: dict) -> httpx.Response | None:
+    def _request_with_status(
+        self, method: str, path: str, params: dict | None = None
+    ) -> httpx.Response | None:
         response = self._execute_request_with_retries(method, path, params)
         if response is None:
             return None

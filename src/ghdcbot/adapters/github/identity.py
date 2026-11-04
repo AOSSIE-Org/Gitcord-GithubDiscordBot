@@ -109,7 +109,7 @@ class GitHubIdentityReader:
         # Keep this simple; searching is deterministic.
         return code in text
 
-    def _request(self, method: str, path: str, params: dict) -> httpx.Response | None:
+    def _request(self, method: str, path: str, params: dict | None = None) -> httpx.Response | None:
         try:
             response = self._client.request(method, path, params=params)
         except httpx.HTTPError as exc:

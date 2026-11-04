@@ -307,8 +307,15 @@ def run_issue_inactivity_lifecycle(
                     if res is False or (isinstance(res, bool) and not res):
                         permission_cache[cache_key] = False
                         return False
-                except Exception:
-                    logger.debug("Failed to check write access for %s", login, exc_info=True)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to check write access for assignee in %s: %s (%s)",
+                        repo_name,
+                        login,
+                        exc,
+                        exc_info=True,
+                        extra={"repo": repo_name, "assignee": login, "error": str(exc)},
+                    )
 
             # 2. Fallback check: github_reader.check_user_permission
             check_perm_fn = getattr(github_reader, "check_user_permission", None)
@@ -323,8 +330,15 @@ def run_issue_inactivity_lifecycle(
                         if perm_lower in {"triage", "read", "none"}:
                             permission_cache[cache_key] = False
                             return False
-                except Exception:
-                    logger.debug("Failed to check user permission for %s", login, exc_info=True)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to check user permission for assignee in %s: %s (%s)",
+                        repo_name,
+                        login,
+                        exc,
+                        exc_info=True,
+                        extra={"repo": repo_name, "assignee": login, "error": str(exc)},
+                    )
 
             return None
 
