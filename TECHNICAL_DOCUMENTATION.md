@@ -290,6 +290,8 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
    └─> Update cursor to max(created_at); repos that could not be read in full
        (e.g. a 403 or exhausted retries) keep a per-repo restart point (`github:retry:<repo>`)
        and are re-read from it on the next sync
+       (if the repo listing itself is cut short, or storage cannot keep restart points,
+       the global cursor is held instead)
 
 4. Compute Scores
    └─> Load contributions from period_start to period_end

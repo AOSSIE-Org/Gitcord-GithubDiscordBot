@@ -221,6 +221,8 @@ class SqliteStorage:
         stored = 0
         with self._connect() as conn:
             for event in events:
+                if _merge_already_stored(conn, event):
+                    continue
                 created_at = _ensure_utc(event.created_at).isoformat()
                 payload_json = json.dumps(event.payload, separators=(",", ":"))
                 cur = conn.execute(
@@ -1711,6 +1713,30 @@ class SqliteStorage:
                 )
 
 
+def _merge_already_stored(conn: sqlite3.Connection, event: ContributionEvent) -> bool:
+    """Whether this ``pr_merged`` event repeats a merge that is already stored.
+
+    A pull request merges once, but re-reading it (for example when a repo is retried after
+    an incomplete sync) can yield a different payload, such as an edited title, so the
+    payload-based dedupe key alone would store the merge twice and double count it.
+    """
+    if event.event_type != "pr_merged":
+        return False
+    pr_number = event.payload.get("pr_number")
+    if pr_number is None:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1 FROM contributions
+        WHERE event_type = 'pr_merged' AND repo = ?
+          AND json_extract(payload_json, '$.pr_number') = ?
+        LIMIT 1
+        """,
+        (event.repo, pr_number),
+    ).fetchone()
+    return row is not None
+
+
 def _dedupe_contributions(conn: sqlite3.Connection) -> None:
     """Key contributions by identity, drop repeated rows, and enforce uniqueness.
 
@@ -1759,6 +1785,10 @@ def _dedupe_contributions(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_contributions_dedupe_key "
         "ON contributions (dedupe_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contributions_event_repo "
+        "ON contributions (event_type, repo)"
     )
 
 

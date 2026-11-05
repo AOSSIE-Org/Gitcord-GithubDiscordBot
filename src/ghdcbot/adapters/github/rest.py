@@ -127,6 +127,8 @@ class GitHubRestAdapter:
         # Repos whose event discovery hit a fetch failure during the current sync. The
         # orchestrator must not advance the sync cursor past these repos' events.
         self._sync_incomplete_repos: set[str] = set()
+        # True when the org repo listing was cut short, so some repos were never ingested.
+        self._repo_listing_incomplete = False
         self._ingesting_repo: str | None = None
         self._successful_issue_listing_repos: set[str] = set()
         self._failed_issue_listing_repos: set[str] = set()
@@ -154,12 +156,18 @@ class GitHubRestAdapter:
         """Repo names whose last ``list_contributions`` run could not read every page."""
         return frozenset(self._sync_incomplete_repos)
 
+    @property
+    def sync_repo_listing_incomplete(self) -> bool:
+        """Whether the repo listing for the last sync could not be read in full."""
+        return self._repo_listing_incomplete
+
     def peek_repos_for_sync(self) -> int:
         self._ensure_sync_repos_cached()
         return len(self._sync_cached_repos or [])
 
     def _ensure_sync_repos_cached(self) -> None:
         if self._sync_cached_repos is None:
+            self._repo_listing_incomplete = False
             self._sync_cached_repos = list(self._list_repos())
 
     def _reset_sync_tracking(self) -> None:
@@ -1248,6 +1256,7 @@ class GitHubRestAdapter:
         user_fallback = _load_user_fallback()
         if user_fallback and status in {401, 403}:
             self._logger.info("Falling back to user repositories (not an org member)")
+            self._repo_listing_incomplete = False
             repos, _ = self._list_repos_from_path("/user/repos")
         self._last_repo_count = len(repos)
         if not repos:
@@ -2057,8 +2066,10 @@ class GitHubRestAdapter:
         params = {"per_page": 100, "page": 1}
         response = self._request_with_status("GET", path, params=params)
         if response is None:
+            self._repo_listing_incomplete = True
             return [], None
         if response.status_code != 200:
+            self._repo_listing_incomplete = True
             return [], response.status_code
         data = response.json()
         if isinstance(data, list):
@@ -2082,12 +2093,14 @@ class GitHubRestAdapter:
             if response is None:
                 if raise_on_error:
                     raise GitHubPaginationError(f"GitHub request failed: {path}")
+                self._repo_listing_incomplete = True
                 return
             if response.status_code != 200:
                 if raise_on_error:
                     raise GitHubPaginationError(
                         f"GitHub request failed with status {response.status_code}: {path}"
                     )
+                self._repo_listing_incomplete = True
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
