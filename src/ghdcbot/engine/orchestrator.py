@@ -37,6 +37,55 @@ from ghdcbot.engine.reporting import write_reports, write_activity_report
 from ghdcbot.logging.sync_context import SyncSession
 
 
+_REPO_RETRY_CURSOR_PREFIX = "github:retry:"
+
+
+def _load_repo_retry_cursors(storage: Any, period_start: datetime) -> dict[str, datetime]:
+    """Per-repo restart points left by earlier syncs that could not read a repo fully.
+
+    Points older than the activity window are raised to its start: older events no longer
+    count towards scores, so retrying them forever would only cost API quota.
+    """
+    list_cursors = getattr(storage, "list_cursors", None)
+    if not callable(list_cursors):
+        return {}
+    return {
+        source[len(_REPO_RETRY_CURSOR_PREFIX) :]: max(cursor, period_start)
+        for source, cursor in list_cursors(_REPO_RETRY_CURSOR_PREFIX).items()
+    }
+
+
+def _save_repo_retry_cursors(
+    storage: Any,
+    incomplete_repos: frozenset[str],
+    previous: dict[str, datetime],
+    prior_cursor: datetime,
+    period_start: datetime,
+    logger: logging.Logger,
+) -> None:
+    """Persist restart points for repos that were not fully read; clear the rest.
+
+    The global cursor still moves forward for healthy repos. An incomplete repo keeps its
+    earlier restart point (or the pre-sync cursor), so events its failed requests hid are
+    fetched again instead of falling behind the cursor for good. Re-reading is safe because
+    contributions and notification claims are deduplicated.
+    """
+    set_cursor = getattr(storage, "set_cursor", None)
+    delete_cursor = getattr(storage, "delete_cursor", None)
+    if not callable(set_cursor) or not callable(delete_cursor):
+        return
+    for repo in sorted(incomplete_repos):
+        restart = max(min(previous.get(repo, prior_cursor), prior_cursor), period_start)
+        set_cursor(f"{_REPO_RETRY_CURSOR_PREFIX}{repo}", restart)
+    for repo in sorted(set(previous) - incomplete_repos):
+        delete_cursor(f"{_REPO_RETRY_CURSOR_PREFIX}{repo}")
+    if incomplete_repos:
+        logger.warning(
+            "GitHub ingestion incomplete for some repositories; they will be retried",
+            extra={"repos": sorted(incomplete_repos)},
+        )
+
+
 @dataclass(frozen=True)
 class Orchestrator:
     github_reader: GitHubReader
@@ -72,7 +121,21 @@ class Orchestrator:
         repos_total = peek_repos() if callable(peek_repos) else 0
         sync.log_started(prior_cursor, repos_total)
 
-        contributions = list(self.github_reader.list_contributions(prior_cursor))
+        # Repos whose previous ingestion was incomplete are re-read from where they stopped.
+        retry_from = _load_repo_retry_cursors(self.storage, period_start)
+        if retry_from:
+            logger.info(
+                "Retrying incompletely ingested repositories",
+                extra={"repos": sorted(retry_from)},
+            )
+            contributions = list(
+                self.github_reader.list_contributions(prior_cursor, repo_since=retry_from)
+            )
+        else:
+            contributions = list(self.github_reader.list_contributions(prior_cursor))
+        incomplete_repos = frozenset(
+            getattr(self.github_reader, "sync_incomplete_repos", None) or ()
+        )
         stored = self.storage.record_contributions(contributions)
         # Compute the new cursor position but do not persist it yet.
         # The cursor is saved after notifications complete so that a
@@ -196,6 +259,14 @@ class Orchestrator:
         # prior_cursor and the next run will re-fetch and re-notify those events.
         if cursor_after > prior_cursor:
             self.storage.set_cursor("github", cursor_after)
+        _save_repo_retry_cursors(
+            self.storage,
+            incomplete_repos,
+            retry_from,
+            prior_cursor,
+            period_start,
+            logger,
+        )
 
         if not issues and not prs and not contributions:
             logging.getLogger("Planning").info(

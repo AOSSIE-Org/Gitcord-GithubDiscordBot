@@ -394,6 +394,19 @@ class SqliteStorage:
                 (source, cursor_utc.isoformat()),
             )
 
+    def list_cursors(self, prefix: str) -> dict[str, datetime]:
+        """Return every cursor whose source starts with ``prefix``, keyed by source."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source, cursor FROM cursors WHERE substr(source, 1, ?) = ?",
+                (len(prefix), prefix),
+            ).fetchall()
+        return {row["source"]: _parse_utc(row["cursor"]) for row in rows}
+
+    def delete_cursor(self, source: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM cursors WHERE source = ?", (source,))
+
     def create_identity_claim(
         self,
         discord_user_id: str,
