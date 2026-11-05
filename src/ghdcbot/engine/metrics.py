@@ -22,7 +22,9 @@ ISSUE_ENGAGEMENT_COMMENT_WEIGHT = 0.5
 
 def same_github_user(first: str | None, second: str | None) -> bool:
     """True when both are the same GitHub login (logins are case-insensitive)."""
-    return bool(first and second) and first.strip().lower() == second.strip().lower()
+    first_login = (first or "").strip().lower()
+    second_login = (second or "").strip().lower()
+    return bool(first_login) and first_login == second_login
 
 
 @dataclass
@@ -57,11 +59,14 @@ def get_contribution_metrics(
         for e in events
         if period_start <= e.created_at <= period_end
     ]
-    # Aggregate per user
+    # Aggregate per user; logins are case-insensitive, so casing variants share a bucket
     buckets: dict[str, dict[str, int | float]] = {}
+    display_names: dict[str, str] = {}
     for e in in_window:
+        key = e.github_user.strip().lower()
+        display_names.setdefault(key, e.github_user)
         b = buckets.setdefault(
-            e.github_user,
+            key,
             {
                 "prs_opened": 0,
                 "prs_merged": 0,
@@ -83,7 +88,7 @@ def get_contribution_metrics(
             b["comments"] += 1
 
     result = []
-    for user, b in sorted(buckets.items(), key=lambda x: x[0]):
+    for key, b in sorted(buckets.items(), key=lambda x: x[0]):
         issues = int(b["issues_opened"])
         comments = int(b["comments"])
         issue_engagement = (
@@ -92,7 +97,7 @@ def get_contribution_metrics(
         )
         result.append(
             UserMetrics(
-                github_user=user,
+                github_user=display_names[key],
                 prs_opened=int(b["prs_opened"]),
                 prs_merged=int(b["prs_merged"]),
                 reviews_submitted=int(b["reviews_submitted"]),
