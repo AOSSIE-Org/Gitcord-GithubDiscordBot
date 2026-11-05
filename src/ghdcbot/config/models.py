@@ -119,8 +119,26 @@ class NotificationConfig(BaseModel):
     issue_inactivity_escalate_days: int = 7  # Additional days of inactivity after reminder before escalation/unassignment
     issue_inactivity_auto_unassign: bool = False  # Auto-unassign after escalate_days if still inactive
     issue_inactivity_comment_on_unassign: bool = False  # Post explanatory comment on GitHub issue when unassigning
+    # 24-Hour Post-Merge Expiration & Cleanup (Opt-In Flag)
+    enable_merged_dm_cleanup: bool = False  # Stays off by default until explicitly enabled
+    merged_dm_cleanup_hours: int = 24  # Cleanup PR DM after this many hours post-merge
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_merged_dm_cleanup(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "ENABLE_MERGED_DM_CLEANUP" in data and "enable_merged_dm_cleanup" not in data:
+                data["enable_merged_dm_cleanup"] = data["ENABLE_MERGED_DM_CLEANUP"]
+        return data
+
+    @field_validator("merged_dm_cleanup_hours")
+    @classmethod
+    def validate_merged_dm_cleanup_hours(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("merged_dm_cleanup_hours must be positive")
+        return value
 
     @field_validator("coderabbit_reminder_after_hours")
     @classmethod

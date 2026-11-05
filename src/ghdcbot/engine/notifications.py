@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -15,7 +16,7 @@ from ghdcbot.engine import pr_timeline as prt
 logger = logging.getLogger(__name__)
 
 
-def send_notification_for_event(
+async def send_notification_for_event(
     event: ContributionEvent,
     storage: Storage,
     discord_writer: DiscordWriter,
@@ -171,6 +172,19 @@ def send_notification_for_event(
     if not message:
         return False
     
+    # Extract PR parameters if event payload contains them
+    pr_num = event.payload.get("pr_number")
+    pr_t = _sanitize_discord_title(event.payload.get("title", "")) if event.payload.get("title") else None
+
+    # Determine detail for PR milestone timeline
+    event_detail = ""
+    if event_type_key in ("pr_approved", "pr_changes_requested"):
+        event_detail = event.github_user or ""
+    elif event_type_key == "pr_merged":
+        event_detail = event.payload.get("base_branch") or ""
+    elif event_type_key == "pr_reopened":
+        event_detail = event.github_user or ""
+
     # Send notification (DM or channel)
     sent = _send_discord_notification(
         discord_writer,
@@ -178,6 +192,15 @@ def send_notification_for_event(
         message,
         config.channel_id,
         policy,
+        storage=storage,
+        repo=event.repo,
+        pr_number=pr_num,
+        pr_title=pr_t,
+        author_github=target_github_user,
+        event_type=event_type_key,
+        event_detail=event_detail,
+        event_time=event.created_at,
+        github_org=github_org,
     )
     
     if sent:
@@ -1878,12 +1901,217 @@ def _build_notification_message(
     return None
 
 
+_PR_MILESTONE_CONFIG = {
+    "pr_opened": {
+        "status": "in_review",
+        "badge": "⏳ In Review",
+        "icon": "⏳",
+        "label": "PR Opened",
+        "color": 0x0969DA,
+    },
+    "pr_review_requested": {
+        "status": "in_review",
+        "badge": "⏳ In Review",
+        "icon": "👀",
+        "label": "Review Requested",
+        "color": 0x0969DA,
+    },
+    "pr_changes_requested": {
+        "status": "changes_requested",
+        "badge": "⚠️ Changes Requested",
+        "icon": "⚠️",
+        "label": "Changes Requested",
+        "color": 0xFB8F44,
+    },
+    "pr_approved": {
+        "status": "approved",
+        "badge": "✅ Approved",
+        "icon": "✅",
+        "label": "PR Approved",
+        "color": 0x2DA44E,
+    },
+    "pr_merged": {
+        "status": "merged",
+        "badge": "🟣 Merged",
+        "icon": "🟣",
+        "label": "PR Merged",
+        "color": 0x8250DF,
+    },
+    "pr_closed": {
+        "status": "closed",
+        "badge": "🔴 Closed",
+        "icon": "🔴",
+        "label": "PR Closed",
+        "color": 0xCF222E,
+    },
+    "pr_reopened": {
+        "status": "reopened",
+        "badge": "🔄 Reopened",
+        "icon": "🔄",
+        "label": "PR Reopened",
+        "color": 0x0969DA,
+    },
+}
+
+
+def _build_lifecycle_breadcrumbs(current_status: str) -> str:
+    """Build the lifecycle progress breadcrumb string."""
+    stages = [
+        ("in_review", "⏳ In Review"),
+        ("changes_requested", "⚠️ Changes Requested"),
+        ("approved", "✅ Approved"),
+        ("merged", "🟣 Merged"),
+    ]
+    parts = []
+    for key, label in stages:
+        if key == current_status:
+            parts.append(f"**[{label}]**")
+        else:
+            parts.append(label)
+    result = " ➔ ".join(parts)
+    if current_status == "closed":
+        result += " ➔ **[🔴 Closed]**"
+    elif current_status == "reopened":
+        result = "**[🔄 Reopened]** ➔ " + result
+    return result
+
+
+def build_pr_dm_lifecycle_card(
+    repo: str,
+    pr_number: int,
+    pr_title: str,
+    github_org: str,
+    status: str,
+    timeline_entries: list[dict],
+    author_github: str | None = None,
+) -> tuple[str, list[dict]]:
+    """Build the Live PR Lifecycle Card embed for contributor DMs."""
+    conf = None
+    for item in _PR_MILESTONE_CONFIG.values():
+        if item["status"] == status:
+            conf = item
+            break
+    if not conf:
+        conf = _PR_MILESTONE_CONFIG["pr_opened"]
+
+    color = conf["color"]
+    status_badge = conf["badge"]
+    breadcrumbs = _build_lifecycle_breadcrumbs(status)
+    clean_title = _sanitize_discord_title(pr_title or "Untitled")
+
+    desc_lines = [
+        f"**Status:** {status_badge}",
+        f"**Lifecycle:** {breadcrumbs}",
+        "",
+        f"**Repository:** `{github_org}/{repo}`",
+        f"**PR:** [#{pr_number} – {clean_title}](https://github.com/{github_org}/{repo}/pull/{pr_number})",
+        "",
+        "**Activity Timeline:**",
+    ]
+
+    for entry in timeline_entries:
+        badge = entry.get("badge", "•")
+        lbl = entry.get("label", "")
+        actor = entry.get("actor", "")
+        actor_str = f" by `{actor}`" if actor else ""
+        detail = entry.get("detail", "")
+        detail_str = f" ({detail})" if detail and detail != actor else ""
+        ts = entry.get("timestamp")
+        time_str = f" • <t:{int(ts)}:R>" if ts else ""
+        desc_lines.append(f"• {badge} **{lbl}**{actor_str}{detail_str}{time_str}")
+
+    embed = {
+        "title": f"PR #{pr_number} – {clean_title}"[:256],
+        "url": f"https://github.com/{github_org}/{repo}/pull/{pr_number}",
+        "description": "\n".join(desc_lines)[:4096],
+        "color": color,
+    }
+    return "", [embed]
+
+
+def cleanup_expired_merged_pr_dms(
+    storage: Storage,
+    discord_writer: DiscordWriter,
+    policy: MutationPolicy,
+    older_than_seconds: int = 86400,
+) -> int:
+    """Delete Discord DM messages and database records for merged PRs older than older_than_seconds.
+    
+    Safe with dry-run/observer mode: records would-be deletes in audit log without mutating Discord or DB.
+    Returns the number of cleaned up messages.
+    """
+    clean_logger = logging.getLogger("Notifications")
+    list_fn = getattr(storage, "list_expired_merged_pr_dm_messages", None)
+    if not callable(list_fn):
+        return 0
+    expired = list_fn(older_than_seconds=older_than_seconds)
+    if not expired:
+        return 0
+
+    cleaned = 0
+    del_dm_msg = getattr(discord_writer, "delete_message", None)
+    del_storage_fn = getattr(storage, "delete_pr_dm_message", None)
+
+    for item in expired:
+        repo = item["repo"]
+        pr_number = item["pr_number"]
+        discord_user_id = item["discord_user_id"]
+        channel_id = item["channel_id"]
+        message_id = item["message_id"]
+
+        if not policy.allow_discord_mutations:
+            clean_logger.info(
+                "[DRY-RUN / AUDIT] Would clean up merged PR DM",
+                extra={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "discord_user_id": discord_user_id,
+                    "message_id": message_id,
+                },
+            )
+            continue
+
+        if callable(del_dm_msg):
+            try:
+                del_dm_msg(channel_id, message_id)
+            except Exception as exc:
+                clean_logger.warning(
+                    "Failed to delete expired DM message from Discord",
+                    exc_info=True,
+                    extra={"error": str(exc), "channel_id": channel_id, "message_id": message_id},
+                )
+
+        if callable(del_storage_fn):
+            try:
+                del_storage_fn(repo, pr_number, discord_user_id)
+                cleaned += 1
+            except Exception as exc:
+                clean_logger.warning(
+                    "Failed to delete PR DM record from storage",
+                    exc_info=True,
+                    extra={"error": str(exc), "repo": repo, "pr_number": pr_number},
+                )
+
+    if cleaned:
+        clean_logger.info("Cleaned up expired merged PR DMs", extra={"count": cleaned})
+    return cleaned
+
+
 def _send_discord_notification(
     discord_writer: DiscordWriter,
     discord_user_id: str,
     message: str,
     channel_id: str | None,
     policy: MutationPolicy,
+    storage: Storage | None = None,
+    repo: str | None = None,
+    pr_number: int | None = None,
+    pr_title: str | None = None,
+    author_github: str | None = None,
+    event_type: str | None = None,
+    event_detail: str | None = None,
+    event_time: datetime | None = None,
+    github_org: str | None = None,
 ) -> bool:
     """Send notification via DM or channel. Returns True if sent."""
     if not policy.allow_discord_mutations:
@@ -1900,10 +2128,110 @@ def _send_discord_notification(
                 logger.warning("Failed to send channel notification", exc_info=True, extra={"error": str(exc)})
                 return False
     else:
+        # Check if this is a PR notification with storage backing
+        if repo and pr_number and storage and event_type in _PR_MILESTONE_CONFIG:
+            milestone = _PR_MILESTONE_CONFIG[event_type]
+            status = milestone["status"]
+            ts = int((event_time or datetime.now(timezone.utc)).timestamp())
+            entry_actor = author_github if event_type in ("pr_opened", "pr_reopened") else (event_detail or "")
+            new_entry = {
+                "badge": milestone["icon"],
+                "label": milestone["label"],
+                "actor": entry_actor,
+                "detail": event_detail or "",
+                "timestamp": ts,
+            }
+            merged_at_str = (event_time or datetime.now(timezone.utc)).isoformat() if status == "merged" else None
+
+            get_dm = getattr(storage, "get_pr_dm_message", None)
+            existing = get_dm(repo, pr_number, discord_user_id) if callable(get_dm) else None
+            
+            if existing:
+                try:
+                    prior_timeline = json.loads(existing.get("timeline_json") or "[]")
+                except Exception:
+                    prior_timeline = []
+                timeline_entries = prior_timeline + [new_entry]
+                effective_title = pr_title or existing.get("pr_title") or f"PR #{pr_number}"
+                effective_author = author_github or existing.get("author_github")
+                _, embeds = build_pr_dm_lifecycle_card(
+                    repo=repo,
+                    pr_number=pr_number,
+                    pr_title=effective_title,
+                    github_org=github_org or "GitHub",
+                    status=status,
+                    timeline_entries=timeline_entries,
+                    author_github=effective_author,
+                )
+                edit_msg = getattr(discord_writer, "edit_message", None)
+                if callable(edit_msg):
+                    try:
+                        edited = edit_msg(existing["channel_id"], existing["message_id"], message, embeds=embeds)
+                        if edited:
+                            save_dm = getattr(storage, "save_pr_dm_message", None)
+                            if callable(save_dm):
+                                save_dm(
+                                    repo=repo,
+                                    pr_number=pr_number,
+                                    discord_user_id=discord_user_id,
+                                    message_id=existing["message_id"],
+                                    channel_id=existing["channel_id"],
+                                    status=status,
+                                    pr_title=effective_title,
+                                    author_github=effective_author,
+                                    timeline_json=json.dumps(timeline_entries),
+                                    merged_at=merged_at_str or existing.get("merged_at"),
+                                )
+                            return True
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to edit existing DM notification",
+                            exc_info=True,
+                            extra={"error": str(exc)},
+                        )
+
+            # First DM for this PR or edit fallback
+            timeline_entries = [new_entry]
+            effective_title = pr_title or f"PR #{pr_number}"
+            _, embeds = build_pr_dm_lifecycle_card(
+                repo=repo,
+                pr_number=pr_number,
+                pr_title=effective_title,
+                github_org=github_org or "GitHub",
+                status=status,
+                timeline_entries=timeline_entries,
+                author_github=author_github,
+            )
+            create_dm = getattr(discord_writer, "create_dm_message", None)
+            if callable(create_dm):
+                try:
+                    dm_result = create_dm(discord_user_id, message, embeds=embeds)
+                    if dm_result:
+                        ch_id, msg_id = dm_result
+                        save_dm = getattr(storage, "save_pr_dm_message", None)
+                        if callable(save_dm):
+                            save_dm(
+                                repo=repo,
+                                pr_number=pr_number,
+                                discord_user_id=discord_user_id,
+                                message_id=msg_id,
+                                channel_id=ch_id,
+                                status=status,
+                                pr_title=effective_title,
+                                author_github=author_github,
+                                timeline_json=json.dumps(timeline_entries),
+                                merged_at=merged_at_str,
+                            )
+                        return True
+                except Exception as exc:
+                    logger.warning("Failed to create DM via create_dm_message", exc_info=True, extra={"error": str(exc)})
+
+        # Standard DM fallback (non-PR notifications or older writer interfaces)
         send_dm = getattr(discord_writer, "send_dm", None)
         if callable(send_dm):
             try:
-                return send_dm(discord_user_id, message)
+                sent = send_dm(discord_user_id, message)
+                return bool(sent)
             except Exception as exc:
                 logger.warning("Failed to send DM notification", exc_info=True, extra={"error": str(exc)})
                 return False
@@ -1967,7 +2295,15 @@ def run_coderabbit_reminders(
             continue
         message = _build_coderabbit_reminder_message(github_org, repo, pr_number, after_hours)
         sent = _send_discord_notification(
-            discord_writer, discord_user_id, message, config.channel_id, policy
+            discord_writer,
+            discord_user_id,
+            message,
+            config.channel_id,
+            policy,
+            storage=storage,
+            repo=repo,
+            pr_number=pr_number,
+            author_github=author,
         )
         if sent:
             event = ContributionEvent(

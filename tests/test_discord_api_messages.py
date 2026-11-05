@@ -179,3 +179,36 @@ def test_edit_message_non_success_status_returns_false(status_code: int) -> None
     )
 
     assert adapter.edit_message("chan-1", "msg-9", "x") is False
+
+
+def test_create_dm_message_success() -> None:
+    adapter, mock_client = _adapter()
+    # 1st call: create DM channel; 2nd call: post message
+    mock_client.request.side_effect = [
+        httpx.Response(200, json={"id": "dm-chan-9"}, request=httpx.Request("POST", "https://discord.com")),
+        httpx.Response(200, json={"id": "msg-88"}, request=httpx.Request("POST", "https://discord.com")),
+    ]
+    result = adapter.create_dm_message("user-1", "hello dm", embeds=[{"title": "Card"}])
+    assert result == ("dm-chan-9", "msg-88")
+    assert mock_client.request.call_count == 2
+
+
+def test_create_dm_message_channel_fail_returns_none() -> None:
+    adapter, mock_client = _adapter()
+    mock_client.request.return_value = httpx.Response(403, request=httpx.Request("POST", "https://discord.com"))
+    result = adapter.create_dm_message("user-1", "hello")
+    assert result is None
+
+
+def test_delete_message_success() -> None:
+    adapter, mock_client = _adapter()
+    mock_client.request.return_value = httpx.Response(204, request=httpx.Request("DELETE", "https://discord.com"))
+    assert adapter.delete_message("chan-1", "msg-1") is True
+    assert mock_client.request.call_args.args[:2] == ("DELETE", "/channels/chan-1/messages/msg-1")
+
+
+def test_delete_message_missing_ids_returns_false() -> None:
+    adapter, mock_client = _adapter()
+    assert adapter.delete_message("", "msg-1") is False
+    assert adapter.delete_message("chan-1", "") is False
+    mock_client.request.assert_not_called()
