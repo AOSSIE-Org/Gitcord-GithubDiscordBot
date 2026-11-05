@@ -20,6 +20,11 @@ ISSUE_ENGAGEMENT_ISSUE_WEIGHT = 1.0
 ISSUE_ENGAGEMENT_COMMENT_WEIGHT = 0.5
 
 
+def same_github_user(first: str | None, second: str | None) -> bool:
+    """True when both are the same GitHub login (logins are case-insensitive)."""
+    return bool(first and second) and first.strip().lower() == second.strip().lower()
+
+
 @dataclass
 class UserMetrics:
     """Per-user contribution metrics for a time window. Read-only, informational."""
@@ -120,7 +125,7 @@ def rank_by_activity(metrics: list[UserMetrics]) -> list[UserMetrics]:
 def get_rank_for_user(ranked: list[UserMetrics], github_user: str) -> int | None:
     """Return 1-based rank for the user, or None if not in list."""
     for i, m in enumerate(ranked, start=1):
-        if m.github_user == github_user:
+        if same_github_user(m.github_user, github_user):
             return i
     return None
 
@@ -155,7 +160,7 @@ def build_contribution_summary_message(
         metrics_list = get_contribution_metrics(storage, start, end)
         if days == 30:
             metrics_30 = metrics_list
-        user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
+        user_metrics = next((m for m in metrics_list if same_github_user(m.github_user, github_user)), None)
         parts.append(f"**Last {days} days:**\n{format_metrics_summary(user_metrics)}")
     if metrics_30 is None:
         metrics_30 = get_contribution_metrics(storage, end - timedelta(days=30), end)
