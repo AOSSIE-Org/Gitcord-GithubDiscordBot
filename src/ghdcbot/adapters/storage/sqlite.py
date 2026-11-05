@@ -5,7 +5,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -209,9 +209,157 @@ class SqliteStorage:
                     first_seen_after TEXT NOT NULL,
                     PRIMARY KEY (repo, pr_number, head_sha)
                 );
+                CREATE TABLE IF NOT EXISTS pr_dm_messages (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    discord_user_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'in_review',
+                    pr_title TEXT,
+                    author_github TEXT,
+                    timeline_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    merged_at TEXT,
+                    PRIMARY KEY (repo, pr_number, discord_user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pr_dm_messages_status ON pr_dm_messages (status);
+                CREATE INDEX IF NOT EXISTS idx_pr_dm_messages_discord_user ON pr_dm_messages (discord_user_id);
+                CREATE INDEX IF NOT EXISTS idx_pr_dm_messages_repo_pr ON pr_dm_messages (repo, pr_number);
+                CREATE INDEX IF NOT EXISTS idx_pr_dm_messages_merged_at ON pr_dm_messages (merged_at);
                 """
             )
             _add_pr_timeline_columns(conn)
+            _add_pr_dm_columns(conn)
+
+    def get_pr_dm_message(
+        self, repo: str, pr_number: int, discord_user_id: str
+    ) -> dict | None:
+        """Return the tracked live card for a (repo, PR, Discord user), if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT repo, pr_number, discord_user_id, message_id, channel_id,
+                       status, pr_title, author_github, timeline_json,
+                       created_at, updated_at, merged_at
+                FROM pr_dm_messages
+                WHERE repo = ? AND pr_number = ? AND discord_user_id = ?
+                """,
+                (repo, int(pr_number), str(discord_user_id)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_pr_dm_message(
+        self,
+        repo: str,
+        pr_number: int,
+        discord_user_id: str,
+        message_id: str,
+        channel_id: str,
+        status: str,
+        pr_title: str | None = None,
+        author_github: str | None = None,
+        timeline_json: str | None = None,
+        merged_at: str | None = None,
+    ) -> None:
+        """Create or update the live DM card record for a PR milestone."""
+        now = datetime.now(timezone.utc).isoformat()
+        normalized_merged_at = _normalize_announcement_created_at(merged_at)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pr_dm_messages
+                    (repo, pr_number, discord_user_id, message_id, channel_id,
+                     status, pr_title, author_github, timeline_json,
+                     created_at, updated_at, merged_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo, pr_number, discord_user_id) DO UPDATE SET
+                    message_id = excluded.message_id,
+                    channel_id = excluded.channel_id,
+                    status = excluded.status,
+                    pr_title = COALESCE(excluded.pr_title, pr_dm_messages.pr_title),
+                    author_github = COALESCE(
+                        excluded.author_github, pr_dm_messages.author_github
+                    ),
+                    timeline_json = COALESCE(
+                        excluded.timeline_json, pr_dm_messages.timeline_json
+                    ),
+                    updated_at = excluded.updated_at,
+                    merged_at = CASE
+                        WHEN excluded.status = 'merged'
+                        THEN COALESCE(excluded.merged_at, pr_dm_messages.merged_at)
+                        ELSE pr_dm_messages.merged_at
+                    END
+                """,
+                (
+                    repo,
+                    int(pr_number),
+                    str(discord_user_id),
+                    str(message_id),
+                    str(channel_id),
+                    status,
+                    pr_title,
+                    author_github,
+                    timeline_json or "[]",
+                    now,
+                    now,
+                    normalized_merged_at,
+                ),
+            )
+
+    def delete_pr_dm_message(
+        self, repo: str, pr_number: int, discord_user_id: str
+    ) -> bool:
+        """Delete the tracked DM card row after Discord cleanup."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM pr_dm_messages
+                WHERE repo = ? AND pr_number = ? AND discord_user_id = ?
+                """,
+                (repo, int(pr_number), str(discord_user_id)),
+            )
+        return cursor.rowcount > 0
+
+    def list_expired_merged_pr_dm_messages(
+        self, older_than_seconds: int = 86400
+    ) -> list[dict]:
+        """Return merged PR cards whose merge is older than the retention window."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max(0, older_than_seconds))
+        ).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT repo, pr_number, discord_user_id, message_id, channel_id,
+                       status, pr_title, author_github, merged_at, updated_at
+                FROM pr_dm_messages
+                WHERE status = 'merged'
+                  AND (
+                    (merged_at IS NOT NULL AND merged_at <= ?)
+                    OR (merged_at IS NULL AND updated_at <= ?)
+                  )
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_pr_dm_messages(self, discord_user_id: str | None = None) -> list[dict]:
+        """List tracked DM cards (optional filter by Discord user); newest first."""
+        query = (
+            "SELECT repo, pr_number, discord_user_id, message_id, channel_id, "
+            "status, pr_title, author_github, timeline_json, created_at, "
+            "updated_at, merged_at FROM pr_dm_messages"
+        )
+        params: tuple[object, ...] = ()
+        if discord_user_id is not None:
+            query += " WHERE discord_user_id = ?"
+            params = (str(discord_user_id),)
+        query += " ORDER BY updated_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     def record_contributions(self, events: Iterable[ContributionEvent]) -> int:
         """Store new events; events already stored (e.g. re-fetched at the sync cursor) are skipped.
@@ -1768,6 +1916,26 @@ def _add_pr_timeline_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_pr_channel_announcements_refresh "
         "ON pr_channel_announcements (needs_refresh)"
+    )
+
+
+_PR_DM_COLUMNS = (
+    "timeline_json TEXT NOT NULL DEFAULT '[]'",
+    "merged_at TEXT",
+)
+
+
+def _add_pr_dm_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration for databases created by an older preview build."""
+    for column in _PR_DM_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE pr_dm_messages ADD COLUMN {column}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pr_dm_messages_merged_at "
+        "ON pr_dm_messages (merged_at)"
     )
 
 
