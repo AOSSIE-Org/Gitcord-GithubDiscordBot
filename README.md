@@ -88,6 +88,7 @@ Gitcord is a local, offline‑first automation engine that reads GitHub activity
 8. [Docker Guide](docs/DOCKER.md) - Docker setup and mentor-friendly deployment
 9. [Handover (easy)](HANDOVER-EASY.txt) - One USB file: `gitcord-handover pack` → `restore`
 10. [Handover AI prompt](docs/HANDOVER_AI_PROMPT.md) - Paste into Cursor on the new PC
+11. [Live PR DM cards](docs/LIVE_PR_DMS.md) - One in-place DM per PR and opt-in post-merge cleanup
 
 ---
 

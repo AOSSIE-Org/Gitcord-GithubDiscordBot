@@ -309,16 +309,24 @@ class DiscordApiAdapter:
             return False
         return True
 
-    def send_dm(self, discord_user_id: str, content: str) -> bool:
-        """Send a direct message to a user. Returns True on success, False on failure.
-        
-        Creates a DM channel if needed. Handles privacy settings gracefully.
+    def create_dm_message(
+        self,
+        discord_user_id: str,
+        content: str = "",
+        *,
+        embeds: list[dict] | None = None,
+    ) -> tuple[str, str] | None:
+        """Create/open a DM channel and post a message.
+
+        Returns ``(channel_id, message_id)`` so the caller can later edit the
+        message in place. Returns None on failure, or when there is nothing to
+        send.
         """
-        if not content:
-            return True
-        text = content[:2000]
+        embed_list = list(embeds or [])
+        if not content and not embed_list:
+            return None
+        text = (content or "")[:2000]
         try:
-            # Create or get DM channel
             response = self._client.request(
                 "POST",
                 "/users/@me/channels",
@@ -327,9 +335,12 @@ class DiscordApiAdapter:
             if response.status_code not in (200, 201):
                 self._logger.warning(
                     "Discord DM channel creation failed",
-                    extra={"user_id": discord_user_id, "status_code": response.status_code},
+                    extra={
+                        "user_id": discord_user_id,
+                        "status_code": response.status_code,
+                    },
                 )
-                return False
+                return None
             channel_data = response.json()
             channel_id = channel_data.get("id")
             if not channel_id:
@@ -337,31 +348,92 @@ class DiscordApiAdapter:
                     "Discord DM channel creation returned no channel ID",
                     extra={"user_id": discord_user_id},
                 )
-                return False
-            
-            # Send message to DM channel
+                return None
+
+            payload: dict = {"allowed_mentions": {"parse": ["users"]}}
+            if text:
+                payload["content"] = text
+            if embed_list:
+                payload["embeds"] = embed_list[:10]
+            else:
+                payload["flags"] = 4  # SUPPRESS_EMBEDS (no link previews)
+
             msg_response = self._client.request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={
-                    "content": text,
-                    "flags": 4,  # 4 = SUPPRESS_EMBEDS (no link previews)
-                    "allowed_mentions": {"parse": ["users"]},
-                },
+                json=payload,
             )
             if msg_response.status_code not in (200, 201):
                 self._logger.warning(
                     "Discord DM send failed",
-                    extra={"user_id": discord_user_id, "status_code": msg_response.status_code},
+                    extra={
+                        "user_id": discord_user_id,
+                        "status_code": msg_response.status_code,
+                    },
                 )
-                return False
-            return True
-        except httpx.HTTPError as exc:
+                return None
+
+            msg_data = msg_response.json()
+            msg_id = msg_data.get("id")
+            if not msg_id:
+                return None
+            return (str(channel_id), str(msg_id))
+        except (httpx.HTTPError, ValueError) as exc:
             self._logger.warning(
                 "Discord DM failed",
                 extra={"user_id": discord_user_id, "error": str(exc)},
             )
+            return None
+
+    def delete_message(self, channel_id: str, message_id: str) -> bool:
+        """Delete a channel or DM message. Returns True when it no longer exists.
+
+        A 404 is treated as success so idempotent cleanup can drop its tracking
+        row after the user (or Discord) already removed the message.
+        """
+        if not channel_id or not message_id:
             return False
+        try:
+            response = self._client.request(
+                "DELETE",
+                f"/channels/{channel_id}/messages/{message_id}",
+            )
+        except httpx.HTTPError as exc:
+            self._logger.warning(
+                "Discord delete_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "error": str(exc),
+                },
+            )
+            return False
+        if response.status_code == 404:
+            self._logger.debug(
+                "Discord delete_message: message already gone",
+                extra={"channel_id": channel_id, "message_id": message_id},
+            )
+            return True
+        if response.status_code not in (200, 204):
+            self._logger.warning(
+                "Discord delete_message failed",
+                extra={
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status_code": response.status_code,
+                },
+            )
+            return False
+        return True
+
+    def send_dm(self, discord_user_id: str, content: str) -> bool:
+        """Send a direct message to a user. Returns True on success, False on failure.
+
+        Creates a DM channel if needed. Handles privacy settings gracefully.
+        """
+        if not content:
+            return True
+        return self.create_dm_message(discord_user_id, content) is not None
 
     def _resolve_role_id(self, role_name: str) -> str | None:
         """Resolve role name to Discord role ID (case-insensitive). Returns None if not found."""

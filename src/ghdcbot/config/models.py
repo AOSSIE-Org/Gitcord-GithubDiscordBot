@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from pydantic import BaseModel, Field, HttpUrl, PrivateAttr, field_validator, model_validator
@@ -119,8 +120,55 @@ class NotificationConfig(BaseModel):
     issue_inactivity_escalate_days: int = 7  # Additional days of inactivity after reminder before escalation/unassignment
     issue_inactivity_auto_unassign: bool = False  # Auto-unassign after escalate_days if still inactive
     issue_inactivity_comment_on_unassign: bool = False  # Post explanatory comment on GitHub issue when unassigning
+    # Live PR DM lifecycle card: subsequent milestone events edit the same DM
+    # instead of posting a new message. Opt-in cleanup deletes the card after a
+    # merged PR has been idle for ``merged_dm_cleanup_hours``.
+    enable_merged_dm_cleanup: bool = False  # Off by default until explicitly enabled
+    merged_dm_cleanup_hours: int = 24  # Hours after merge before the DM is deleted
     # Default to DM; set channel_id to post to a channel instead
     channel_id: str | None = None  # If None, sends DM; if set, posts to channel
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_merged_dm_cleanup(cls, data: Any) -> Any:
+        """Accept the documented ``ENABLE_MERGED_DM_CLEANUP`` spelling too."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        if (
+            "enable_merged_dm_cleanup" not in values
+            and "ENABLE_MERGED_DM_CLEANUP" in values
+        ):
+            values["enable_merged_dm_cleanup"] = values["ENABLE_MERGED_DM_CLEANUP"]
+        if (
+            "merged_dm_cleanup_hours" not in values
+            and "MERGED_DM_CLEANUP_HOURS" in values
+        ):
+            values["merged_dm_cleanup_hours"] = values["MERGED_DM_CLEANUP_HOURS"]
+        if "enable_merged_dm_cleanup" not in values:
+            env_enabled = os.getenv("ENABLE_MERGED_DM_CLEANUP")
+            if env_enabled is not None:
+                values["enable_merged_dm_cleanup"] = env_enabled
+        if "merged_dm_cleanup_hours" not in values:
+            env_hours = os.getenv("MERGED_DM_CLEANUP_HOURS")
+            if env_hours is not None:
+                values["merged_dm_cleanup_hours"] = env_hours
+        enabled = values.get("enable_merged_dm_cleanup")
+        if isinstance(enabled, str):
+            values["enable_merged_dm_cleanup"] = enabled.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        return values
+
+    @field_validator("merged_dm_cleanup_hours")
+    @classmethod
+    def validate_merged_dm_cleanup_hours(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("merged_dm_cleanup_hours must be positive")
+        return value
 
     @field_validator("coderabbit_reminder_after_hours")
     @classmethod
