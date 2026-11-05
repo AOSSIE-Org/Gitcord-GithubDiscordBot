@@ -4,7 +4,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -124,6 +124,12 @@ class GitHubRestAdapter:
         self._sync_cached_repos: list[dict] | None = None
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        # Repos whose event discovery hit a fetch failure during the current sync. The
+        # orchestrator must not advance the sync cursor past these repos' events.
+        self._sync_incomplete_repos: set[str] = set()
+        # True when the org repo listing was cut short, so some repos were never ingested.
+        self._repo_listing_incomplete = False
+        self._ingesting_repo: str | None = None
         self._successful_issue_listing_repos: set[str] = set()
         self._failed_issue_listing_repos: set[str] = set()
         self._client = build_github_httpx_client(token, api_base=api_base, timeout=30.0)
@@ -145,22 +151,44 @@ class GitHubRestAdapter:
     def sync_repos_processed(self) -> int:
         return self._sync_repos_processed
 
+    @property
+    def sync_incomplete_repos(self) -> frozenset[str]:
+        """Repo names whose last ``list_contributions`` run could not read every page."""
+        return frozenset(self._sync_incomplete_repos)
+
+    @property
+    def sync_repo_listing_incomplete(self) -> bool:
+        """Whether the repo listing for the last sync could not be read in full."""
+        return self._repo_listing_incomplete
+
     def peek_repos_for_sync(self) -> int:
         self._ensure_sync_repos_cached()
         return len(self._sync_cached_repos or [])
 
     def _ensure_sync_repos_cached(self) -> None:
         if self._sync_cached_repos is None:
+            self._repo_listing_incomplete = False
             self._sync_cached_repos = list(self._list_repos())
 
     def _reset_sync_tracking(self) -> None:
         self._sync_request_count = 0
         self._sync_repos_processed = 0
+        self._sync_incomplete_repos = set()
 
     def _increment_sync_request_count(self) -> None:
         self._sync_request_count += 1
 
-    def list_contributions(self, since: datetime) -> Iterable[ContributionEvent]:
+    def list_contributions(
+        self,
+        since: datetime,
+        repo_since: Mapping[str, datetime] | None = None,
+    ) -> Iterable[ContributionEvent]:
+        """Yield contribution events since ``since``.
+
+        ``repo_since`` maps a repo name to an earlier timestamp to re-read that repo from,
+        used to retry repos whose previous ingestion was incomplete. Repos that could not
+        be fully read this run are reported via ``sync_incomplete_repos``.
+        """
         self._reset_sync_tracking()
         self._ensure_sync_repos_cached()
         repos = self._sync_cached_repos or []
@@ -169,8 +197,10 @@ class GitHubRestAdapter:
             extra={"org": self._org, "since": since.isoformat(), "repos_total": len(repos)},
         )
         try:
+            held = repo_since or {}
             for repo in repos:
-                yield from self._ingest_repo(repo, since)
+                repo_start = min(since, held.get(repo["name"], since))
+                yield from self._ingest_repo(repo, repo_start)
                 self._sync_repos_processed += 1
         finally:
             self._sync_cached_repos = None
@@ -1173,26 +1203,30 @@ class GitHubRestAdapter:
             extra={"event": "repo_ingestion_started", "repo": full_name},
         )
 
-        issue_events, issue_numbers, issue_authors = self._collect_issue_events(
-            owner, repo_name, since
-        )
-        pr_events, pr_numbers, pr_opened_count, pr_authors = self._collect_pull_request_events(
-            owner, repo_name, since
-        )
-        # Ingest comments (returns both events and raw comments for reuse)
-        issue_comment_events, issue_comments_by_number = self._ingest_issue_comments(
-            owner, repo_name, issue_numbers, since
-        )
-        pr_comment_events, pr_comments_by_number = self._ingest_pr_comments(
-            owner, repo_name, pr_numbers, since
-        )
-        # Emit helpful_comment events for non-author comments (authors from collectors, pre-fetched comments)
-        helpful_comment_events = list(
-            self._ingest_helpful_comments(
-                owner, repo_name, issue_comments_by_number, pr_comments_by_number, since,
-                issue_authors=issue_authors, pr_authors=pr_authors,
+        self._ingesting_repo = repo_name
+        try:
+            issue_events, issue_numbers, issue_authors = self._collect_issue_events(
+                owner, repo_name, since
             )
-        )
+            pr_events, pr_numbers, pr_opened_count, pr_authors = self._collect_pull_request_events(
+                owner, repo_name, since
+            )
+            # Ingest comments (returns both events and raw comments for reuse)
+            issue_comment_events, issue_comments_by_number = self._ingest_issue_comments(
+                owner, repo_name, issue_numbers, since
+            )
+            pr_comment_events, pr_comments_by_number = self._ingest_pr_comments(
+                owner, repo_name, pr_numbers, since
+            )
+            # Emit helpful_comment events for non-author comments (authors from collectors, pre-fetched comments)
+            helpful_comment_events = list(
+                self._ingest_helpful_comments(
+                    owner, repo_name, issue_comments_by_number, pr_comments_by_number, since,
+                    issue_authors=issue_authors, pr_authors=pr_authors,
+                )
+            )
+        finally:
+            self._ingesting_repo = None
         repo_events = (
             issue_events
             + issue_comment_events
@@ -1222,6 +1256,7 @@ class GitHubRestAdapter:
         user_fallback = _load_user_fallback()
         if user_fallback and status in {401, 403}:
             self._logger.info("Falling back to user repositories (not an org member)")
+            self._repo_listing_incomplete = False
             repos, _ = self._list_repos_from_path("/user/repos")
         self._last_repo_count = len(repos)
         if not repos:
@@ -1993,12 +2028,14 @@ class GitHubRestAdapter:
             if response is None:
                 if raise_on_error:
                     raise GitHubPaginationError(f"GitHub request failed: {path}")
+                self._mark_ingestion_incomplete(path)
                 return
             if response.status_code != 200:
                 if raise_on_error:
                     raise GitHubPaginationError(
                         f"GitHub request failed with status {response.status_code}: {path}"
                     )
+                self._mark_ingestion_incomplete(path)
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
@@ -2012,13 +2049,27 @@ class GitHubRestAdapter:
                 return
             page += 1
 
+    def _mark_ingestion_incomplete(self, path: str) -> None:
+        """Record that a page read failed while a repo was being ingested."""
+        repo_name = self._ingesting_repo
+        if repo_name is None:
+            return
+        if repo_name not in self._sync_incomplete_repos:
+            self._logger.warning(
+                "Repository ingestion incomplete; its events will be retried next sync",
+                extra={"event": "repo_ingestion_incomplete", "repo": repo_name, "path": path},
+            )
+        self._sync_incomplete_repos.add(repo_name)
+
     def _list_repos_from_path(self, path: str) -> tuple[list[dict], int | None]:
         repos: list[dict] = []
         params = {"per_page": 100, "page": 1}
         response = self._request_with_status("GET", path, params=params)
         if response is None:
+            self._repo_listing_incomplete = True
             return [], None
         if response.status_code != 200:
+            self._repo_listing_incomplete = True
             return [], response.status_code
         data = response.json()
         if isinstance(data, list):
@@ -2042,12 +2093,14 @@ class GitHubRestAdapter:
             if response is None:
                 if raise_on_error:
                     raise GitHubPaginationError(f"GitHub request failed: {path}")
+                self._repo_listing_incomplete = True
                 return
             if response.status_code != 200:
                 if raise_on_error:
                     raise GitHubPaginationError(
                         f"GitHub request failed with status {response.status_code}: {path}"
                     )
+                self._repo_listing_incomplete = True
                 self._logger.warning(
                     "GitHub request failed",
                     extra={"path": path, "status_code": response.status_code},
