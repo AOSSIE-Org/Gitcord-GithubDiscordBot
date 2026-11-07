@@ -15,6 +15,7 @@ from ghdcbot.engine.pr_status import (
 _MAX_MESSAGE_CHARS = 1900
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 50
+_MAX_SKIP = 500
 
 
 def clamp_issue_limit(limit: int | None = None) -> int:
@@ -23,10 +24,22 @@ def clamp_issue_limit(limit: int | None = None) -> int:
     return max(1, min(raw, _MAX_LIMIT))
 
 
-def filter_open_issues(items: Iterable[dict], limit: int = 10) -> list[dict]:
-    """Filter out PRs and non-open issues, returning up to ``limit`` issues."""
+def clamp_issue_skip(skip: int | None = None) -> int:
+    """Normalize skip for /issue (default 0, min 0, max 500)."""
+    raw = 0 if skip is None else int(skip)
+    return max(0, min(raw, _MAX_SKIP))
+
+
+def filter_open_issues(items: Iterable[dict], limit: int = 10, skip: int = 0) -> list[dict]:
+    """Filter out PRs and non-open issues, returning up to ``limit`` issues.
+
+    The first ``skip`` matching issues are dropped so callers can page through
+    a long list (``skip`` counts issues, not raw items, so PRs never eat into it).
+    """
     n = clamp_issue_limit(limit)
+    m = clamp_issue_skip(skip)
     filtered: list[dict] = []
+    seen = 0
     for item in items:
         # GitHub /issues endpoint returns both issues and PRs.
         # PRs always have a "pull_request" key in the payload.
@@ -34,6 +47,9 @@ def filter_open_issues(items: Iterable[dict], limit: int = 10) -> list[dict]:
             continue
         state = str(item.get("state") or "").strip().lower()
         if state != "open":
+            continue
+        seen += 1
+        if seen <= m:
             continue
         filtered.append(item)
         if len(filtered) >= n:
@@ -153,13 +169,19 @@ def format_issue_list_messages(
     repo: str,
     limit: int = 10,
     storage: Any = None,
+    skip: int = 0,
 ) -> list[str]:
     """Build one or more Discord messages under the length limit."""
     n = clamp_issue_limit(limit)
+    m = clamp_issue_skip(skip)
     if not issues:
+        if m:
+            return [f"No more open issues found in **{repo}** after skipping {m}."]
         return [f"No open issues found in **{repo}**."]
 
     header = f"Recent Open Issues in **{repo}** — last {len(issues)} (limit {n})"
+    if m:
+        header = f"{header[:-1]}, skipped {m})"
     lines = [header, ""]
 
     for issue in issues:
