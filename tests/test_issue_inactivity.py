@@ -2279,7 +2279,8 @@ class TestGitHubRestAdapterInactivityHelpers:
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "mentor_lead") is True
 
-    def test_has_write_access_via_org_membership(self) -> None:
+    def test_has_write_access_false_for_read_only_org_member(self) -> None:
+        """Org membership alone is not write access: a member with 'read' is not exempt."""
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
@@ -2287,26 +2288,38 @@ class TestGitHubRestAdapterInactivityHelpers:
         def mock_request(method: str, path: str, *args, **kwargs):
             resp = MagicMock()
             if "collaborators" in path:
-                resp.status_code = 404
+                resp.status_code = 200
+                resp.json.return_value = {"permission": "read"}
             elif "members" in path:
                 resp.status_code = 204
             return resp
 
         adapter._request = create_autospec(adapter._request, side_effect=mock_request)
-        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is True
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is False
+        called_paths = [call.args[1] for call in adapter._request.call_args_list]
+        assert called_paths == ["/repos/AOSSIE-Org/Gitcord/collaborators/org_member/permission"]
 
-    def test_has_write_access_returns_false_when_not_collaborator_or_member(self) -> None:
+    def test_has_write_access_false_for_triage_permission(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
-        def mock_request(method: str, path: str, *args, **kwargs):
-            resp = MagicMock()
-            if "collaborators" in path or "members" in path:
-                resp.status_code = 404
-            return resp
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"permission": "triage"}
+        adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
-        adapter._request = create_autospec(adapter._request, side_effect=mock_request)
+        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "triager") is False
+
+    def test_has_write_access_returns_false_when_not_collaborator(self) -> None:
+        from ghdcbot.adapters.github.rest import GitHubRestAdapter
+
+        adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        adapter._request = create_autospec(adapter._request, return_value=mock_resp)
+
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "external_contributor") is False
 
     def test_has_write_access_returns_none_on_api_error(self) -> None:
@@ -2349,16 +2362,9 @@ class TestGitHubRestAdapterInactivityHelpers:
 
         has_write = adapter.has_write_access("AOSSIE-Org", "Gitcord", "bob")
         assert has_write is False
-        assert adapter._request.call_count == 2
-        adapter._request.assert_any_call(
+        adapter._request.assert_called_once_with(
             "GET",
             "/repos/AOSSIE-Org/Gitcord/collaborators/bob/permission",
-            params=None,
-            allow_404=True,
-        )
-        adapter._request.assert_any_call(
-            "GET",
-            "/orgs/AOSSIE-Org/members/bob",
             params=None,
             allow_404=True,
         )
@@ -2422,42 +2428,36 @@ class TestGitHubRestAdapterInactivityHelpers:
             assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "maintainer") is True
             assert mock_client.request.call_count == 1
 
-        # 2. Non-elevated collaborator ("read") but org member (204) -> True
-        def mock_read_member(method: str, path: str, **kwargs):
-            if "collaborators" in path:
-                r = MagicMock(status_code=200, headers={})
-                r.json.return_value = {"permission": "read"}
-                return r
-            if "members" in path:
-                return MagicMock(status_code=204, headers={})
-            return MagicMock(status_code=404, headers={})
+        # 2. Non-elevated collaborator ("read" / "triage") -> False, org membership never consulted
+        for level in ("read", "triage"):
+            mock_client.reset_mock()
+            resp = MagicMock(status_code=200, headers={})
+            resp.json.return_value = {"permission": level}
+            mock_client.request.return_value = resp
+            assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_user") is False
+            assert mock_client.request.call_count == 1
+            requested_path = mock_client.request.call_args.args[1]
+            assert "/members/" not in requested_path
 
-        mock_client.request.side_effect = mock_read_member
-        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_user") is True
-
-        # 3. Not a collaborator (404) and not an org member (404) -> False
+        # 3. Not a collaborator (404) -> False
         def mock_external(method: str, path: str, **kwargs):
             return MagicMock(status_code=404, headers={})
 
         mock_client.request.side_effect = mock_external
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "ext_contributor") is False
 
-        # 4. Error on collaborator check (403) and not org member (404) -> None (inconclusive)
+        # 4. Error on collaborator check (403) -> None (inconclusive)
         def mock_collab_error(method: str, path: str, **kwargs):
-            if "collaborators" in path:
-                return MagicMock(status_code=403, headers={}, text="Forbidden")
-            return MagicMock(status_code=404, headers={})
+            return MagicMock(status_code=403, headers={}, text="Forbidden")
 
         mock_client.request.side_effect = mock_collab_error
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "unknown") is None
 
-        # 5. Collaborator 404, but org membership returns 502/error -> None (inconclusive)
-        def mock_org_error(method: str, path: str, **kwargs):
-            if "collaborators" in path:
-                return MagicMock(status_code=404, headers={})
+        # 5. Server error on collaborator check (502) -> None (inconclusive)
+        def mock_server_error(method: str, path: str, **kwargs):
             return MagicMock(status_code=502, headers={}, reason_phrase="Bad Gateway")
 
-        mock_client.request.side_effect = mock_org_error
+        mock_client.request.side_effect = mock_server_error
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "unknown2") is None
 
         # 6. Empty username -> False
