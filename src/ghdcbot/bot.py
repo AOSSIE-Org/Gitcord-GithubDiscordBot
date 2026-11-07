@@ -46,6 +46,7 @@ from ghdcbot.engine.issue_assignment import (
 )
 from ghdcbot.engine.issue_list import (
     clamp_issue_limit,
+    clamp_issue_skip,
     filter_open_issues,
     format_issue_list_messages,
     resolve_repo_for_issue,
@@ -1414,12 +1415,14 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from channel or config if omitted)",
         limit="How many recent open issues to show (optional, default 10, max 50)",
+        skip="How many recent open issues to skip first (optional, for paging)",
     )
     @app_commands.checks.cooldown(1, 15.0)
     async def issue_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
         limit: app_commands.Range[int, 1, 50] = 10,
+        skip: app_commands.Range[int, 0, 500] = 0,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -1439,12 +1442,14 @@ def run_bot(config_path: str) -> None:
             return
 
         effective_limit = clamp_issue_limit(limit)
+        effective_skip = clamp_issue_skip(skip)
         logger.info(
             "/issue requested",
             extra={
                 "repo": resolved_repo,
                 "requested_limit": limit,
                 "effective_limit": effective_limit,
+                "skip": effective_skip,
                 "user_id": str(interaction.user.id),
             },
         )
@@ -1457,11 +1462,12 @@ def run_bot(config_path: str) -> None:
                     ephemeral=True,
                 )
                 return
+            # Fetch enough open issues to cover the skipped page(s) plus the requested page.
             raw_issues = await asyncio.to_thread(
                 list_issues,
                 config.github.org,
                 resolved_repo,
-                effective_limit,
+                effective_limit + effective_skip,
             )
         except Exception:
             logger.exception(
@@ -1481,13 +1487,14 @@ def run_bot(config_path: str) -> None:
             )
             return
 
-        issues = filter_open_issues(raw_issues, limit=effective_limit)
+        issues = filter_open_issues(raw_issues, limit=effective_limit, skip=effective_skip)
         messages = format_issue_list_messages(
             issues=issues,
             org=config.github.org,
             repo=resolved_repo,
             limit=effective_limit,
             storage=storage,
+            skip=effective_skip,
         )
         for message in messages:
             await interaction.followup.send(
