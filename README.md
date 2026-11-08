@@ -46,6 +46,8 @@
 
 Gitcord is a local, offline‑first automation engine that reads GitHub activity and Discord state, then plans role changes and GitHub assignments in a deterministic, reviewable way. It is designed for safety: dry‑run and observer modes produce audit reports without mutating anything.
 
+**GSoC 2026 Final Report:** [https://gist.github.com/shubham5080/f61f2d94785bf2d55b5793ebeea00287](https://gist.github.com/shubham5080/f61f2d94785bf2d55b5793ebeea00287)
+
 ---
 
 ## 🚀 Features
