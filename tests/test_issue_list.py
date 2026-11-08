@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from ghdcbot.engine.issue_list import (
     clamp_issue_limit,
+    clamp_issue_skip,
     filter_open_issues,
     format_issue_list_messages,
     format_single_issue_entry,
@@ -22,6 +23,15 @@ def test_clamp_issue_limit():
     assert clamp_issue_limit(100) == 50
 
 
+def test_clamp_issue_skip():
+    assert clamp_issue_skip(None) == 0
+    assert clamp_issue_skip(0) == 0
+    assert clamp_issue_skip(-3) == 0
+    assert clamp_issue_skip(25) == 25
+    assert clamp_issue_skip(500) == 500
+    assert clamp_issue_skip(999) == 500
+
+
 def test_filter_open_issues_excludes_prs_and_closed():
     items = [
         {"number": 1, "title": "Issue 1", "state": "open"},
@@ -33,6 +43,40 @@ def test_filter_open_issues_excludes_prs_and_closed():
     filtered = filter_open_issues(items, limit=2)
     assert len(filtered) == 2
     assert [i["number"] for i in filtered] == [1, 4]
+
+
+def test_filter_open_issues_skip_counts_only_open_issues():
+    items = [
+        {"number": 1, "title": "Issue 1", "state": "open"},
+        {"number": 2, "title": "PR 2", "state": "open", "pull_request": {"url": "https://..."}},
+        {"number": 3, "title": "Issue 3", "state": "closed"},
+        {"number": 4, "title": "Issue 4", "state": "open"},
+        {"number": 5, "title": "Issue 5", "state": "open"},
+        {"number": 6, "title": "Issue 6", "state": "open"},
+    ]
+    # skip=1 drops issue 1 only; the PR and the closed issue never count towards skip.
+    assert [i["number"] for i in filter_open_issues(items, limit=2, skip=1)] == [4, 5]
+    # Second page continues where the first left off.
+    assert [i["number"] for i in filter_open_issues(items, limit=2, skip=3)] == [6]
+    # Skipping past the end yields nothing rather than wrapping or erroring.
+    assert filter_open_issues(items, limit=2, skip=10) == []
+    # Negative skip is clamped to 0, matching the no-skip behaviour.
+    assert filter_open_issues(items, limit=2, skip=-4) == filter_open_issues(items, limit=2)
+
+
+def test_format_issue_list_messages_mentions_skip():
+    issues = [{"number": 7, "title": "Seventh", "state": "open"}]
+    with_skip = format_issue_list_messages(issues, org="org", repo="repo", limit=5, skip=6)
+    assert with_skip[0].startswith("Recent Open Issues in **repo** — last 1 (limit 5, skipped 6)")
+
+    without_skip = format_issue_list_messages(issues, org="org", repo="repo", limit=5)
+    assert without_skip[0].startswith("Recent Open Issues in **repo** — last 1 (limit 5)")
+
+    empty_page = format_issue_list_messages([], org="org", repo="repo", limit=5, skip=20)
+    assert empty_page == ["No more open issues found in **repo** after skipping 20."]
+    assert format_issue_list_messages([], org="org", repo="repo", limit=5) == [
+        "No open issues found in **repo**."
+    ]
 
 
 def test_format_single_issue_entry_with_author_and_labels():
@@ -598,6 +642,25 @@ def test_issue_cmd_with_explicit_repo() -> None:
     sent_text = mock_interaction.followup.send.call_args[0][0]
     assert "Devr.AI" in sent_text
     assert "#101" in sent_text
+
+    # skip=2 fetches limit + skip issues and shows only the page after the skipped ones.
+    mock_gh.list_repo_open_issues.reset_mock()
+    mock_gh.list_repo_open_issues.return_value = [
+        {"number": 105, "title": "Newest", "state": "open"},
+        {"number": 104, "title": "PR in between", "state": "open", "pull_request": {}},
+        {"number": 103, "title": "Second newest", "state": "open"},
+        {"number": 102, "title": "Third newest", "state": "open"},
+        {"number": 101, "title": "Fourth newest", "state": "open"},
+    ]
+    mock_interaction.followup.send.reset_mock()
+
+    asyncio.run(issue_cmd.callback(mock_interaction, repo="Devr.AI", limit=3, skip=2))
+
+    mock_gh.list_repo_open_issues.assert_called_once_with("test-org", "Devr.AI", 5)
+    sent_text = mock_interaction.followup.send.call_args[0][0]
+    assert "(limit 3, skipped 2)" in sent_text
+    assert "#102" in sent_text and "#101" in sent_text
+    assert "#105" not in sent_text and "#103" not in sent_text and "#104" not in sent_text
 
 
 
