@@ -13,6 +13,7 @@ from ghdcbot.engine.pr_status import (
 )
 
 _MAX_MESSAGE_CHARS = 1900
+_MAX_LABEL_DISPLAY_CHARS = 100
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 50
 
@@ -172,7 +173,10 @@ def format_issue_list_messages(
     if not issues:
         filters: list[str] = []
         if label:
-            filters.append(f"label **{label}**")
+            shown_label = label
+            if len(shown_label) > _MAX_LABEL_DISPLAY_CHARS:
+                shown_label = shown_label[: _MAX_LABEL_DISPLAY_CHARS - 1] + "…"
+            filters.append(f"label **{shown_label}**")
         if unassigned:
             filters.append("no assignee")
         if filters:

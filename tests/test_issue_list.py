@@ -627,6 +627,21 @@ def test_format_issue_list_messages_empty_names_applied_filters():
     ) == ["No open issues found in **repo** with label **good first issue** and no assignee."]
 
 
+def test_format_issue_list_messages_empty_shortens_long_label():
+    # A label far longer than a Discord message (2000 characters) is not echoed in full.
+    full = "x" * 100
+    assert format_issue_list_messages([], org="org", repo="repo", label=full) == [
+        f"No open issues found in **repo** with label **{full}**."
+    ]
+    (message,) = format_issue_list_messages(
+        [], org="org", repo="repo", label="x" * 6000, unassigned=True
+    )
+    assert message == (
+        f"No open issues found in **repo** with label **{'x' * 99}…** and no assignee."
+    )
+    assert len(message) <= 2000
+
+
 def test_list_repo_open_issues_label_and_unassigned_params():
     from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
