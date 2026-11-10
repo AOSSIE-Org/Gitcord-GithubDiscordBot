@@ -13,6 +13,7 @@ from ghdcbot.engine.pr_status import (
 )
 
 _MAX_MESSAGE_CHARS = 1900
+_MAX_LABEL_DISPLAY_CHARS = 100
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 50
 
@@ -21,6 +22,17 @@ def clamp_issue_limit(limit: int | None = None) -> int:
     """Normalize limit for /issue (default 10, min 1, max 50)."""
     raw = _DEFAULT_LIMIT if limit is None else int(limit)
     return max(1, min(raw, _MAX_LIMIT))
+
+
+def normalize_issue_labels(label: str | None) -> str | None:
+    """Turn the /issue label option into GitHub's comma-separated ``labels`` value.
+
+    Spaces inside a label are kept ("good first issue"); empty entries are dropped.
+    Returns None when nothing usable is left.
+    """
+    names = [part.strip() for part in (label or "").split(",")]
+    joined = ",".join(name for name in names if name)
+    return joined or None
 
 
 def filter_open_issues(items: Iterable[dict], limit: int = 10) -> list[dict]:
@@ -153,10 +165,22 @@ def format_issue_list_messages(
     repo: str,
     limit: int = 10,
     storage: Any = None,
+    label: str | None = None,
+    unassigned: bool = False,
 ) -> list[str]:
     """Build one or more Discord messages under the length limit."""
     n = clamp_issue_limit(limit)
     if not issues:
+        filters: list[str] = []
+        if label:
+            shown_label = label
+            if len(shown_label) > _MAX_LABEL_DISPLAY_CHARS:
+                shown_label = shown_label[: _MAX_LABEL_DISPLAY_CHARS - 1] + "…"
+            filters.append(f"label **{shown_label}**")
+        if unassigned:
+            filters.append("no assignee")
+        if filters:
+            return [f"No open issues found in **{repo}** with {' and '.join(filters)}."]
         return [f"No open issues found in **{repo}**."]
 
     header = f"Recent Open Issues in **{repo}** — last {len(issues)} (limit {n})"

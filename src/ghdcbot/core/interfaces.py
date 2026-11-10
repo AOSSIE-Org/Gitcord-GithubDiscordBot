@@ -31,8 +31,14 @@ class GitHubReader(Protocol):
         repo: str,
         limit: int = 100,
         per_page: int = 100,
+        labels: str | None = None,
+        unassigned: bool = False,
     ) -> list[dict] | None:
-        """Return open issues for one repository (excluding PRs), or None on error."""
+        """Return open issues for one repository (excluding PRs), or None on error.
+
+        ``labels`` is a comma-separated label list and ``unassigned`` limits results to
+        issues without an assignee; both are applied by GitHub.
+        """
 
     def get_issue_comments(
         self, owner: str, repo: str, issue_number: int
