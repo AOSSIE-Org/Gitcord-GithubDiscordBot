@@ -55,8 +55,8 @@ class GitHubReader(Protocol):
     ) -> list[dict] | None:
         """Fetch PRs by author in a repo with title and body for inactivity check."""
 
-    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool:
-        """Check if user has write/maintainer access to repository or org."""
+    def has_write_access(self, owner: str | None, repo: str, username: str) -> bool | None:
+        """Check if user has write/maintainer access to repository, or None if inconclusive."""
 
     def get_successful_issue_listing_repos(self) -> set[str]:
         """Return repository names whose open issues were listed successfully."""

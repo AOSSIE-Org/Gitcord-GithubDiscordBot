@@ -479,21 +479,29 @@ class GitHubRestAdapter:
         return None
 
     def has_write_access(self, owner: str | None, repo: str, username: str) -> bool | None:
-        """Check if user has write/maintainer access to repository or org."""
+        """Check if user has write/maintainer access to repository.
+
+        Returns True for write/maintain/admin, False for read/triage/none, or None on error.
+        """
         user = (username or "").strip()
-        if not user:
+        repo_name = (repo or "").strip()
+        if not user or not repo_name:
             return False
         org = owner or self._org
-        perm = self.check_user_permission(org, repo, user)
+        try:
+            perm = self.check_user_permission(org, repo_name, user)
+        except Exception as exc:
+            self._logger.warning(
+                "Failed to check repository write access",
+                extra={"owner": org, "repo": repo_name, "username": user, "error": str(exc)},
+            )
+            return None
+
         if perm in {"admin", "maintain", "write"}:
             return True
-        # Check org membership
-        org_resp = self._request("GET", f"/orgs/{org}/members/{user}", params=None, allow_404=True)
-        if org_resp is not None and org_resp.status_code == 204:
-            return True
-        if perm is None or org_resp is None or org_resp.status_code != 404:
-            return None
-        return False
+        if perm in {"triage", "read", "none"}:
+            return False
+        return None
 
 
     def create_issue(
