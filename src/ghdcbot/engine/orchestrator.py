@@ -21,6 +21,7 @@ from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.inactivity import run_issue_inactivity_lifecycle
 from ghdcbot.engine.channel_routes import apply_stored_channel_routes
 from ghdcbot.engine.notifications import (
+    cleanup_expired_merged_pr_dms,
     run_coderabbit_reminders,
     send_issue_opened_channel_notification,
     send_issue_opened_github_link_comment,
@@ -190,6 +191,31 @@ class Orchestrator:
                         exc_info=True,
                         extra={"error": str(exc)},
                     )
+
+        # Opt-in: delete live PR DM cards some hours after merge (non-blocking).
+        if notification_config and getattr(
+            notification_config, "enable_merged_dm_cleanup", False
+        ):
+            try:
+                cleanup_hours = int(
+                    getattr(notification_config, "merged_dm_cleanup_hours", 24) or 24
+                )
+                cleaned = cleanup_expired_merged_pr_dms(
+                    self.storage,
+                    self.discord_writer,
+                    policy,
+                    older_than_seconds=max(0, cleanup_hours * 3600),
+                )
+                if cleaned:
+                    logger.info(
+                        "Cleaned expired merged PR DMs", extra={"count": cleaned}
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Merged PR DM cleanup failed (non-blocking)",
+                    exc_info=True,
+                    extra={"error": str(exc)},
+                )
 
         # Persist the GitHub cursor now that notifications have been dispatched.
         # If the sync crashed during notifications above, the cursor stays at
