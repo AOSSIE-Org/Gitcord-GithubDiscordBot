@@ -71,3 +71,39 @@ def test_storage_does_not_leak_file_handles_in_temp_dir() -> None:
             "d1", "alice", "code123", datetime.now(UTC) + timedelta(minutes=10)
         )
         storage.get_identity_link("d1", "alice")
+
+
+def test_connect_sets_busy_timeout(tmp_path: Path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    with storage._connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout;").fetchone()
+        assert row is not None
+        assert row[0] == 30000
+
+
+def test_init_schema_enables_wal_mode_on_disk_db(tmp_path: Path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    with storage._connect() as conn:
+        row = conn.execute("PRAGMA journal_mode;").fetchone()
+        assert row is not None
+        assert str(row[0]).lower() == "wal"
+
+
+def test_wal_concurrent_reader_not_blocked_by_active_writer(tmp_path: Path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    with storage._connect() as conn1:
+        conn1.execute("INSERT INTO identity_links (discord_user_id, github_user, created_at) VALUES ('u1', 'alice', '2026-01-01')")
+
+    # While a writer has an open transaction, a reader should still be able to read in WAL mode
+    with storage._connect() as writer_conn:
+        writer_conn.execute("INSERT INTO identity_links (discord_user_id, github_user, created_at) VALUES ('u2', 'bob', '2026-01-02')")
+
+        with storage._connect() as reader_conn:
+            # WAL allows non-blocking read of the last committed snapshot
+            row = reader_conn.execute("SELECT count(*) FROM identity_links").fetchone()
+            assert row is not None
+            assert row[0] == 1
+
