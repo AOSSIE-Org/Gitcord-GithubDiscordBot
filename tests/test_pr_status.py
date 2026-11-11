@@ -1848,8 +1848,7 @@ class TestRepoRecommendationAndAutocomplete:
         def fake_get_pr(org: str, repo: str, num: int):
             nonlocal current_concurrency, max_seen_concurrency
             current_concurrency += 1
-            if current_concurrency > max_seen_concurrency:
-                max_seen_concurrency = current_concurrency
+            max_seen_concurrency = max(max_seen_concurrency, current_concurrency)
             time.sleep(0.01)
             current_concurrency -= 1
             if repo == "Repo-05":
@@ -2045,7 +2044,7 @@ class TestRepoRecommendationAndAutocomplete:
     @pytest.mark.asyncio
     async def test_pr_status_cmd_informs_when_target_is_issue(self) -> None:
         """When number points to an Issue rather than a PR, PRStatusModal explains it clearly."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
 
         from ghdcbot.bot import PRStatusModal
         from ghdcbot.config.models import (
@@ -2199,9 +2198,8 @@ async def test_dashboard_fetch_error_releases_in_flight_guard(pr_status_guard) -
         pr_status_guard.PRStatusView,
         "_fetch_and_send_dashboard",
         AsyncMock(side_effect=RuntimeError("boom")),
-    ):
-        with pytest.raises(RuntimeError):
-            await view._send_dashboard(_button_interaction(), skip=0)
+    ), pytest.raises(RuntimeError):
+        await view._send_dashboard(_button_interaction(), skip=0)
 
     assert pr_status_guard._pr_status_in_flight == set()
 
@@ -2263,3 +2261,286 @@ async def test_repo_suggestions_without_discovery_support() -> None:
 
     config = {"github": {"repos": {"mode": "allow", "names": ["configured"]}}}
     assert await get_repo_suggestions(config, object(), "conf") == ["configured"]
+
+
+# ===================================================================
+# PR status UI navigation, interactive filtering, and dropdown tests
+# ===================================================================
+
+
+class TestPRStatusUINavigation:
+    def test_format_all_pr_status_with_health_filter(self) -> None:
+        statuses = [
+            _make_health(repo="repo1", number=1, ci_status="failing"),
+            _make_health(repo="repo2", number=2, review_state="approved"),
+            _make_health(repo="repo3", number=3, ci_status="failing"),
+        ]
+        msgs = format_all_pr_status(statuses, "org", skip=0, total=3, filter_health="blocked")
+        combined = "\n".join(msgs)
+
+        assert "Filtered: 🔴 Blocked" in combined
+        assert "Showing 2 of 3 open PRs" in combined
+        assert "2 blocked" in combined
+        assert "1 safe to merge" in combined
+        assert "repo1#1" in combined
+        assert "repo3#3" in combined
+        assert "repo2#2" not in combined
+
+    def test_format_all_pr_status_clickable_markdown_link(self) -> None:
+        statuses = [
+            _make_health(
+                repo="my-repo",
+                number=42,
+                title="Super feature",
+                html_url="https://github.com/org/my-repo/pull/42",
+            )
+        ]
+        msgs = format_all_pr_status(statuses, "org", skip=0, total=1)
+        combined = "\n".join(msgs)
+
+        assert "[my-repo#42](<https://github.com/org/my-repo/pull/42>)" in combined
+        assert "Super feature" in combined
+        assert "> CI ✅ · Reviews ✅" in combined
+
+    @pytest.mark.asyncio
+    async def test_pr_status_view_components_and_dropdown(self) -> None:
+        import discord
+
+        from ghdcbot.bot import PRSelectDropdown, PRStatusView
+
+        view = PRStatusView("my-repo", MagicMock(), MagicMock())
+        view.statuses = [
+            _make_health(repo="my-repo", number=10, ci_status="failing"),
+            _make_health(repo="my-repo", number=20, review_state="approved"),
+        ]
+        view.total = 2
+        view._build_components()
+
+        # Should have dropdown (row 0), filter buttons (row 1), and action buttons (row 2)
+        dropdowns = [c for c in view.children if isinstance(c, PRSelectDropdown)]
+        assert len(dropdowns) == 1
+        assert len(dropdowns[0].options) == 2
+        assert dropdowns[0].options[0].value == "10"
+        assert dropdowns[0].options[1].value == "20"
+
+        buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
+        labels = [b.label for b in buttons if b.label]
+        assert any("All" in lbl for lbl in labels)
+        assert any("Blocked" in lbl for lbl in labels)
+        assert any("Safe" in lbl for lbl in labels)
+        assert any("Refresh" in lbl for lbl in labels)
+        assert any("Custom PR #" in lbl for lbl in labels)
+
+    @pytest.mark.asyncio
+    async def test_pr_select_dropdown_callback_displays_details(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from ghdcbot.bot import PRDetailView, PRSelectDropdown, PRStatusView
+
+        view = PRStatusView("my-repo", MagicMock(), MagicMock())
+        status = _make_health(repo="my-repo", number=10, ci_status="failing")
+        view.statuses = [status]
+        view.total = 1
+        view._build_components()
+
+        dropdown = next(c for c in view.children if isinstance(c, PRSelectDropdown))
+        dropdown._values = ["10"]
+
+        interaction = MagicMock()
+        interaction.response.edit_message = AsyncMock()
+
+        await dropdown.callback(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        kwargs = interaction.response.edit_message.call_args.kwargs
+        embed = kwargs.get("embed")
+        text = embed.title if embed else kwargs.get("content", "")
+        assert "my-repo#10" in text
+        assert isinstance(kwargs["view"], PRDetailView)
+
+    @pytest.mark.asyncio
+    async def test_pr_detail_view_back_to_dashboard(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from ghdcbot.bot import PRDetailView, PRStatusView
+
+        view = PRStatusView("my-repo", MagicMock(), MagicMock())
+        status = _make_health(repo="my-repo", number=10, ci_status="failing")
+        view.statuses = [status]
+        view.total = 1
+        view._build_components()
+
+        detail_view = PRDetailView(status, view)
+        interaction = MagicMock()
+        interaction.response.edit_message = AsyncMock()
+
+        await detail_view._on_back(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        kwargs = interaction.response.edit_message.call_args.kwargs
+        embed = kwargs.get("embed")
+        text = embed.title if embed else kwargs.get("content", "")
+        assert "PR Status Dashboard" in text
+        assert kwargs["view"] is view
+
+    @pytest.mark.asyncio
+    async def test_filter_button_in_memory_toggle(self) -> None:
+        from unittest.mock import AsyncMock
+
+        import discord
+
+        from ghdcbot.bot import PRStatusView
+
+        view = PRStatusView("my-repo", MagicMock(), MagicMock())
+        view.statuses = [
+            _make_health(repo="my-repo", number=10, ci_status="failing"),
+            _make_health(repo="my-repo", number=20, review_state="approved"),
+        ]
+        view.total = 2
+        view._build_components()
+
+        blocked_button = next(
+            c for c in view.children if isinstance(c, discord.ui.Button) and "Blocked" in (c.label or "")
+        )
+
+        interaction = MagicMock()
+        interaction.response.edit_message = AsyncMock()
+
+        # Click Blocked button
+        await blocked_button.callback(interaction)
+
+        assert view.active_filter == "blocked"
+        interaction.response.edit_message.assert_awaited_once()
+        kwargs = interaction.response.edit_message.call_args.kwargs
+        embed = kwargs.get("embed")
+        if embed:
+            assert "Filtered: 🔴 Blocked" in embed.title
+            assert "my-repo#10" in embed.description
+            assert "my-repo#20" not in embed.description
+        else:
+            content = kwargs.get("content", "")
+            assert "Filtered: 🔴 Blocked" in content
+            assert "my-repo#10" in content
+            assert "my-repo#20" not in content
+
+    @pytest.mark.asyncio
+    async def test_pr_status_cmd_initial_card_and_show_all(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        pr_status_cmd = next(
+            c for c in captured[0].get_commands(guild=discord.Object(id=123)) if c.name == "pr-status"
+        )
+
+        interaction = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        interaction.original_response = AsyncMock()
+
+        await pr_status_cmd.callback(interaction, repo="test-repo", pr_number=None)
+        interaction.response.send_message.assert_awaited_once()
+        _, kwargs = interaction.response.send_message.await_args
+        assert isinstance(kwargs.get("embed"), discord.Embed)
+        initial_view = kwargs.get("view")
+        assert initial_view is not None
+
+        # Verify buttons on initial card view
+        buttons = [item for item in initial_view.children if isinstance(item, discord.ui.Button)]
+        assert any(b.label == "Show All Open PRs" for b in buttons)
+        assert any(b.label == "Check Specific PR" for b in buttons)
+
+        # Trigger "Show All Open PRs" and verify it launches _send_dashboard
+        with patch.object(initial_view, "_send_dashboard", new_callable=AsyncMock) as mock_send:
+            await initial_view.show_all(interaction)
+            mock_send.assert_awaited_once_with(interaction, skip=0)
+
+    @pytest.mark.asyncio
+    async def test_pr_status_cmd_with_pr_number(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        import discord
+
+        from ghdcbot.bot import run_bot
+        from ghdcbot.config.models import BotConfig, DiscordConfig, GitHubConfig, RuntimeConfig
+
+        cfg = BotConfig(
+            runtime=RuntimeConfig(
+                data_dir="./data",
+                github_adapter="ghdcbot.adapters.github.rest:GitHubRestAdapter",
+                discord_adapter="ghdcbot.adapters.discord.api:DiscordApiAdapter",
+                storage_adapter="ghdcbot.adapters.storage.sqlite:SqliteStorage",
+            ),
+            github=GitHubConfig(org="test-org"),
+            discord=DiscordConfig(guild_id="123", token="fake"),
+        )
+
+        captured = []
+        orig_tree_init = discord.app_commands.CommandTree.__init__
+
+        def mock_tree_init(tree_self: Any, client: Any) -> None:
+            captured.append(tree_self)
+            orig_tree_init(tree_self, client)
+
+        with (
+            patch("ghdcbot.bot.load_config", return_value=cfg),
+            patch("ghdcbot.bot.resolve_github_token", return_value="fake"),
+            patch("ghdcbot.bot.build_adapter"),
+            patch("ghdcbot.bot.GitHubIdentityReader"),
+            patch("ghdcbot.bot.IdentityLinkService"),
+            patch("ghdcbot.bot.SocialProfileService"),
+            patch("discord.app_commands.CommandTree.__init__", mock_tree_init),
+            patch("discord.Client.run", side_effect=SystemExit(0)),
+        ):
+            try:
+                run_bot("dummy.yaml")
+            except SystemExit:
+                pass
+
+        pr_status_cmd = next(
+            c for c in captured[0].get_commands(guild=discord.Object(id=123)) if c.name == "pr-status"
+        )
+
+        interaction = MagicMock()
+        interaction.user.id = 999
+        interaction.response.defer = AsyncMock()
+
+        with patch("ghdcbot.bot.PRStatusModal._lookup", new_callable=AsyncMock) as mock_lookup:
+            await pr_status_cmd.callback(interaction, repo="test-repo", pr_number=141)
+            mock_lookup.assert_awaited_once_with(interaction, 141)
+
