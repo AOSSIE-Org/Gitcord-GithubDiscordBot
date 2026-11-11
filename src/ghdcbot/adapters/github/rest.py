@@ -808,6 +808,8 @@ class GitHubRestAdapter:
         repo: str,
         limit: int = 100,
         per_page: int = 100,
+        labels: str | None = None,
+        unassigned: bool = False,
     ) -> list[dict] | None:
         """Fetch open issues for a repository, excluding pull requests.
 
@@ -815,6 +817,8 @@ class GitHubRestAdapter:
         :param repo: Repository name.
         :param limit: Maximum number of open issues to collect across pages.
         :param per_page: Page size for each GitHub API request (clamped to 1..100).
+        :param labels: Comma-separated label names; GitHub returns only issues with all of them.
+        :param unassigned: When true, only issues with no assignee (assignee=none).
         :return: List of issue dicts, newest first, or None on fetch error.
         """
         if limit <= 0:
@@ -823,6 +827,10 @@ class GitHubRestAdapter:
         issues: list[dict] = []
         page_size = max(1, min(per_page, 100))
         params = {"state": "open", "sort": "created", "direction": "desc", "per_page": page_size}
+        if labels:
+            params["labels"] = labels
+        if unassigned:
+            params["assignee"] = "none"
         try:
             pages = self._paginate(
                 f"/repos/{owner}/{repo}/issues",
