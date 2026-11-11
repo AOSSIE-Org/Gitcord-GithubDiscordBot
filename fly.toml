@@ -1,0 +1,45 @@
+# Gitcord on Fly.io - one machine running the Discord bot + scheduled sync.
+# Full walkthrough: docs/FLY.md
+#
+# Before deploying:
+#   1. Change `app` to a globally unique name.
+#   2. cp config/docker-example.yaml config/config.yaml   (set github.org + discord.guild_id)
+#   3. fly volumes create gitcord_data --size 1 --region <primary_region>
+#   4. fly secrets set GITHUB_TOKEN=... DISCORD_TOKEN=...
+#   5. fly deploy --ha=false
+#
+# Never commit config/config.yaml or tokens. Secrets live in `fly secrets`, not here.
+
+app = "gitcord-change-me"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.fly"
+
+[env]
+  GITCORD_CONFIG = "/app/config/config.yaml"
+  # Seconds between scheduled syncs (default 21600 = 6 hours).
+  GITCORD_SYNC_INTERVAL_SECONDS = "21600"
+
+# Ship your local config (contains no secrets, only ${GITHUB_TOKEN}/${DISCORD_TOKEN} placeholders)
+# to the machine. `fly deploy` fails if the local file is missing.
+[[files]]
+  guest_path = "/app/config/config.yaml"
+  local_path = "config/config.yaml"
+
+# SQLite state, reports, identity links and the sync lock live here. A Fly volume is
+# attached to exactly one machine, so keep a single machine (fly deploy --ha=false).
+[mounts]
+  source = "gitcord_data"
+  destination = "/data"
+
+# Gitcord only makes outbound HTTPS calls (Discord gateway/API, GitHub API): no
+# [http_service] or [[services]] block, no inbound ports.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# The supervisor exits non-zero if the bot or sync loop dies; always restart so it recovers.
+[[restart]]
+  policy = "always"
