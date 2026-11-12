@@ -8,6 +8,7 @@ import pytest
 from ghdcbot.adapters.storage.sqlite import SqliteStorage
 from ghdcbot.config.models import IdentityMapping, NotificationConfig
 from ghdcbot.core.modes import MutationPolicy, RunMode
+from ghdcbot.engine.audit_export import filter_audit_events, format_audit_csv
 from ghdcbot.engine.inactivity import (
     _lifecycle_lock,
     build_checkin_message,
@@ -671,6 +672,56 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "unassigned"
         assert rec["escalated_at"] is not None
 
+    def test_unassign_audit_event_is_found_by_export_audit(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """The unassignment is recorded in the standard audit envelope that export-audit reads."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=15)
+        reminded_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+        storage.record_issue_inactivity_reminder("Gitcord", 42, "unverified_bob", reminded_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.unassign_issue.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert len(storage.audit_events) == 1
+        event = storage.audit_events[0]
+        assert event["event_type"] == "issue_inactivity_unassigned"
+        assert event["actor_type"] == "system"
+        assert event["context"]["repo"] == "Gitcord"
+        assert event["context"]["issue_number"] == 42
+        assert event["context"]["github_user"] == "unverified_bob"
+
+        events = storage.audit_events
+        assert filter_audit_events(events, event_type="issue_inactivity_unassigned") == [event]
+        assert filter_audit_events(events, user="unverified_bob") == [event]
+        row = format_audit_csv(events).splitlines()[1]
+        assert ",issue_inactivity_unassigned,unverified_bob,,Gitcord," in row
+
     def test_stage_2_unassigns_without_comment_when_comment_on_unassign_disabled(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
@@ -848,9 +899,9 @@ class TestInactivityLifecycleExecution:
         github_writer.create_issue_comment.assert_not_called()
         discord_writer.send_dm.assert_not_called()
         assert len(storage.audit_events) == 1
-        assert storage.audit_events[0]["action"] == "issue_inactivity_checkin_dry_run"
-        assert storage.audit_events[0]["github_user"] == "unverified_bob"
-        assert storage.audit_events[0]["discord_user_id"] is None
+        assert storage.audit_events[0]["event_type"] == "issue_inactivity_checkin_dry_run"
+        assert storage.audit_events[0]["context"]["github_user"] == "unverified_bob"
+        assert storage.audit_events[0]["context"]["discord_user_id"] is None
 
     def test_unverified_contributor_stage_2_escalates_and_unassigns(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
@@ -1125,7 +1176,7 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "reminded"
         assert rec["escalated_at"] is None
         assert len(storage.audit_events) == 1
-        assert storage.audit_events[0]["action"] == "issue_inactivity_escalated_dry_run"
+        assert storage.audit_events[0]["event_type"] == "issue_inactivity_escalated_dry_run"
 
         # Repeated execution must not append duplicate audit events
         run_issue_inactivity_lifecycle(
@@ -1186,12 +1237,12 @@ class TestInactivityLifecycleExecution:
         checkin_key = f"issue_inactivity_checkin:Gitcord:42:alex:{assigned_at.isoformat()}"
         assert not storage.was_notification_sent(checkin_key)
         assert len(storage.audit_events) == 1
-        assert storage.audit_events[0]["action"] == "issue_inactivity_checkin_dry_run"
-        assert storage.audit_events[0]["repo"] == "Gitcord"
-        assert storage.audit_events[0]["issue_number"] == 42
-        assert storage.audit_events[0]["github_user"] == "alex"
-        assert storage.audit_events[0]["discord_user_id"] == "11223344"
-        assert storage.audit_events[0]["days"] == 7
+        assert storage.audit_events[0]["event_type"] == "issue_inactivity_checkin_dry_run"
+        assert storage.audit_events[0]["context"]["repo"] == "Gitcord"
+        assert storage.audit_events[0]["context"]["issue_number"] == 42
+        assert storage.audit_events[0]["context"]["github_user"] == "alex"
+        assert storage.audit_events[0]["context"]["discord_user_id"] == "11223344"
+        assert storage.audit_events[0]["context"]["days"] == 7
 
         # Repeated execution must not append duplicate audit events
         run_issue_inactivity_lifecycle(
