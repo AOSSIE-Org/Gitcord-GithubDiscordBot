@@ -10,6 +10,7 @@ from ghdcbot.config.models import IdentityMapping, NotificationConfig
 from ghdcbot.core.modes import MutationPolicy, RunMode
 from ghdcbot.engine.audit_export import filter_audit_events, format_audit_csv
 from ghdcbot.engine.inactivity import (
+    _audit_logged,
     _lifecycle_lock,
     build_checkin_message,
     build_unassign_comment,
@@ -1256,6 +1257,68 @@ class TestInactivityLifecycleExecution:
             now=now,
         )
         assert len(storage.audit_events) == 1
+
+    @pytest.mark.parametrize(
+        ("assignee", "assigned_days_ago", "reminded", "event_type"),
+        [
+            ("alex", 15, True, "issue_inactivity_escalated_dry_run"),
+            ("alex", 8, False, "issue_inactivity_checkin_dry_run"),
+            ("unverified_bob", 8, False, "issue_inactivity_checkin_dry_run"),
+        ],
+        ids=["escalation", "verified-checkin", "unverified-checkin"],
+    )
+    def test_dry_run_dedupes_from_audit_events_without_notification_store(
+        self,
+        setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig],
+        assignee: str,
+        assigned_days_ago: int,
+        reminded: bool,
+        event_type: str,
+    ) -> None:
+        """A storage without was_notification_sent dedupes dry runs from its audit events."""
+        github_reader, github_writer, discord_writer, storage, _, config = setup_env
+        # Hide the notification store so the lifecycle falls back to the audit events.
+        storage.was_notification_sent = None
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=assigned_days_ago)
+
+        dry_run_policy = MutationPolicy(
+            mode=RunMode.DRY_RUN,
+            github_write_allowed=False,
+            discord_write_allowed=False,
+        )
+
+        storage.track_issue_assignment("Gitcord", 42, assignee, assigned_at)
+        if reminded:
+            reminded_at = now - timedelta(days=8)
+            storage.record_issue_inactivity_reminder("Gitcord", 42, assignee, reminded_at)
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": assignee}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+
+        for _ in range(2):
+            run_issue_inactivity_lifecycle(
+                github_reader=github_reader,
+                github_writer=github_writer,
+                discord_writer=discord_writer,
+                storage=storage,
+                policy=dry_run_policy,
+                config=config,
+                github_org="AOSSIE-Org",
+                now=now,
+            )
+
+        assert [e["event_type"] for e in storage.audit_events] == [event_type]
+        assert storage.audit_events[0]["context"]["github_user"] == assignee
 
     def test_newly_discovered_issue_starts_tracking_without_dm(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
@@ -2665,3 +2728,39 @@ class TestGitHubRestAdapterInactivityHelpers:
         assert any("Skipping inactivity check for assignee due to inconclusive permission check" in m for m in warning_messages)
 
 
+_CHECKIN = "issue_inactivity_checkin_dry_run"
+_LOGGED_CHECKIN = {
+    "event_type": _CHECKIN,
+    "context": {"repo": "Gitcord", "issue_number": 42, "github_user": "alex"},
+}
+
+
+class TestAuditLogged:
+    """_audit_logged matches an event only for the same type, repo, issue and assignee."""
+
+    def test_matches_the_same_event(self) -> None:
+        assert _audit_logged([_LOGGED_CHECKIN], _CHECKIN, "Gitcord", 42, "alex")
+
+    @pytest.mark.parametrize(
+        ("event_type", "repo", "issue_number", "assignee"),
+        [
+            ("issue_inactivity_escalated_dry_run", "Gitcord", 42, "alex"),
+            ("issue_inactivity_checkin_dry_run", "Other", 42, "alex"),
+            ("issue_inactivity_checkin_dry_run", "Gitcord", 43, "alex"),
+            ("issue_inactivity_checkin_dry_run", "Gitcord", 42, "bob"),
+        ],
+        ids=["event-type", "repo", "issue", "assignee"],
+    )
+    def test_a_different_event_is_not_a_match(
+        self, event_type: str, repo: str, issue_number: int, assignee: str
+    ) -> None:
+        assert not _audit_logged([_LOGGED_CHECKIN], event_type, repo, issue_number, assignee)
+
+    def test_ignores_non_dict_and_flat_entries(self) -> None:
+        flat = {
+            "action": _CHECKIN,
+            "repo": "Gitcord",
+            "issue_number": 42,
+            "github_user": "alex",
+        }
+        assert not _audit_logged(["text", flat], _CHECKIN, "Gitcord", 42, "alex")
