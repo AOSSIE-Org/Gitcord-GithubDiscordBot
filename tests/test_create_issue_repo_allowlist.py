@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +13,11 @@ import discord
 
 from ghdcbot.bot import run_bot
 from ghdcbot.config.models import BotConfig
+from ghdcbot.engine.audit_export import (
+    filter_audit_events,
+    format_audit_csv,
+    format_audit_markdown,
+)
 
 
 class FakeGitHubAdapter:
@@ -95,7 +102,9 @@ def _build_test_config(*, repo_names: list[str] | None = None) -> BotConfig:
     })
 
 
-def _setup_bot_and_get_commands(config: BotConfig, fake_github: FakeGitHubAdapter) -> dict[str, Any]:
+def _setup_bot_and_get_commands(
+    config: BotConfig, fake_github: FakeGitHubAdapter, storage: MagicMock | None = None
+) -> dict[str, Any]:
     captured_trees: list[Any] = []
     orig_tree_init = discord.app_commands.CommandTree.__init__
 
@@ -103,7 +112,7 @@ def _setup_bot_and_get_commands(config: BotConfig, fake_github: FakeGitHubAdapte
         captured_trees.append(tree_self)
         orig_tree_init(tree_self, client)
 
-    mock_storage = MagicMock()
+    mock_storage = storage if storage is not None else MagicMock()
     mock_storage.list_verified_identity_mappings.return_value = [
         SimpleNamespace(discord_user_id="123", github_user="alice"),
         SimpleNamespace(discord_user_id="456", github_user="bob"),
@@ -179,6 +188,35 @@ def test_create_issue_succeeds_for_allowed_repo() -> None:
     call = fake_github.created_issues[0]
     assert call["repo"] == "allowed-repo"
     assert call["title"] == "Test Issue"
+
+
+def test_created_issue_audit_can_be_filtered_and_exported() -> None:
+    storage = MagicMock()
+    commands = _setup_bot_and_get_commands(
+        _build_test_config(repo_names=["allowed-repo"]), FakeGitHubAdapter(), storage
+    )
+    asyncio.run(
+        commands["create-issue"].callback(
+            _make_mock_interaction(user_id=123), repo="allowed-repo", title="Test Issue"
+        )
+    )
+
+    storage.append_audit_event.assert_called_once()
+    event = storage.append_audit_event.call_args.args[0]
+    assert filter_audit_events([event], event_type="issue_created") == [event]
+    assert filter_audit_events([event], user="123") == [event]
+    assert filter_audit_events([event], user="alice") == [event]
+    row = next(csv.DictReader(io.StringIO(format_audit_csv([event]))))
+    assert row["event_type"] == "issue_created"
+    assert row["github_user"] == "alice"
+    assert row["discord_user_id"] == "123"
+    assert row["repo"] == "allowed-repo"
+    assert event["context"]["issue_number"] == 42
+    assert event["context"]["creator_github"] == "alice"
+    assert event["context"]["creator_discord_id"] == "123"
+    assert event["context"]["action"] == "issue_created_from_discord"
+    assert "timestamp" in event
+    assert "## issue_created" in format_audit_markdown([event])
 
 
 def test_create_issue_no_filter_configured() -> None:

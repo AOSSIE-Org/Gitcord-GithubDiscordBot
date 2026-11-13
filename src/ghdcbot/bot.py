@@ -2459,9 +2459,15 @@ def run_bot(config_path: str) -> None:
             ctx = format_issue_creation_audit_context(
                 config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
             )
-            ctx["timestamp"] = datetime.now(UTC).isoformat()
+            ctx["github_user"] = github_username
             try:
-                append_audit(ctx)
+                append_audit({
+                    "actor_type": "discord_user",
+                    "actor_id": discord_user_id,
+                    "event_type": "issue_created",
+                    "context": ctx,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                })
             except Exception as e:
                 logger.error("Failed to append audit event for issue creation", exc_info=e)
             
