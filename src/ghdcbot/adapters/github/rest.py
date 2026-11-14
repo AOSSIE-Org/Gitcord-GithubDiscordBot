@@ -616,7 +616,23 @@ class GitHubRestAdapter:
             try:
                 response_data = response.json()
                 actual_assignees = response_data.get("assignees", [])
-                assignee_logins = [a.get("login", "") for a in actual_assignees if isinstance(a, dict)]
+                assignee_logins = [
+                    a.get("login", "") for a in actual_assignees if isinstance(a, dict) and a.get("login")
+                ]
+                assignee_logins_lower = [login.lower() for login in assignee_logins]
+                if assignee.lower() not in assignee_logins_lower:
+                    self._logger.warning(
+                        "Assignee was silently ignored by GitHub (user may not be a collaborator or lack repository access)",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "requested_assignee": assignee,
+                            "actual_assignees_from_github": assignee_logins,
+                        },
+                    )
+                    return False
+
                 self._logger.info(
                     "Issue assigned successfully",
                     extra={
@@ -628,12 +644,19 @@ class GitHubRestAdapter:
                         "response_assignee_count": len(assignee_logins),
                     },
                 )
-            except Exception:
-                self._logger.info(
-                    "Issue assigned successfully (could not parse response)",
-                    extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
+                return True
+            except (ValueError, TypeError, AttributeError) as exc:
+                self._logger.warning(
+                    "Issue assignment response could not be verified",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "assignee": assignee,
+                        "error": str(exc),
+                    },
                 )
-            return True
+                return False
         else:
             error_body = ""
             try:
