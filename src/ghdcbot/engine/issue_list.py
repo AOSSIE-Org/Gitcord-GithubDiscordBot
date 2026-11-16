@@ -80,7 +80,9 @@ def format_single_issue_entry(
     - Labels (if any)
     """
     number = issue.get("number", "?")
-    title = _sanitize_discord_title((issue.get("title") or "No title").strip(), max_len=None)
+    title = _sanitize_discord_title(
+        (issue.get("title") or "No title").strip().replace("`", "'"), max_len=None
+    )
     url = issue.get("html_url") or f"https://github.com/{org}/{repo}/issues/{number}"
     suppressed_url = _suppress_discord_embed(str(url))
 
@@ -99,7 +101,7 @@ def format_single_issue_entry(
     # Labels
     raw_labels = issue.get("labels") or []
     label_names = [
-        _sanitize_discord_title(str(lbl.get("name")), max_len=None)
+        _sanitize_discord_title(str(lbl.get("name")).replace("`", "'"), max_len=None)
         for lbl in raw_labels
         if isinstance(lbl, dict) and lbl.get("name")
     ]

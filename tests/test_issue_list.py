@@ -832,3 +832,34 @@ def test_issue_cmd_passes_label_and_unassigned_filters() -> None:
     assert sent_text == (
         "No open issues found in **Devr.AI** with label **good first issue,bug** and no assignee."
     )
+
+
+def test_format_single_issue_entry_replaces_backticks_in_title():
+    issue = {
+        "number": 5,
+        "title": "Fix `f(x)` parsing",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    # No code span is opened, so the escapes below render as plain parentheses.
+    assert "`" not in lines[0]
+    assert r"Fix 'f\(x\)' parsing" in lines[0]
+
+
+def test_format_single_issue_entry_replaces_backticks_in_label():
+    issue = {
+        "number": 5,
+        "title": "Plain title",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [{"name": "fix `f(x)`"}],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert r"🏷️ fix 'f\(x\)'" in lines[1]
+    assert "fix `" not in lines[1]
