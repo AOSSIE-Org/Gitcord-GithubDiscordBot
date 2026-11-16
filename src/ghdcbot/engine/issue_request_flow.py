@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ghdcbot.engine.metrics import same_github_user
+
 logger = logging.getLogger(__name__)
 
 # Activity threshold: no merged PR in this many days = "low activity"
@@ -25,7 +27,7 @@ def get_merged_pr_count_and_last_time(
     for event in events:
         if (
             event.event_type == "pr_merged"
-            and event.github_user == github_user
+            and same_github_user(event.github_user, github_user)
             and period_start <= event.created_at <= period_end
         ):
             count += 1

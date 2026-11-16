@@ -48,6 +48,23 @@ def test_get_merged_pr_count_and_last_time_filtered_by_user_and_type() -> None:
     assert last_at == base + timedelta(days=1)
 
 
+def test_get_merged_pr_count_and_last_time_ignores_username_case() -> None:
+    """Linked as octo-cat, GitHub events carry the canonical Octo-Cat."""
+    from ghdcbot.core.models import ContributionEvent
+
+    base = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    storage = MagicMock()
+    storage.list_contributions.return_value = [
+        ContributionEvent("Octo-Cat", "pr_merged", "org/r", base, {}),
+        ContributionEvent("octo-dog", "pr_merged", "org/r", base, {}),
+    ]
+    period_start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    period_end = datetime(2025, 1, 31, tzinfo=timezone.utc)
+    count, last_at = get_merged_pr_count_and_last_time(storage, "octo-cat", period_start, period_end)
+    assert count == 1
+    assert last_at == base
+
+
 def test_get_merged_pr_count_and_last_time_respects_period() -> None:
     """Events outside period are ignored."""
     from ghdcbot.core.models import ContributionEvent

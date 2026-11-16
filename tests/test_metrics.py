@@ -9,6 +9,7 @@ from ghdcbot.engine.metrics import (
     get_contribution_metrics,
     get_rank_for_user,
     rank_by_activity,
+    same_github_user,
 )
 
 
@@ -149,3 +150,60 @@ def test_build_contribution_summary_message_for_other_user(tmp_path) -> None:
     )
     assert "No activity in this period." in empty_msg
     assert "Top contributors" not in empty_msg
+
+
+def test_same_github_user_ignores_case_and_whitespace() -> None:
+    assert same_github_user("Octo-Cat", "octo-cat")
+    assert same_github_user(" octo-cat ", "OCTO-CAT")
+    assert not same_github_user("octo-cat", "octo-dog")
+    assert not same_github_user("", "")
+    assert not same_github_user(" ", "\t")
+    assert not same_github_user(None, "octo-cat")
+
+
+def test_get_rank_for_user_ignores_case(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+    storage.record_contributions(
+        [ContributionEvent("Octo-Cat", "pr_merged", "r", period_end - timedelta(days=1), {})]
+    )
+    ranked = rank_by_activity(get_contribution_metrics(storage, period_start, period_end))
+    assert get_rank_for_user(ranked, "octo-cat") == 1
+    assert get_rank_for_user(ranked, "octo-dog") is None
+
+
+def test_summary_finds_activity_when_linked_casing_differs(tmp_path) -> None:
+    """Linked as octo-cat, GitHub events carry the canonical Octo-Cat."""
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    now = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    storage.record_contributions(
+        [
+            ContributionEvent("Octo-Cat", "pr_merged", "r", now - timedelta(days=2), {"pr_number": 1}),
+            ContributionEvent("Octo-Cat", "pr_merged", "r", now - timedelta(days=3), {"pr_number": 2}),
+        ]
+    )
+    message = build_contribution_summary_message(storage, "octo-cat", now=now)
+    assert "No activity in this period." not in message
+    assert "merged: 2" in message
+    assert "you're #1" in message
+
+
+def test_metrics_merge_casing_variants_of_one_login(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    now = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    storage.record_contributions(
+        [
+            ContributionEvent("Octo-Cat", "pr_merged", "r", now - timedelta(days=4), {"pr_number": 1}),
+            ContributionEvent("octo-cat", "pr_merged", "r", now - timedelta(days=3), {"pr_number": 2}),
+            ContributionEvent("octo-cat", "pr_merged", "r", now - timedelta(days=2), {"pr_number": 3}),
+        ]
+    )
+    metrics = get_contribution_metrics(storage, now - timedelta(days=30), now)
+    assert len(metrics) == 1
+    assert metrics[0].github_user == "Octo-Cat"
+    assert metrics[0].prs_merged == 3
+    assert "merged: 3" in build_contribution_summary_message(storage, "octo-cat", now=now)

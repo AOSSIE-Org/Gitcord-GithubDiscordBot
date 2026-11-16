@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, Protocol, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from ghdcbot.core.models import (
     AssignmentPlan,
@@ -13,8 +13,17 @@ from ghdcbot.core.models import (
 
 
 class GitHubReader(Protocol):
-    def list_contributions(self, since: datetime) -> Iterable[ContributionEvent]:
-        """Yield contributions since the given timestamp."""
+    def list_contributions(
+        self,
+        since: datetime,
+        repo_since: Mapping[str, datetime] | None = None,
+    ) -> Iterable[ContributionEvent]:
+        """Yield contributions since the given timestamp.
+
+        ``repo_since`` maps a repo name to an earlier timestamp to re-read that repo from.
+        Readers may also expose ``sync_incomplete_repos`` and ``sync_repo_listing_incomplete``
+        to report repos that could not be read in full.
+        """
 
     def list_open_issues(self) -> Iterable[dict]:
         """Yield open issues with metadata needed for assignment."""
