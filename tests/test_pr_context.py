@@ -7,12 +7,52 @@ import pytest
 
 from ghdcbot.engine.pr_context import (
     build_pr_embed,
+    current_review_states,
     determine_mentor_signal,
     fetch_pr_context,
     format_idle_duration,
     format_relative_time,
     parse_pr_url,
 )
+
+
+def _review(login: str, state: str) -> dict:
+    return {"user": {"login": login}, "state": state}
+
+
+def test_current_review_states_keeps_each_reviewers_latest_verdict() -> None:
+    reviews = [
+        _review("alice", "CHANGES_REQUESTED"),
+        _review("bob", "APPROVED"),
+        _review("Alice", "APPROVED"),  # login casing differs
+        _review("bob", "COMMENTED"),  # a comment does not change bob's approval
+        _review("carol", "CHANGES_REQUESTED"),
+        _review("carol", "DISMISSED"),
+    ]
+    assert current_review_states(reviews) == ["APPROVED", "APPROVED", "DISMISSED"]
+
+
+def test_current_review_states_counts_reviews_without_login_separately() -> None:
+    reviews = [{"state": "APPROVED"}, {"state": "APPROVED", "user": None}, {"state": "COMMENTED"}]
+    assert current_review_states(reviews) == ["APPROVED", "APPROVED"]
+
+
+def test_approval_after_requested_changes_is_ready_to_merge() -> None:
+    """A reviewer who requested changes and then approved no longer blocks the PR."""
+    pr = {
+        "title": "Test PR",
+        "state": "open",
+        "draft": False,
+        "mergeable": True,
+        "user": {"login": "contributor"},
+        "html_url": "https://github.com/owner/repo/pull/1",
+    }
+    reviews = [_review("mentor", "CHANGES_REQUESTED"), _review("mentor", "APPROVED")]
+
+    assert determine_mentor_signal(pr, reviews, "success", True) == "Ready to merge"
+    embed = build_pr_embed(pr, "owner", "repo", reviews, "success", None)
+    checks = next(f for f in embed["fields"] if f["name"] == "Checks")
+    assert checks["value"].splitlines() == ["CI: Success", "Reviews: 1 approval"]
 
 
 def test_parse_pr_url_valid() -> None:
