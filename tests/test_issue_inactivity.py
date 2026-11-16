@@ -2794,3 +2794,35 @@ class TestAuditLogged:
             "github_user": "alex",
         }
         assert not _audit_logged(["text", flat], _CHECKIN, "Gitcord", 42, "alex")
+
+
+def test_checkin_message_does_not_truncate_long_title() -> None:
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    assert len(title) > 100
+    msg = build_checkin_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title=title,
+        github_user="alex",
+        discord_user_id="987654321",
+        days=7,
+    )
+    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in msg
+    assert "[Re-verify](" not in msg
+
+
+def test_unassign_dm_message_does_not_truncate_long_title() -> None:
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    assert len(title) > 100
+    dm = build_unassign_dm_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title=title,
+        github_user="alex",
+        discord_user_id="987654321",
+        total_days=14,
+    )
+    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in dm
+    assert "[Re-verify](" not in dm
