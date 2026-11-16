@@ -7,6 +7,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from ghdcbot.engine.notifications import _sanitize_discord_title
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,7 +187,7 @@ def build_assignment_confirmation_embed(
             },
             {
                 "name": "Issue",
-                "value": f"#{issue.get('number', '?')}: {issue.get('title', 'Untitled')[:100]}",
+                "value": f"#{issue.get('number', '?')}: {_sanitize_discord_title(issue.get('title') or 'Untitled')}",
                 "inline": False,
             },
             {

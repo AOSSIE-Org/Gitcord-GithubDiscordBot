@@ -251,3 +251,33 @@ def test_mutation_policy_write_disabled() -> None:
     
     assert not policy.allow_github_mutations
     assert not policy.allow_discord_mutations
+
+
+def test_build_assignment_confirmation_embed_escapes_masked_link_in_title() -> None:
+    """The public confirmation embed must not render a title as a link."""
+    now = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+    issue = {
+        "title": "[Re-verify](https://evil.example) @everyone",
+        "state": "open",
+        "number": 123,
+        "assignees": [],
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "html_url": "https://github.com/owner/repo/issues/123",
+    }
+    embed = build_assignment_confirmation_embed(
+        issue=issue,
+        owner="owner",
+        repo="repo",
+        current_assignee_github=None,
+        current_assignee_discord=None,
+        new_assignee_github="newuser",
+        new_assignee_discord="123456789",
+        assignee_activity="Unknown",
+        now=now,
+    )
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert r"\[Re-verify\]\(https://evil.example\)" in fields["Issue"]
+    assert "[Re-verify](" not in fields["Issue"]
+    assert "@everyone" not in fields["Issue"]
+    assert fields["Issue"].startswith("#123: ")

@@ -148,3 +148,35 @@ def test_create_issue_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     issue = adapter.create_issue("org", "repo", "Test", "Body")
     
     assert issue is None
+
+
+def test_build_issue_created_embed_escapes_masked_link_in_title() -> None:
+    issue_data = {
+        "number": 42,
+        "title": "[Re-verify](https://evil.example) @everyone",
+        "html_url": "https://github.com/org/repo/issues/42",
+        "state": "open",
+    }
+    embed = build_issue_created_embed(issue_data, "org", "repo", "testuser", "123")
+
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert r"\[Re-verify\]\(https://evil.example\)" in fields["Issue"]
+    assert "[Re-verify](" not in fields["Issue"]
+    assert "@everyone" not in fields["Issue"]
+    # The outer link to the issue stays intact.
+    assert fields["Issue"].startswith("[#42: ")
+    assert fields["Issue"].endswith("](https://github.com/org/repo/issues/42)")
+
+
+def test_build_issue_created_embed_label_stays_inside_code_span() -> None:
+    issue_data = {
+        "number": 42,
+        "title": "Bug found",
+        "html_url": "https://github.com/org/repo/issues/42",
+        "state": "open",
+        "labels": [{"name": "[x](https://evil.example)"}],
+    }
+    embed = build_issue_created_embed(issue_data, "org", "repo", "testuser", "123")
+
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields["Labels"] == "`[x](https://evil.example)`"

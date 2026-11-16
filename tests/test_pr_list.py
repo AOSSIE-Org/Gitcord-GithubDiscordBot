@@ -194,3 +194,40 @@ def test_format_pr_list_messages_splits_instead_of_truncating() -> None:
     assert "…truncated for Discord length limit." not in joined
     assert "last 26" in messages[0]
     assert "*(continued)*" in messages[1]
+
+
+def test_format_pr_list_messages_escapes_masked_link_in_title() -> None:
+    prs = [
+        _pr(
+            repo="r",
+            number=1,
+            status="open",
+            title="[Re-verify](https://evil.example) @everyone",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+    ]
+    text = "\n".join(
+        format_pr_list_messages(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
+    )
+    assert r"\[Re-verify\]\(https://evil.example\)" in text
+    assert "[Re-verify](" not in text
+    assert "@everyone" not in text
+    # The trusted link on repo#N is untouched.
+    assert "[r #1](<https://github.com/o/r/pull/1>)" in text
+
+
+def test_format_pr_list_messages_truncates_before_escaping() -> None:
+    prs = [
+        _pr(
+            repo="r",
+            number=1,
+            status="open",
+            title="a" * 70 + "[x](https://evil.example)",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+    ]
+    text = "\n".join(
+        format_pr_list_messages(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
+    )
+    assert "a" * 70 + r"\[x\]" in text
+    assert "](https://evil.example" not in text

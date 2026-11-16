@@ -2263,3 +2263,25 @@ async def test_repo_suggestions_without_discovery_support() -> None:
 
     config = {"github": {"repos": {"mode": "allow", "names": ["configured"]}}}
     assert await get_repo_suggestions(config, object(), "conf") == ["configured"]
+
+
+def test_format_single_pr_status_escapes_masked_link_in_title() -> None:
+    health = _make_health(title="[Re-verify](https://evil.example) @everyone")
+    message = format_single_pr_status(health, "org")
+    assert r"\[Re-verify\]\(https://evil.example\)" in message
+    assert "[Re-verify](" not in message
+    assert "@everyone" not in message
+
+
+def test_format_all_pr_status_escapes_masked_link_in_title() -> None:
+    health = _make_health(title="[Re-verify](https://evil.example) @everyone")
+    text = "\n".join(format_all_pr_status([health], "org", skip=0, total=1))
+    assert r"\[Re-verify\]\(https://evil.example\)" in text
+    assert "[Re-verify](" not in text
+    assert "@everyone" not in text
+
+
+def test_format_all_pr_status_truncates_before_escaping() -> None:
+    health = _make_health(title="a" * 48 + "[x](https://evil.example)")
+    text = "\n".join(format_all_pr_status([health], "org", skip=0, total=1))
+    assert "](https://evil.example" not in text

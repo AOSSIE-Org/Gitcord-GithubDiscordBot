@@ -2728,6 +2728,36 @@ class TestGitHubRestAdapterInactivityHelpers:
         assert any("Skipping inactivity check for assignee due to inconclusive permission check" in m for m in warning_messages)
 
 
+def test_checkin_message_escapes_masked_link_in_title() -> None:
+    msg = build_checkin_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title="[Re-verify](https://evil.example) @everyone",
+        github_user="alex",
+        discord_user_id="987654321",
+        days=7,
+    )
+    assert r"\[Re-verify\]\(https://evil.example\)" in msg
+    assert "[Re-verify](" not in msg
+    assert "@everyone" not in msg
+
+
+def test_unassign_dm_message_escapes_masked_link_in_title() -> None:
+    dm = build_unassign_dm_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title="[Re-verify](https://evil.example) @everyone",
+        github_user="alex",
+        discord_user_id="987654321",
+        total_days=14,
+    )
+    assert r"\[Re-verify\]\(https://evil.example\)" in dm
+    assert "[Re-verify](" not in dm
+    assert "@everyone" not in dm
+
+
 _CHECKIN = "issue_inactivity_checkin_dry_run"
 _LOGGED_CHECKIN = {
     "event_type": _CHECKIN,
@@ -2764,3 +2794,35 @@ class TestAuditLogged:
             "github_user": "alex",
         }
         assert not _audit_logged(["text", flat], _CHECKIN, "Gitcord", 42, "alex")
+
+
+def test_checkin_message_does_not_truncate_long_title() -> None:
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    assert len(title) > 100
+    msg = build_checkin_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title=title,
+        github_user="alex",
+        discord_user_id="987654321",
+        days=7,
+    )
+    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in msg
+    assert "[Re-verify](" not in msg
+
+
+def test_unassign_dm_message_does_not_truncate_long_title() -> None:
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    assert len(title) > 100
+    dm = build_unassign_dm_message(
+        github_org="AOSSIE-Org",
+        repo="Gitcord",
+        issue_number=42,
+        issue_title=title,
+        github_user="alex",
+        discord_user_id="987654321",
+        total_days=14,
+    )
+    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in dm
+    assert "[Re-verify](" not in dm
