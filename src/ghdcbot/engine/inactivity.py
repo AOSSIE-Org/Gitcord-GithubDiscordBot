@@ -21,6 +21,55 @@ logger = logging.getLogger(__name__)
 _lifecycle_lock = threading.Lock()
 
 
+def _inactivity_audit_event(
+    event_type: str,
+    *,
+    repo: str,
+    issue_number: int,
+    assignee: str,
+    discord_user_id: str | None,
+    when: datetime,
+    **details: object,
+) -> dict:
+    """Build an inactivity audit event in the standard envelope.
+
+    ``export-audit`` reads ``event_type``, ``actor_type``, ``actor_id`` and the
+    ``context`` fields, so the event details go under ``context`` like every
+    other audit event. The bot itself takes these actions, so the actor is the
+    system.
+    """
+    return {
+        "actor_type": "system",
+        "actor_id": "",
+        "event_type": event_type,
+        "context": {
+            "repo": repo,
+            "issue_number": issue_number,
+            "github_user": assignee,
+            "discord_user_id": discord_user_id,
+            **details,
+        },
+        "timestamp": when.isoformat(),
+    }
+
+
+def _audit_logged(
+    audit_events: list, event_type: str, repo: str, issue_number: int, assignee: str
+) -> bool:
+    """Whether an inactivity audit event for this issue and assignee was already logged."""
+    for event in audit_events:
+        if not isinstance(event, dict) or event.get("event_type") != event_type:
+            continue
+        context = event.get("context") or {}
+        if (
+            context.get("repo") == repo
+            and context.get("issue_number") == issue_number
+            and context.get("github_user") == assignee
+        ):
+            return True
+    return False
+
+
 def _parse_utc_datetime(value: str | datetime | None) -> datetime | None:
     if not value:
         return None
@@ -722,15 +771,15 @@ def run_issue_inactivity_lifecycle(
 
                         audit_fn = getattr(storage, "append_audit_event", None)
                         if callable(audit_fn):
-                            audit_fn({
-                                "action": "issue_inactivity_unassigned",
-                                "repo": repo,
-                                "issue_number": issue_number,
-                                "github_user": assignee,
-                                "discord_user_id": discord_user_id,
-                                "total_time": total_time_label,
-                                "timestamp": current_time.isoformat(),
-                            })
+                            audit_fn(_inactivity_audit_event(
+                                "issue_inactivity_unassigned",
+                                repo=repo,
+                                issue_number=issue_number,
+                                assignee=assignee,
+                                discord_user_id=discord_user_id,
+                                when=current_time,
+                                total_time=total_time_label,
+                            ))
                     else:
                         # Dry run / observer mode (auto-unassign is True, but mutations not allowed)
                         rem_key_part = (
@@ -748,13 +797,12 @@ def run_issue_inactivity_lifecycle(
                         else:
                             audit_events = getattr(storage, "audit_events", None)
                             if isinstance(audit_events, list):
-                                already_logged = any(
-                                    isinstance(e, dict)
-                                    and e.get("action") == "issue_inactivity_escalated_dry_run"
-                                    and e.get("repo") == repo
-                                    and e.get("issue_number") == issue_number
-                                    and e.get("github_user") == assignee
-                                    for e in audit_events
+                                already_logged = _audit_logged(
+                                    audit_events,
+                                    "issue_inactivity_escalated_dry_run",
+                                    repo,
+                                    issue_number,
+                                    assignee,
                                 )
                         if already_logged:
                             continue
@@ -767,15 +815,15 @@ def run_issue_inactivity_lifecycle(
 
                         audit_fn = getattr(storage, "append_audit_event", None)
                         if callable(audit_fn):
-                            audit_fn({
-                                "action": "issue_inactivity_escalated_dry_run",
-                                "repo": repo,
-                                "issue_number": issue_number,
-                                "github_user": assignee,
-                                "discord_user_id": discord_user_id,
-                                "total_time": total_time_label,
-                                "timestamp": current_time.isoformat(),
-                            })
+                            audit_fn(_inactivity_audit_event(
+                                "issue_inactivity_escalated_dry_run",
+                                repo=repo,
+                                issue_number=issue_number,
+                                assignee=assignee,
+                                discord_user_id=discord_user_id,
+                                when=current_time,
+                                total_time=total_time_label,
+                            ))
 
                         mark_sent = getattr(storage, "mark_notification_sent", None)
                         if callable(mark_sent):
@@ -848,13 +896,12 @@ def run_issue_inactivity_lifecycle(
                             else:
                                 audit_events = getattr(storage, "audit_events", None)
                                 if isinstance(audit_events, list):
-                                    already_logged = any(
-                                        isinstance(e, dict)
-                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
-                                        and e.get("repo") == repo
-                                        and e.get("issue_number") == issue_number
-                                        and e.get("github_user") == assignee
-                                        for e in audit_events
+                                    already_logged = _audit_logged(
+                                        audit_events,
+                                        "issue_inactivity_checkin_dry_run",
+                                        repo,
+                                        issue_number,
+                                        assignee,
                                     )
                             if already_logged:
                                 continue
@@ -867,15 +914,15 @@ def run_issue_inactivity_lifecycle(
 
                             audit_fn = getattr(storage, "append_audit_event", None)
                             if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_checkin_dry_run",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": discord_user_id,
-                                    "days": inactivity_days,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                                audit_fn(_inactivity_audit_event(
+                                    "issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    issue_number=issue_number,
+                                    assignee=assignee,
+                                    discord_user_id=discord_user_id,
+                                    when=current_time,
+                                    days=inactivity_days,
+                                ))
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):
@@ -939,13 +986,12 @@ def run_issue_inactivity_lifecycle(
                             else:
                                 audit_events = getattr(storage, "audit_events", None)
                                 if isinstance(audit_events, list):
-                                    already_logged = any(
-                                        isinstance(e, dict)
-                                        and e.get("action") == "issue_inactivity_checkin_dry_run"
-                                        and e.get("repo") == repo
-                                        and e.get("issue_number") == issue_number
-                                        and e.get("github_user") == assignee
-                                        for e in audit_events
+                                    already_logged = _audit_logged(
+                                        audit_events,
+                                        "issue_inactivity_checkin_dry_run",
+                                        repo,
+                                        issue_number,
+                                        assignee,
                                     )
                             if already_logged:
                                 continue
@@ -958,15 +1004,15 @@ def run_issue_inactivity_lifecycle(
 
                             audit_fn = getattr(storage, "append_audit_event", None)
                             if callable(audit_fn):
-                                audit_fn({
-                                    "action": "issue_inactivity_checkin_dry_run",
-                                    "repo": repo,
-                                    "issue_number": issue_number,
-                                    "github_user": assignee,
-                                    "discord_user_id": None,
-                                    "days": inactivity_days,
-                                    "timestamp": current_time.isoformat(),
-                                })
+                                audit_fn(_inactivity_audit_event(
+                                    "issue_inactivity_checkin_dry_run",
+                                    repo=repo,
+                                    issue_number=issue_number,
+                                    assignee=assignee,
+                                    discord_user_id=None,
+                                    when=current_time,
+                                    days=inactivity_days,
+                                ))
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):
