@@ -23,10 +23,20 @@ class SqliteStorage:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         if self._read_only:
-            conn = sqlite3.connect(f"{self._db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+            conn = sqlite3.connect(
+                f"{self._db_path.resolve().as_uri()}?mode=ro&immutable=1",
+                uri=True,
+                timeout=30.0,
+            )
         else:
             conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000;")
+        if not self._read_only:
+            try:
+                conn.execute("PRAGMA synchronous = NORMAL;")
+            except sqlite3.OperationalError:
+                pass
         try:
             with conn:
                 yield conn
@@ -35,6 +45,11 @@ class SqliteStorage:
 
     def init_schema(self) -> None:
         with self._connect() as conn:
+            if not self._read_only and str(self._db_path) != ":memory:":
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                except sqlite3.OperationalError:
+                    pass
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS contributions (
