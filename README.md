@@ -46,6 +46,8 @@
 
 Gitcord is a local, offline‑first automation engine that reads GitHub activity and Discord state, then plans role changes and GitHub assignments in a deterministic, reviewable way. It is designed for safety: dry‑run and observer modes produce audit reports without mutating anything.
 
+**GSoC 2026 Final Report:** [https://gist.github.com/shubham5080/f61f2d94785bf2d55b5793ebeea00287](https://gist.github.com/shubham5080/f61f2d94785bf2d55b5793ebeea00287)
+
 ---
 
 ## 🚀 Features
@@ -298,7 +300,7 @@ Contributor-facing cheat sheet: [`QUICK_START_GUIDE.txt`](QUICK_START_GUIDE.txt)
 - `/summary` - Show contribution metrics (7 and 30 days); optional Discord member for another verified contributor
 - `/open-prs` - List a contributor's currently open PRs in configured repos
 - `/pr` - List a contributor's recent PRs grouped by closed / merged / open (`count` N, optional `skip` M)
-- `/issue` - List recent open issues in the project channel or specified repository (excluding PRs) with optional `repo` (with autocomplete) and `limit` (default 10, max 50)
+- `/issue` - List recent open issues in the project channel or specified repository (excluding PRs) with optional `repo` (with autocomplete), `limit` (default 10, max 50), `label` (e.g. good first issue) and `unassigned`
 - `/assign-issue` - Assign a GitHub issue to up to 3 verified Discord users (requires permissions configured via `discord.command_permissions.assign-issue`).
 - `/pr-status` - Show PR health (CI, CodeRabbit review threads, merge conflicts, approval state) via an interactive menu: **Show All Open PRs**, **Next page**, or **Check Specific PR** (modal). Optional `repo:` scopes auto-detect / modal lookup. Accessible to all server members by default (cooldown: one invocation per user every 5 seconds); optionally gateable via `discord.command_permissions.pr-status`. Dashboard requests are capped at 25 PRs per page. Each PR uses a small number of REST calls (pull request, reviews, check runs) plus paginated GraphQL queries for review threads, so a full dashboard page costs roughly 100 or more API requests. When checking a specific PR without `repo:`, Gitcord probes each configured repository with one additional REST call to auto-detect the repository (capped at 25 candidate repositories, resulting in a maximum of 25 probe calls).
 

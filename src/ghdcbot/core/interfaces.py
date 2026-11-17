@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, Protocol, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from ghdcbot.core.models import (
     AssignmentPlan,
@@ -13,8 +13,17 @@ from ghdcbot.core.models import (
 
 
 class GitHubReader(Protocol):
-    def list_contributions(self, since: datetime) -> Iterable[ContributionEvent]:
-        """Yield contributions since the given timestamp."""
+    def list_contributions(
+        self,
+        since: datetime,
+        repo_since: Mapping[str, datetime] | None = None,
+    ) -> Iterable[ContributionEvent]:
+        """Yield contributions since the given timestamp.
+
+        ``repo_since`` maps a repo name to an earlier timestamp to re-read that repo from.
+        Readers may also expose ``sync_incomplete_repos`` and ``sync_repo_listing_incomplete``
+        to report repos that could not be read in full.
+        """
 
     def list_open_issues(self) -> Iterable[dict]:
         """Yield open issues with metadata needed for assignment."""
@@ -31,8 +40,14 @@ class GitHubReader(Protocol):
         repo: str,
         limit: int = 100,
         per_page: int = 100,
+        labels: str | None = None,
+        unassigned: bool = False,
     ) -> list[dict] | None:
-        """Return open issues for one repository (excluding PRs), or None on error."""
+        """Return open issues for one repository (excluding PRs), or None on error.
+
+        ``labels`` is a comma-separated label list and ``unassigned`` limits results to
+        issues without an assignee; both are applied by GitHub.
+        """
 
     def get_issue_comments(
         self, owner: str, repo: str, issue_number: int

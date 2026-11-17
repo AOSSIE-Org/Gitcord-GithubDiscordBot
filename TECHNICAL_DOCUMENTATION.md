@@ -287,7 +287,11 @@ ghdcbot --config config/config.yaml preview-pr-timeline --repo Gitcord-GithubDis
    └─> List repos (filtered by config)
    └─> For each repo: fetch issues, PRs, events since cursor
    └─> Store events in SQLite `contributions` table
-   └─> Update cursor to max(created_at)
+   └─> Update cursor to max(created_at); repos that could not be read in full
+       (e.g. a 403 or exhausted retries) keep a per-repo restart point (`github:retry:<repo>`)
+       and are re-read from it on the next sync
+       (if the repo listing itself is cut short, or storage cannot keep restart points,
+       the global cursor is held instead)
 
 4. Compute Scores
    └─> Load contributions from period_start to period_end
@@ -415,7 +419,7 @@ Tracks last-seen timestamp per data source.
 
 ```sql
 CREATE TABLE cursors (
-    source TEXT PRIMARY KEY,  -- e.g., 'github'
+    source TEXT PRIMARY KEY,  -- e.g., 'github', or 'github:retry:<repo>' for a repo to re-read
     cursor TEXT NOT NULL      -- ISO-8601 UTC timestamp
 );
 ```

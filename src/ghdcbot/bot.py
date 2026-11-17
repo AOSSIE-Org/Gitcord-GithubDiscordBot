@@ -48,6 +48,7 @@ from ghdcbot.engine.issue_list import (
     clamp_issue_limit,
     filter_open_issues,
     format_issue_list_messages,
+    normalize_issue_labels,
     resolve_repo_for_issue,
 )
 from ghdcbot.engine.metrics import (
@@ -55,6 +56,7 @@ from ghdcbot.engine.metrics import (
     get_contribution_metrics,
     get_rank_for_user,
     rank_by_activity,
+    same_github_user,
 )
 from ghdcbot.engine.open_prs import (
     format_open_prs_messages,
@@ -1064,7 +1066,7 @@ def run_bot(config_path: str) -> None:
 
                 def _fetch_metrics():
                     metrics_list = get_contribution_metrics(storage, start_30, now_utc)
-                    user_metrics = next((m for m in metrics_list if m.github_user == github_user), None)
+                    user_metrics = next((m for m in metrics_list if same_github_user(m.github_user, github_user)), None)
                     ranked_30 = rank_by_activity(metrics_list)
                     rank = get_rank_for_user(ranked_30, github_user)
                     return user_metrics, rank
@@ -1414,12 +1416,16 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(
         repo="Repository name (optional; auto-detected from channel or config if omitted)",
         limit="How many recent open issues to show (optional, default 10, max 50)",
+        label="Only show issues with this label, e.g. good first issue (optional; comma-separate several)",
+        unassigned="Only show issues that have no assignee (optional)",
     )
     @app_commands.checks.cooldown(1, 15.0)
     async def issue_cmd(
         interaction: discord.Interaction,
         repo: str | None = None,
         limit: app_commands.Range[int, 1, 50] = 10,
+        label: str | None = None,
+        unassigned: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -1439,12 +1445,20 @@ def run_bot(config_path: str) -> None:
             return
 
         effective_limit = clamp_issue_limit(limit)
+        labels = normalize_issue_labels(label)
+        filter_kwargs: dict[str, Any] = {}
+        if labels:
+            filter_kwargs["labels"] = labels
+        if unassigned:
+            filter_kwargs["unassigned"] = True
         logger.info(
             "/issue requested",
             extra={
                 "repo": resolved_repo,
                 "requested_limit": limit,
                 "effective_limit": effective_limit,
+                "labels": labels,
+                "unassigned": unassigned,
                 "user_id": str(interaction.user.id),
             },
         )
@@ -1462,6 +1476,7 @@ def run_bot(config_path: str) -> None:
                 config.github.org,
                 resolved_repo,
                 effective_limit,
+                **filter_kwargs,
             )
         except Exception:
             logger.exception(
@@ -1488,6 +1503,8 @@ def run_bot(config_path: str) -> None:
             repo=resolved_repo,
             limit=effective_limit,
             storage=storage,
+            label=labels,
+            unassigned=unassigned,
         )
         for message in messages:
             await interaction.followup.send(
@@ -1723,12 +1740,9 @@ def run_bot(config_path: str) -> None:
         author_github = pr.get("user", {}).get("login", "")
         discord_mention = None
         if author_github:
-            verified = getattr(storage, "list_verified_identity_mappings", None)
-            if callable(verified):
-                for mapping in verified():
-                    if mapping.github_user == author_github:
-                        discord_mention = f"<@{mapping.discord_user_id}>"
-                        break
+            discord_id = resolve_github_to_discord(storage, author_github)
+            if discord_id:
+                discord_mention = f"<@{discord_id}>"
         
         # Build and send embed
         embed_dict = build_pr_embed(

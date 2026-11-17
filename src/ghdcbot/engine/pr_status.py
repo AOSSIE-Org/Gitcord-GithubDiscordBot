@@ -7,6 +7,7 @@ CodeRabbit review comments, merge conflicts, and review state.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -464,23 +465,31 @@ def fetch_all_open_pr_health(
     # Apply pagination
     page_prs = all_open_prs[skip : skip + max_prs]
 
-    results: list[PRHealthStatus] = []
-    for pr in page_prs:
-        repo = pr.get("repo")
-        number = pr.get("number")
-        if not repo or number is None:
-            continue
+    def _fetch_one(pr: dict) -> PRHealthStatus | None:
+        r = pr.get("repo")
+        n = pr.get("number")
+        if not r or n is None:
+            return None
         try:
-            health = fetch_pr_health(
-                github_adapter, org, repo, number, coderabbit_bot_logins
+            return fetch_pr_health(
+                github_adapter, org, r, n, coderabbit_bot_logins
             )
-            if health is not None:
-                results.append(health)
         except Exception as exc:
             logger.warning(
                 "Failed to fetch health for PR",
-                extra={"repo": repo, "number": number, "error": str(exc)},
+                extra={"repo": r, "number": n, "error": str(exc)},
             )
+            return None
+
+    if not page_prs:
+        return [], total
+
+    # Run up to 5 concurrent fetches in parallel worker threads
+    workers = min(5, len(page_prs))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        raw_results = list(executor.map(_fetch_one, page_prs))
+
+    results = [r for r in raw_results if r is not None]
     return results, total
 
 
