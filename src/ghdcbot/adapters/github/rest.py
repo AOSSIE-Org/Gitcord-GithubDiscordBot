@@ -511,16 +511,18 @@ class GitHubRestAdapter:
     def has_write_access(self, owner: str | None, repo: str, username: str) -> bool | None:
         """Check if user has write/maintainer access to repository.
 
-        Returns True for write/maintain/admin, False for read/triage/none, or None on error.
+        Returns True for admin/maintain/write, False for confirmed non-write
+        (read/triage/none, 404, or empty inputs), and None when inconclusive
+        (API errors or unexpected failures).
         """
         user = (username or "").strip()
         repo_name = (repo or "").strip()
-        if not user or not repo_name:
+        org = (owner or self._org or "").strip()
+        if not user or not repo_name or not org:
             return False
-        org = owner or self._org
         try:
             perm = self.check_user_permission(org, repo_name, user)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - treat all API transport/lookup errors as inconclusive
             self._logger.warning(
                 "Failed to check repository write access",
                 extra={"owner": org, "repo": repo_name, "username": user, "error": str(exc)},

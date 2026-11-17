@@ -2392,6 +2392,12 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "mentor_lead") is True
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/mentor_lead/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_via_org_membership(self) -> None:
         """Org member with no explicit repo collaborator permission must return False (Issue #190)."""
@@ -2399,16 +2405,17 @@ class TestGitHubRestAdapterInactivityHelpers:
 
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
 
-        def mock_request(method: str, path: str, *args, **kwargs):
-            resp = MagicMock()
-            if "collaborators" in path:
-                resp.status_code = 404
-            elif "members" in path:
-                resp.status_code = 204
-            return resp
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
-        adapter._request = create_autospec(adapter._request, side_effect=mock_request)
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member") is False
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/org_member/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_org_member_read_only_returns_false(self) -> None:
         """Org member with read-only repo access must return False (Issue #190)."""
@@ -2422,6 +2429,12 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member_read") is False
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/org_member_read/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_org_member_write_admin_returns_true(self) -> None:
         """Org member with write/admin repo access must return True."""
@@ -2431,11 +2444,18 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = create_autospec(adapter._request)
 
         for role in ("write", "maintain", "admin"):
+            adapter._request.reset_mock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"permission": role}
             adapter._request.return_value = mock_resp
             assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_member_elevated") is True
+            adapter._request.assert_called_once_with(
+                "GET",
+                "/repos/AOSSIE-Org/Gitcord/collaborators/org_member_elevated/permission",
+                params=None,
+                allow_404=True,
+            )
 
     def test_has_write_access_outside_collaborator_with_write_access_returns_true(self) -> None:
         """Non-org-member outside collaborator with write access returns True."""
@@ -2449,6 +2469,12 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "outside_collab") is True
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/outside_collab/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_returns_false_when_not_collaborator_or_member(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -2459,6 +2485,12 @@ class TestGitHubRestAdapterInactivityHelpers:
         mock_resp.status_code = 404
         adapter._request = create_autospec(adapter._request, return_value=mock_resp)
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "external_contributor") is False
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/external_contributor/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_returns_none_on_api_error(self) -> None:
         """API error case returns None (inconclusive), keeping failed checks separate from confirmed non-write access."""
@@ -2471,6 +2503,12 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter._request = create_autospec(adapter._request, return_value=mock_resp)
 
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "someone") is None
+        adapter._request.assert_called_once_with(
+            "GET",
+            "/repos/AOSSIE-Org/Gitcord/collaborators/someone/permission",
+            params=None,
+            allow_404=True,
+        )
 
     def test_has_write_access_returns_none_on_api_exception(self) -> None:
         """Exception during permission check returns None (inconclusive)."""
@@ -2479,6 +2517,7 @@ class TestGitHubRestAdapterInactivityHelpers:
         adapter = GitHubRestAdapter("fake-token", "AOSSIE-Org", "https://api.github.com")
         adapter.check_user_permission = MagicMock(side_effect=RuntimeError("GitHub API timeout"))
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "someone") is None
+        adapter.check_user_permission.assert_called_once_with("AOSSIE-Org", "Gitcord", "someone")
 
     def test_permission_checks_call_helper_with_correct_arguments(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -2574,36 +2613,39 @@ class TestGitHubRestAdapterInactivityHelpers:
             mock_client.request.return_value = resp
             assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "maintainer") is True
             assert mock_client.request.call_count == 1
+            assert "collaborators" in mock_client.request.call_args[0][1]
 
-        # 2. Non-elevated collaborator ("read") but org member (204) -> False
-        def mock_read_member(method: str, path: str, **kwargs):
-            if "collaborators" in path:
-                r = MagicMock(status_code=200, headers={})
-                r.json.return_value = {"permission": "read"}
-                return r
-            if "members" in path:
-                return MagicMock(status_code=204, headers={})
-            return MagicMock(status_code=404, headers={})
-
-        mock_client.request.side_effect = mock_read_member
-        assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "org_user") is False
+        # 2. Non-elevated collaborator permissions ("read", "triage", "none") -> False
+        for level in ("read", "triage", "none"):
+            mock_client.reset_mock()
+            resp = MagicMock(status_code=200, headers={})
+            resp.json.return_value = {"permission": level}
+            mock_client.request.return_value = resp
+            assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "reader") is False
+            assert mock_client.request.call_count == 1
+            assert "collaborators" in mock_client.request.call_args[0][1]
 
         # 3. Not a collaborator (404) -> False
         mock_client.reset_mock()
         mock_client.request.side_effect = None
         mock_client.request.return_value = MagicMock(status_code=404, headers={})
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "ext_contributor") is False
+        assert mock_client.request.call_count == 1
+        assert "collaborators" in mock_client.request.call_args[0][1]
 
-        # 4. Error on collaborator check (403, 502) -> None (inconclusive, keeps failed checks separate from non-write)
+        # 4. Error on collaborator check (401, 403, 500, 502) -> None (inconclusive)
         for code in (401, 403, 500, 502):
             mock_client.reset_mock()
             mock_client.request.side_effect = None
             mock_client.request.return_value = MagicMock(status_code=code, headers={}, text="Error")
             assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "unknown") is None
+            assert all("collaborators" in call[0][1] for call in mock_client.request.call_args_list)
 
-        # 6. Empty username or repo -> False
+        # 5. Empty username, repo, or owner (when no default org configured) -> False
         assert adapter.has_write_access("AOSSIE-Org", "Gitcord", "") is False
         assert adapter.has_write_access("AOSSIE-Org", "", "user") is False
+        adapter_no_org = GitHubRestAdapter("fake-token", "", "https://api.github.com")
+        assert adapter_no_org.has_write_access("", "Gitcord", "user") is False
 
     def test_inactivity_lifecycle_processes_contributor_with_rest_adapter(self) -> None:
         from ghdcbot.adapters.github.rest import GitHubRestAdapter
@@ -2612,9 +2654,9 @@ class TestGitHubRestAdapterInactivityHelpers:
         mock_client = MagicMock()
         adapter._client = mock_client
 
-        # External contributor: 404 for collaborator check, 404 for org membership
+        # External contributor: 404 for collaborator check
         def mock_http(method: str, path: str, **kwargs):
-            if "collaborators" in path or "members" in path:
+            if "collaborators" in path:
                 return MagicMock(status_code=404, headers={})
             if "issues" in path:
                 r = MagicMock(status_code=200, headers={})
