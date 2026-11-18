@@ -1,0 +1,29 @@
+# Gitcord on Fly.io - single-machine image (bot + scheduled sync).
+#
+# Differs from the main Dockerfile in one way: it does NOT end with `USER appuser`.
+# Fly mounts volumes root-owned, so the entrypoint starts as root, fixes ownership of
+# /data, then drops to the unprivileged `appuser` before running any Gitcord code.
+# The main Dockerfile (Docker Compose / VPS path) is untouched.
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir -e . \
+    && useradd --create-home --shell /bin/bash appuser \
+    && mkdir -p /data
+
+COPY config/ ./config/
+COPY scripts/ ./scripts/
+
+RUN chown -R appuser:appuser /app /data \
+    && chmod +x /app/scripts/fly-start.sh /app/scripts/fly-supervisor.sh /app/scripts/sync-loop.sh
+
+# fly-start.sh (root) -> chown /data -> setpriv to appuser -> fly-supervisor.sh
+ENTRYPOINT ["/app/scripts/fly-start.sh"]
