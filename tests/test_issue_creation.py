@@ -1,14 +1,15 @@
 """Tests for issue creation feature."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
+from ghdcbot.adapters.github.rest import GitHubRestAdapter
 from ghdcbot.engine.issue_creation import (
-    validate_issue_params,
     build_issue_created_embed,
     format_issue_creation_audit_context,
+    validate_issue_params,
 )
-from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
 
 def test_validate_issue_params_valid() -> None:
@@ -72,6 +73,7 @@ def test_format_issue_creation_audit_context() -> None:
     assert ctx["action"] == "issue_created_from_discord"
     assert ctx["issue_number"] == 42
     assert ctx["creator_github"] == "user"
+    assert ctx["github_user"] == "user"
 
 def test_list_org_repo_names(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = GitHubRestAdapter("token", "org", "http://api")

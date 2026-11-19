@@ -62,6 +62,7 @@ def format_issue_creation_audit_context(
         "repo": repo,
         "issue_number": issue_number,
         "title": title[:100],  # Truncate title for audit logs
+        "github_user": creator_github,
         "creator_github": creator_github,
         "creator_discord_id": creator_discord_id,
         "action": "issue_created_from_discord",
