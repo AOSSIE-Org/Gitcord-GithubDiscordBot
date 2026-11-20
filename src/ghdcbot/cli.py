@@ -32,6 +32,7 @@ def build_orchestrator(config_path: str) -> Orchestrator:
         config.runtime.github_adapter,
         token=github_token,
         org=config.github.org,
+        owner_type=config.github.owner_type,
         api_base=str(config.github.api_base),
     )
     discord_adapter = build_adapter(

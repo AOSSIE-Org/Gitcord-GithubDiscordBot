@@ -870,6 +870,7 @@ def run_bot(config_path: str) -> None:
         config.runtime.github_adapter,
         token=github_token,
         org=config.github.org,
+        owner_type=config.github.owner_type,
         api_base=str(config.github.api_base),
     )
 
@@ -1817,6 +1818,7 @@ def run_bot(config_path: str) -> None:
                 config.runtime.github_adapter,
                 token=github_token,
                 org=config.github.org,
+                owner_type=config.github.owner_type,
                 api_base=str(config.github.api_base),
             )
             discord_reader_for_sync = build_adapter(
@@ -1828,6 +1830,7 @@ def run_bot(config_path: str) -> None:
                 config.runtime.github_adapter,
                 token=github_token,
                 org=config.github.org,
+                owner_type=config.github.owner_type,
                 api_base=str(config.github.api_base),
             )
             discord_writer_for_sync = build_adapter(
@@ -1995,7 +1998,7 @@ def run_bot(config_path: str) -> None:
         description="Post a repo's new PRs and issues to a channel or thread",
     )
     @app_commands.describe(
-        repo="GitHub repository in the org",
+        repo="GitHub repository owned by the configured owner",
         channel="Channel or thread to post in (default: this one)",
     )
     @app_commands.autocomplete(repo=pr_channel_repo_autocomplete)
@@ -2296,7 +2299,7 @@ def run_bot(config_path: str) -> None:
 
         owner = getattr(config.github, "org", "")
         if not owner:
-            await interaction.followup.send("❌ GitHub organization not configured.", ephemeral=True)
+            await interaction.followup.send("❌ GitHub owner not configured.", ephemeral=True)
             return
 
         repo_filter = getattr(getattr(config, "github", None), "repos", None)

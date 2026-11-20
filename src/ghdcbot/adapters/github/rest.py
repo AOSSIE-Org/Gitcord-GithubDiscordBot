@@ -13,6 +13,14 @@ import httpx
 from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 from ghdcbot.config.loader import get_active_config
 from ghdcbot.config.models import RepoFilterConfig
+from ghdcbot.core.github_owner import (
+    OWNER_TYPE_ORGANIZATION,
+    GitHubOwner,
+    OwnerResolutionError,
+    normalize_owner_type,
+    owner_from_users_response,
+    repo_owner_login,
+)
 from ghdcbot.core.models import ContributionEvent
 
 
@@ -115,9 +123,26 @@ class GitHubPaginationError(RuntimeError):
 
 
 class GitHubRestAdapter:
-    def __init__(self, token: str | Callable[[], str], org: str, api_base: str) -> None:
+    def __init__(
+        self,
+        token: str | Callable[[], str],
+        org: str,
+        api_base: str,
+        owner_type: str = OWNER_TYPE_ORGANIZATION,
+    ) -> None:
+        """``org`` is the configured owner login (organization or personal account).
+
+        ``owner_type`` is ``user``, ``organization`` or ``auto``. Direct construction
+        keeps the historical default (``organization``); config-driven construction
+        passes ``config.github.owner_type`` (default ``auto``).
+        """
         self._logger = logging.getLogger(self.__class__.__name__)
         self._org = org
+        self._owner_type_config = normalize_owner_type(owner_type)
+        self._owner: GitHubOwner | None = None
+        self._owner_error: str | None = None
+        self._authenticated_login_cache: str | None = None
+        self._authenticated_login_known = False
         self._token = token
         self._api_base = api_base
         self._last_repo_count: int | None = None
@@ -160,6 +185,48 @@ class GitHubRestAdapter:
     def sync_repo_listing_incomplete(self) -> bool:
         """Whether the repo listing for the last sync could not be read in full."""
         return self._repo_listing_incomplete
+
+    @property
+    def last_owner_error(self) -> str | None:
+        """Why the configured owner could not be resolved (None when it could)."""
+        return self._owner_error
+
+    def resolve_owner(self) -> GitHubOwner | None:
+        """Resolve the configured owner to a user or organization.
+
+        Explicit ``user`` / ``organization`` types need no API call. ``auto`` uses
+        ``GET /users/{login}``, which is public and works for both account kinds.
+        Returns None (and records ``last_owner_error``) when resolution fails; failures
+        are not cached so a transient error does not stick.
+        """
+        if self._owner is not None:
+            return self._owner
+        if self._owner_type_config != "auto":
+            self._owner = GitHubOwner(self._org, self._owner_type_config)  # type: ignore[arg-type]
+            return self._owner
+        response = self._request_with_status("GET", f"/users/{self._org}")
+        status = response.status_code if response is not None else None
+        payload = None
+        if response is not None and status == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+        try:
+            self._owner = owner_from_users_response(self._org, status, payload)
+        except OwnerResolutionError as exc:
+            self._owner_error = str(exc)
+            self._logger.error(
+                "Could not resolve GitHub owner",
+                extra={"owner": self._org, "status_code": status, "reason": str(exc)},
+            )
+            return None
+        self._owner_error = None
+        self._logger.info(
+            "Resolved GitHub owner",
+            extra={"owner": self._owner.login, "owner_type": self._owner.type},
+        )
+        return self._owner
 
     def peek_repos_for_sync(self) -> int:
         self._ensure_sync_repos_cached()
@@ -248,6 +315,18 @@ class GitHubRestAdapter:
         Used by /pr-channel, which must be able to connect repos not yet on the allowlist.
         Raises RuntimeError when GitHub does not return the repo list.
         """
+        owner = self.resolve_owner()
+        if owner is None:
+            raise RuntimeError(self._owner_error or f"Could not resolve GitHub owner {self._org}")
+        if owner.is_user:
+            user_repos, complete = self._discover_user_repos(owner, ignore_filter=True)
+            if not complete:
+                raise RuntimeError(f"Could not list repositories for {self._org}")
+            return [
+                str(r["name"])
+                for r in user_repos
+                if isinstance(r, dict) and r.get("name") and not r.get("archived")
+            ]
         repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
         if status != 200:
             raise RuntimeError(f"Could not list repositories for {self._org} (status {status})")
@@ -323,22 +402,34 @@ class GitHubRestAdapter:
         )
         denied_lower = {n.lower() for n in denied_names}
 
+        owner = self.resolve_owner()
+        if owner is None:
+            return []
+
         repo_name = (repo or "").strip()
+        scopes: list[str]
         if repo_name:
             if allowed_lower is not None and repo_name.lower() not in allowed_lower:
                 return []
             if repo_name.lower() in denied_lower:
                 return []
-            scope = f"repo:{self._org}/{repo_name}"
+            scopes = [f"repo:{owner.login}/{repo_name}"]
+        elif owner.is_user and allowed_names:
+            # Personal account with an explicit repo list: one repo-scoped query per repo
+            # (never a broad ``user:`` query that could surface unrelated repos).
+            scopes = [f"repo:{owner.login}/{name}" for name in sorted(allowed_names, key=str.lower)]
         else:
-            scope = f"org:{self._org}"
+            # ``org:`` only matches organizations; personal accounts need ``user:``.
+            scopes = [owner.search_qualifier]
 
         extra = (query_extra or "").strip()
-        base_query = f"is:pr author:{author} {scope}"
-        if extra:
-            base_query = f"is:pr {extra} author:{author} {scope}"
-        # Org/repo-scoped search; allow/deny still applied below per result.
-        queries = _build_author_pr_search_queries(base_query)
+        queries: list[str] = []
+        for scope in scopes:
+            base_query = f"is:pr author:{author} {scope}"
+            if extra:
+                base_query = f"is:pr {extra} author:{author} {scope}"
+            # Owner/repo-scoped search; allow/deny still applied below per result.
+            queries.extend(_build_author_pr_search_queries(base_query))
 
         results: list[dict] = []
         seen: set[tuple[str, object]] = set()
@@ -374,7 +465,7 @@ class GitHubRestAdapter:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    repo_name = _repo_name_from_search_issue(item, self._org)
+                    repo_name = _repo_name_from_search_issue(item, owner.login)
                     if not repo_name:
                         continue
                     repo_key = repo_name.lower()
@@ -402,6 +493,9 @@ class GitHubRestAdapter:
                 if len(items) < 100:
                     break
                 page += 1
+        if sort == "updated" and len(queries) > 1:
+            # Several repo-scoped searches were concatenated; restore one global order.
+            results.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=order != "asc")
         return results
 
     def get_author_prs_for_inactivity(
@@ -517,6 +611,11 @@ class GitHubRestAdapter:
         perm = self.check_user_permission(org, repo, user)
         if perm in {"admin", "maintain", "write"}:
             return True
+        resolved = self.resolve_owner() if org.lower() == self._org.lower() else None
+        if resolved is not None and resolved.is_user:
+            # Personal accounts have no organization membership: repository
+            # collaborator permission is the only signal.
+            return None if perm is None else False
         # Check org membership
         org_resp = self._request("GET", f"/orgs/{org}/members/{user}", params=None, allow_404=True)
         if org_resp is not None and org_resp.status_code == 204:
@@ -1281,25 +1380,250 @@ class GitHubRestAdapter:
         yield from helpful_comment_events
 
     def _list_repos(self) -> Sequence[dict]:
-        repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
-        if status == 200 and not repos:
-            self._logger.info("Organization has no repositories yet", extra={"org": self._org})
-        user_fallback = _load_user_fallback()
-        if user_fallback and status in {401, 403}:
-            self._logger.info("Falling back to user repositories (not an org member)")
-            self._repo_listing_incomplete = False
-            repos, _ = self._list_repos_from_path("/user/repos")
+        owner = self.resolve_owner()
+        if owner is None:
+            # Never silently treat an unresolved owner as "no repositories": the sync
+            # cursor must not advance past activity that was never read.
+            self._repo_listing_incomplete = True
+            self._last_repo_count = 0
+            return []
+        if owner.is_user:
+            repos, complete = self._discover_user_repos(owner, ignore_filter=False)
+            if not complete:
+                self._repo_listing_incomplete = True
+        else:
+            repos = self._discover_org_repos(owner)
         self._last_repo_count = len(repos)
         if not repos:
             self._logger.warning("No repositories discovered", extra={"org": self._org})
 
-        filtered = _apply_repo_filter(repos, _load_repo_filter(), self._logger)
+        repo_filter = _load_repo_filter()
+        if owner.is_user and repo_filter is not None and repo_filter.mode == "allow":
+            # Allowlisted repos were fetched by name already (so a renamed repo keeps
+            # working); re-filtering by the stale configured name would drop it.
+            filtered = list(repos)
+        else:
+            filtered = _apply_repo_filter(repos, repo_filter, self._logger)
         if not filtered:
             self._logger.warning(
                 "All repositories filtered out; skipping ingestion",
                 extra={"org": self._org},
             )
         return filtered
+
+    def _discover_org_repos(self, owner: GitHubOwner) -> list[dict]:
+        """Organization discovery (unchanged API usage, plus clearer errors)."""
+        repos, status = self._list_repos_from_path(f"/orgs/{self._org}/repos")
+        if status == 200 and not repos:
+            self._logger.info("Organization has no repositories yet", extra={"org": self._org})
+        if status == 404:
+            self._logger.error(
+                "GitHub organization repositories not found (HTTP 404). If '%s' is a personal "
+                "account, set github.owner_type to 'user' (or 'auto').",
+                self._org,
+                extra={"org": self._org, "status_code": status},
+            )
+        user_fallback = _load_user_fallback()
+        if user_fallback and status in {401, 403}:
+            self._logger.info("Falling back to user repositories (not an org member)")
+            self._repo_listing_incomplete = False
+            repos, _ = self._list_repos_from_path("/user/repos")
+            # /user/repos spans every owner the token can see; keep only this owner's.
+            repos = [r for r in repos if owner.owns_repo(r)]
+        return repos
+
+    def _authenticated_login(self) -> tuple[str | None, bool]:
+        """Return ``(login, resolved)`` for the token's user.
+
+        ``resolved`` is False when the probe failed transiently (no response, 5xx, 429,
+        unparseable body); nothing is cached then, so a later call retries. A definitive
+        answer is cached: the login on 200, or ``None`` for credentials that are not a
+        user token (401/403/404, e.g. GitHub App installation tokens).
+        """
+        if self._authenticated_login_known:
+            return self._authenticated_login_cache, True
+        response = self._request_with_status("GET", "/user")
+        if response is None:
+            return None, False
+        login: str | None = None
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                return None, False
+            if not isinstance(data, dict) or not data.get("login"):
+                return None, False
+            login = str(data["login"])
+        elif response.status_code not in {401, 403, 404}:
+            return None, False
+        self._authenticated_login_cache = login
+        self._authenticated_login_known = True
+        return login, True
+
+    def _discover_user_repos(
+        self, owner: GitHubOwner, *, ignore_filter: bool
+    ) -> tuple[list[dict], bool]:
+        """Repositories of a personal account. Returns ``(repos, listing_complete)``."""
+        repo_filter = None if ignore_filter else _load_repo_filter()
+        previous_flag = self._repo_listing_incomplete
+        self._repo_listing_incomplete = False
+        try:
+            if repo_filter is not None and repo_filter.mode == "allow":
+                repos = self._fetch_allowlisted_repos(owner, repo_filter.names)
+            else:
+                repos = self._list_user_owned_repos(owner)
+            complete = not self._repo_listing_incomplete
+        finally:
+            self._repo_listing_incomplete = previous_flag
+        return repos, complete
+
+    def _list_user_owned_repos(self, owner: GitHubOwner) -> list[dict]:
+        """Public repos plus every private repo the token is authorised to read."""
+        collected: list[dict] = []
+        authed, identity_resolved = self._authenticated_login()
+        if not identity_resolved:
+            # Cannot tell whose token this is, so private repos may be unread. Keep the
+            # public results below but hold the sync cursor back.
+            self._repo_listing_incomplete = True
+        if authed and owner.owns_login(authed):
+            batch, status = self._list_repos_from_path(
+                "/user/repos", {"affiliation": "owner", "visibility": "all"}
+            )
+            collected.extend(batch)
+            if status != 200:
+                self._log_owner_listing_failure(owner, "/user/repos", status)
+        else:
+            batch, status = self._list_repos_from_path(
+                f"/users/{owner.login}/repos", {"type": "owner"}
+            )
+            collected.extend(batch)
+            if status != 200:
+                self._log_owner_listing_failure(owner, f"/users/{owner.login}/repos", status)
+            if authed:
+                # Token belongs to another user: also include private repos shared with it.
+                shared, shared_status = self._list_repos_from_path(
+                    "/user/repos", {"affiliation": "collaborator"}
+                )
+                collected.extend(shared)
+                if shared_status != 200:
+                    self._log_owner_listing_failure(owner, "/user/repos", shared_status)
+            elif callable(self._token):
+                collected.extend(self._list_installation_repos())
+        unique: dict[object, dict] = {}
+        for repo in collected:
+            if isinstance(repo, dict) and repo.get("name") and owner.owns_repo(repo):
+                unique.setdefault(repo.get("id") or repo.get("full_name"), repo)
+        return list(unique.values())
+
+    def _list_installation_repos(self) -> list[dict]:
+        """Repos granted to a GitHub App installation (``{"repositories": [...]}``)."""
+        repos: list[dict] = []
+        page = 1
+        while True:
+            response = self._request_with_status(
+                "GET", "/installation/repositories", {"per_page": 100, "page": page}
+            )
+            if response is None or response.status_code != 200:
+                # Keep what earlier pages returned, but never report a cut-short list
+                # as complete (that would let the sync cursor skip unread repos).
+                self._repo_listing_incomplete = True
+                return repos
+            data = response.json()
+            items = data.get("repositories") if isinstance(data, dict) else None
+            if isinstance(items, list):
+                repos.extend(items)
+            if not _has_next_page(response.headers.get("Link")):
+                return repos
+            page += 1
+
+    def _fetch_allowlisted_repos(self, owner: GitHubOwner, names: Sequence[str]) -> list[dict]:
+        """Direct ``GET /repos/{owner}/{name}`` per allowlisted repo.
+
+        Works for private repos the token can read and never requires listing the
+        account's repositories. A 404 (missing, or private without access) skips that
+        repo; auth/rate-limit/network failures mark the listing incomplete.
+        """
+        repos: list[dict] = []
+        seen: set[str] = set()
+        for raw in names:
+            name = (raw or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            repo = self._fetch_owner_repo(owner, name)
+            if repo is not None:
+                repos.append(repo)
+        return repos
+
+    def _fetch_owner_repo(self, owner: GitHubOwner, name: str) -> dict | None:
+        path = f"/repos/{owner.login}/{name}"
+        response = self._request_with_status("GET", path)
+        hops = 0
+        # Renamed/transferred repos answer 301 with the canonical location.
+        while (
+            response is not None
+            and response.status_code in {301, 302, 307, 308}
+            and hops < 3
+        ):
+            location = response.headers.get("Location")
+            if not location:
+                break
+            target = httpx.URL(location).raw_path.decode()
+            base_path = httpx.URL(self._api_base).path.rstrip("/")
+            if base_path and target.startswith(base_path + "/"):
+                target = target[len(base_path):]
+            response = self._request_with_status("GET", target)
+            hops += 1
+        if response is None:
+            self._repo_listing_incomplete = True
+            return None
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+            if not isinstance(data, dict) or not data.get("name"):
+                self._repo_listing_incomplete = True
+                return None
+            if not owner.owns_repo(data):
+                self._logger.warning(
+                    "Allowlisted repository now belongs to a different owner; skipping",
+                    extra={"repo": name, "owner": owner.login, "actual_owner": repo_owner_login(data)},
+                )
+                return None
+            if str(data["name"]).lower() != name.lower():
+                self._logger.warning(
+                    "Allowlisted repository was renamed on GitHub; update github.repos.names",
+                    extra={"configured": name, "current": data["name"]},
+                )
+            return data
+        if response.status_code == 404:
+            self._logger.warning(
+                "Allowlisted repository not found or not accessible to the configured token "
+                "(private repositories return 404 without access)",
+                extra={"repo": f"{owner.login}/{name}", "status_code": 404},
+            )
+            return None
+        self._repo_listing_incomplete = True
+        self._logger.error(
+            "Could not read allowlisted repository",
+            extra={"repo": f"{owner.login}/{name}", "status_code": response.status_code},
+        )
+        return None
+
+    def _log_owner_listing_failure(
+        self, owner: GitHubOwner, path: str, status: int | None
+    ) -> None:
+        hint = {
+            404: "account not found, or not a personal account (try owner_type: organization)",
+            401: "credentials rejected (token invalid or expired)",
+            403: "token lacks permission or is rate limited",
+        }.get(status or 0, "request failed")
+        self._logger.error(
+            "Repository discovery failed for personal account: %s",
+            hint,
+            extra={"owner": owner.login, "path": path, "status_code": status},
+        )
 
     def _collect_issue_events(
         self, owner: str, repo: str, since: datetime
@@ -2092,9 +2416,12 @@ class GitHubRestAdapter:
             )
         self._sync_incomplete_repos.add(repo_name)
 
-    def _list_repos_from_path(self, path: str) -> tuple[list[dict], int | None]:
+    def _list_repos_from_path(
+        self, path: str, extra_params: Mapping[str, str] | None = None
+    ) -> tuple[list[dict], int | None]:
         repos: list[dict] = []
-        params = {"per_page": 100, "page": 1}
+        base_params = {"per_page": 100, **(extra_params or {})}
+        params = {**base_params, "page": 1}
         response = self._request_with_status("GET", path, params=params)
         if response is None:
             self._repo_listing_incomplete = True
@@ -2106,7 +2433,7 @@ class GitHubRestAdapter:
         if isinstance(data, list):
             repos.extend(data)
         if _has_next_page(response.headers.get("Link")):
-            for page in self._paginate_from_page(path, {"per_page": 100}, start_page=2):
+            for page in self._paginate_from_page(path, base_params, start_page=2):
                 repos.extend(page)
         return repos, response.status_code
 
@@ -2629,12 +2956,18 @@ def _issue_payload(issue: dict) -> dict:
 
 
 def _repo_name_from_search_issue(item: dict, org: str) -> str | None:
-    """Extract short repo name from a Search API issue/PR item."""
+    """Extract short repo name from a Search API issue/PR item.
+
+    ``org`` is the configured owner login (user or organization). Items whose
+    repository belongs to a different owner are rejected.
+    """
     repository_url = item.get("repository_url")
     if isinstance(repository_url, str) and repository_url:
-        # https://api.github.com/repos/{org}/{repo}
+        # https://api.github.com/repos/{owner}/{repo}
         parts = repository_url.rstrip("/").split("/")
         if len(parts) >= 2:
+            if org and parts[-2].lower() != org.lower():
+                return None
             return parts[-1]
     html_url = item.get("html_url")
     if isinstance(html_url, str) and html_url:
@@ -2690,13 +3023,14 @@ def _apply_repo_filter(
         logger.info("No repositories available to apply repo filter", extra={"mode": repo_filter.mode})
         return []
 
-    names = {name.strip() for name in repo_filter.names}
-    repo_names = {repo["name"] for repo in repos}
+    # GitHub repository names are case-insensitive; match accordingly.
+    names = {name.strip().lower() for name in repo_filter.names}
+    repo_names = {repo["name"].lower() for repo in repos}
     if repo_filter.mode == "allow":
-        allowed = [repo for repo in repos if repo["name"] in names]
+        allowed = [repo for repo in repos if repo["name"].lower() in names]
         skipped = sorted(repo_names - names)
     else:
-        allowed = [repo for repo in repos if repo["name"] not in names]
+        allowed = [repo for repo in repos if repo["name"].lower() not in names]
         skipped = sorted(repo_names & names)
 
     logger.info(
