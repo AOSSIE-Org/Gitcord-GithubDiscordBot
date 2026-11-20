@@ -285,6 +285,20 @@ def test_open_prs_command_chunks_followup_send() -> None:
         "suppress_embeds": True,
     }
 
+    # When contributor is None, defaults to invoking user (Issue #214)
+    contributor_param = next(p for p in cmd.parameters if p.name == "contributor")
+    assert contributor_param.required is False
+
+    mock_interaction.user.id = 99999
+    mock_interaction.user.mention = "<@99999>"
+    mock_interaction.followup.send.reset_mock()
+    with patch("ghdcbot.bot.resolve_discord_to_github", return_value="alice") as mock_resolve:
+        asyncio.run(cmd.callback(mock_interaction, None))
+
+    assert mock_resolve.call_args[0][1] == "99999"
+    mock_interaction.followup.send.assert_called_once()
+    assert "<@99999>" in mock_interaction.followup.send.call_args.args[0]
+
 
 def test_format_open_prs_messages_short_report_single_message() -> None:
     prs = [
