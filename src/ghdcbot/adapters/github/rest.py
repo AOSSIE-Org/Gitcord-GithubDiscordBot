@@ -493,6 +493,9 @@ class GitHubRestAdapter:
                 if len(items) < 100:
                     break
                 page += 1
+        if sort == "updated" and len(queries) > 1:
+            # Several repo-scoped searches were concatenated; restore one global order.
+            results.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=order != "asc")
         return results
 
     def get_author_prs_for_inactivity(
@@ -1429,24 +1432,33 @@ class GitHubRestAdapter:
             repos = [r for r in repos if owner.owns_repo(r)]
         return repos
 
-    def _authenticated_login(self) -> str | None:
-        """Login of the token's user (None for App installation tokens / failures)."""
+    def _authenticated_login(self) -> tuple[str | None, bool]:
+        """Return ``(login, resolved)`` for the token's user.
+
+        ``resolved`` is False when the probe failed transiently (no response, 5xx, 429,
+        unparseable body); nothing is cached then, so a later call retries. A definitive
+        answer is cached: the login on 200, or ``None`` for credentials that are not a
+        user token (401/403/404, e.g. GitHub App installation tokens).
+        """
         if self._authenticated_login_known:
-            return self._authenticated_login_cache
+            return self._authenticated_login_cache, True
         response = self._request_with_status("GET", "/user")
         if response is None:
-            return None  # transient; do not cache
+            return None, False
         login: str | None = None
         if response.status_code == 200:
             try:
                 data = response.json()
             except ValueError:
-                data = None
-            if isinstance(data, dict) and data.get("login"):
-                login = str(data["login"])
+                return None, False
+            if not isinstance(data, dict) or not data.get("login"):
+                return None, False
+            login = str(data["login"])
+        elif response.status_code not in {401, 403, 404}:
+            return None, False
         self._authenticated_login_cache = login
         self._authenticated_login_known = True
-        return login
+        return login, True
 
     def _discover_user_repos(
         self, owner: GitHubOwner, *, ignore_filter: bool
@@ -1468,7 +1480,11 @@ class GitHubRestAdapter:
     def _list_user_owned_repos(self, owner: GitHubOwner) -> list[dict]:
         """Public repos plus every private repo the token is authorised to read."""
         collected: list[dict] = []
-        authed = self._authenticated_login()
+        authed, identity_resolved = self._authenticated_login()
+        if not identity_resolved:
+            # Cannot tell whose token this is, so private repos may be unread. Keep the
+            # public results below but hold the sync cursor back.
+            self._repo_listing_incomplete = True
         if authed and owner.owns_login(authed):
             batch, status = self._list_repos_from_path(
                 "/user/repos", {"affiliation": "owner", "visibility": "all"}
@@ -1508,8 +1524,9 @@ class GitHubRestAdapter:
                 "GET", "/installation/repositories", {"per_page": 100, "page": page}
             )
             if response is None or response.status_code != 200:
-                if response is None or response.status_code != 403:
-                    self._repo_listing_incomplete = True
+                # Keep what earlier pages returned, but never report a cut-short list
+                # as complete (that would let the sync cursor skip unread repos).
+                self._repo_listing_incomplete = True
                 return repos
             data = response.json()
             items = data.get("repositories") if isinstance(data, dict) else None

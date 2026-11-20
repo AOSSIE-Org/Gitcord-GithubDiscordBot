@@ -39,7 +39,7 @@ from ghdcbot.core.github_owner import (
 )
 from ghdcbot.core.models import Score
 from ghdcbot.engine.orchestrator import Orchestrator
-from ghdcbot.engine.planning import plan_discord_roles
+from ghdcbot.engine.planning import count_merged_prs_per_user, plan_discord_roles
 from ghdcbot.engine.pr_status import get_repo_suggestions
 
 OWNER = "MystifiedSky"
@@ -489,6 +489,12 @@ def test_merged_pr_counts_drive_configured_roles_without_double_counting(
         IdentityMapping(github_user="alice", discord_user_id="2"),
         IdentityMapping(github_user="carol", discord_user_id="3"),
     ]
+    # Stored counts must stay 1 / 5 / 15 after ingesting the same history twice.
+    assert count_merged_prs_per_user(storage, identities, start, end) == {
+        "bob": 1,
+        "alice": 5,
+        "carol": 15,
+    }
     rules = MergeRoleRulesConfig(
         enabled=True,
         rules=[
@@ -749,12 +755,26 @@ identity_mappings: []
 # --- 15. cursor is not advanced after incomplete discovery ------------------------------------------------
 
 
-def test_cursor_not_advanced_when_personal_discovery_is_incomplete(monkeypatch, tmp_path) -> None:
+def _cursor_run(monkeypatch, tmp_path, *, second_page_status: int):
+    """Page 1 of /user/repos has GitCraft (with fresh activity); page 2 returns the status."""
+    fresh = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def user_repos(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page", "1") == "1":
+            return httpx.Response(
+                200,
+                json=[_repo("GitCraft")],
+                headers={"Link": f'<{API}/user/repos?page=2>; rel="next"'},
+            )
+        return httpx.Response(second_page_status, json=[] if second_page_status == 200 else {})
+
+    issue = {**_issue(7, "carol"), "created_at": fresh, "updated_at": fresh}
     rec = Recorder(
         {
             f"/users/{OWNER}": USER_PROFILE,
             "/user": ME,
-            "/user/repos": httpx.Response(403, json={"message": "Resource not accessible"}),
+            "/user/repos": user_repos,
+            f"/repos/{OWNER}/GitCraft/issues": httpx.Response(200, json=[issue]),
         }
     )
     adapter = make_adapter(rec, monkeypatch)
@@ -772,7 +792,101 @@ def test_cursor_not_advanced_when_personal_discovery_is_incomplete(monkeypatch, 
     )
     prior = datetime.now(UTC) - timedelta(days=2)
     storage.set_cursor("github", prior)
-
     orchestrator.run_once()
+    stored = [
+        e for e in storage.list_contributions(prior) if e.event_type == "issue_opened"
+    ]
+    return storage, prior, stored
 
-    assert storage.get_cursor("github") == prior
+
+def test_cursor_held_but_activity_stored_when_discovery_fails_midway(
+    monkeypatch, tmp_path
+) -> None:
+    storage, prior, stored = _cursor_run(monkeypatch, tmp_path, second_page_status=403)
+    assert [(e.github_user, e.repo) for e in stored] == [("carol", "GitCraft")]
+    assert storage.get_cursor("github") == prior  # unread repos on page 2 stay re-readable
+
+
+def test_cursor_advances_when_discovery_completes(monkeypatch, tmp_path) -> None:
+    storage, prior, stored = _cursor_run(monkeypatch, tmp_path, second_page_status=200)
+    assert len(stored) == 1
+    assert storage.get_cursor("github") > prior
+
+
+# --- discovery completeness (review follow-ups) -------------------------------------------------------
+
+
+def test_installation_listing_failure_of_any_kind_marks_incomplete(monkeypatch) -> None:
+    for status in (403, 500, 404):
+        rec = Recorder(
+            {
+                f"/users/{OWNER}": USER_PROFILE,
+                "/user": httpx.Response(403, json={}),
+                f"/users/{OWNER}/repos": httpx.Response(200, json=[_repo("GitCraft")]),
+                "/installation/repositories": httpx.Response(status, json={}),
+            }
+        )
+        adapter = make_adapter(rec, monkeypatch, token=lambda: "app-token")
+        adapter._sync_cached_repos = None
+        assert [r["name"] for r in adapter._list_repos()] == ["GitCraft"]
+        assert adapter._repo_listing_incomplete is True, status
+
+
+def test_identity_probe_failure_is_not_cached_and_holds_the_cursor(monkeypatch) -> None:
+    state = {"status": 500}
+
+    def me(_request: httpx.Request) -> httpx.Response:
+        if state["status"] == 200:
+            return ME
+        return httpx.Response(state["status"], json={})
+
+    rec = Recorder(
+        {
+            f"/users/{OWNER}": USER_PROFILE,
+            "/user": me,
+            f"/users/{OWNER}/repos": httpx.Response(200, json=[_repo("GitCraft")]),
+            "/user/repos": httpx.Response(200, json=[_repo("GitCraft"), _repo("secret")]),
+        }
+    )
+    adapter = make_adapter(rec, monkeypatch)
+    assert [r["name"] for r in adapter._list_repos()] == ["GitCraft"]  # public still returned
+    assert adapter._repo_listing_incomplete is True
+    assert adapter._authenticated_login_known is False
+
+    state["status"] = 200  # same adapter recovers: private repo appears, nothing was cached
+    adapter._repo_listing_incomplete = False
+    assert [r["name"] for r in adapter._list_repos()] == ["GitCraft", "secret"]
+    assert adapter._repo_listing_incomplete is False
+
+
+def test_definitive_non_user_credentials_are_cached_without_flagging(monkeypatch) -> None:
+    rec = Recorder(
+        {
+            f"/users/{OWNER}": USER_PROFILE,
+            "/user": httpx.Response(403, json={}),
+            f"/users/{OWNER}/repos": httpx.Response(200, json=[_repo("GitCraft")]),
+        }
+    )
+    adapter = make_adapter(rec, monkeypatch)
+    list(adapter._list_repos())
+    list(adapter._list_repos())
+    assert adapter._repo_listing_incomplete is False
+    assert rec.paths.count("/user") == 1
+
+
+def test_multi_repo_search_results_are_globally_ordered_by_update(monkeypatch) -> None:
+    def search(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["q"]
+        repo, stamp = (
+            ("A", "2026-11-01T00:00:00Z") if "/A" in query else ("B", "2026-11-09T00:00:00Z")
+        )
+        item = _search_item(OWNER, repo, 1)
+        item["updated_at"] = stamp
+        return httpx.Response(200, json={"items": [item]})
+
+    rec = Recorder({f"/users/{OWNER}": USER_PROFILE, "/search/issues": search})
+    adapter = make_adapter(
+        rec, monkeypatch, repos=RepoFilterConfig(mode="allow", names=["A", "B"])
+    )
+    prs = adapter.list_pull_requests_for_author("alice")
+    assert [p["repo"] for p in prs] == ["B", "A"]  # newest first across both searches
