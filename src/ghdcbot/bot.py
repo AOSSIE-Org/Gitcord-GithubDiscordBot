@@ -1234,15 +1234,19 @@ def run_bot(config_path: str) -> None:
         description="List a contributor's currently open PRs in configured repos (read-only)",
         guild=discord.Object(id=guild_id),
     )
-    @app_commands.describe(contributor="Discord member whose open PRs to list")
-    async def open_prs_cmd(interaction: discord.Interaction, contributor: discord.Member) -> None:
+    @app_commands.describe(contributor="Discord member whose open PRs to list (omit for yourself)")
+    async def open_prs_cmd(
+        interaction: discord.Interaction,
+        contributor: discord.Member | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        github_user = resolve_discord_to_github(storage, str(contributor.id))
+        target = interaction.user if contributor is None else contributor
+        github_user = resolve_discord_to_github(storage, str(target.id))
         if not github_user:
             await interaction.followup.send(
                 (
-                    f"❌ {contributor.mention} has not verified their GitHub identity. "
+                    f"❌ {target.mention} has not verified their GitHub identity. "
                     "Use `/link` and `/verify-link` first."
                 ),
                 ephemeral=True,
@@ -1261,7 +1265,7 @@ def run_bot(config_path: str) -> None:
         except Exception:
             logger.exception(
                 "Failed to list open pull requests",
-                extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+                extra={"github_user": github_user, "discord_user_id": str(target.id)},
             )
             await interaction.followup.send(
                 "❌ Error fetching open PRs. Please try again later.",
@@ -1271,7 +1275,7 @@ def run_bot(config_path: str) -> None:
 
         prs = list_open_prs_for_author(open_prs, github_user)
         messages = format_open_prs_messages(
-            contributor_mention=contributor.mention,
+            contributor_mention=target.mention,
             github_user=github_user,
             prs=prs,
             org=config.github.org,
@@ -1289,7 +1293,7 @@ def run_bot(config_path: str) -> None:
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(
-        contributor="Discord member whose PRs to list",
+        contributor="Discord member whose PRs to list (omit for yourself)",
         repo="Repository name (optional; omit for all configured repos)",
         count="How many recent PRs to show (optional, default 10, max 100)",
         skip="How many recent PRs to skip first (M, optional)",
@@ -1297,13 +1301,14 @@ def run_bot(config_path: str) -> None:
     @app_commands.checks.cooldown(1, 30.0)
     async def pr_list_cmd(
         interaction: discord.Interaction,
-        contributor: discord.Member,
+        contributor: discord.Member | None = None,
         repo: str | None = None,
         count: app_commands.Range[int, 1, 100] | None = None,
         skip: app_commands.Range[int, 0, 500] = 0,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        target = interaction.user if contributor is None else contributor
         n, m = clamp_pr_list_args(count=count, skip=int(skip))
         repo_name = (repo or "").strip() or None
         logger.info(
@@ -1313,14 +1318,14 @@ def run_bot(config_path: str) -> None:
                 "effective_count": n,
                 "skip": m,
                 "repo": repo_name,
-                "contributor_id": str(contributor.id),
+                "contributor_id": str(target.id),
             },
         )
-        github_user = resolve_discord_to_github(storage, str(contributor.id))
+        github_user = resolve_discord_to_github(storage, str(target.id))
         if not github_user:
             await interaction.followup.send(
                 (
-                    f"❌ {contributor.mention} has not verified their GitHub identity. "
+                    f"❌ {target.mention} has not verified their GitHub identity. "
                     "Use `/link` and `/verify-link` first."
                 ),
                 ephemeral=True,
@@ -1354,7 +1359,7 @@ def run_bot(config_path: str) -> None:
             except Exception:
                 logger.exception(
                     "Failed to list pull requests for /pr",
-                    extra={"github_user": github_user, "discord_user_id": str(contributor.id)},
+                    extra={"github_user": github_user, "discord_user_id": str(target.id)},
                 )
                 await interaction.followup.send(
                     "❌ Error fetching PRs. Please try again later.",
@@ -1366,7 +1371,7 @@ def run_bot(config_path: str) -> None:
                 "Failed to list pull requests for /pr",
                 extra={
                     "github_user": github_user,
-                    "discord_user_id": str(contributor.id),
+                    "discord_user_id": str(target.id),
                     "repo": repo_name,
                 },
             )
@@ -1379,7 +1384,7 @@ def run_bot(config_path: str) -> None:
         scoped = filter_prs_by_repo(all_prs, repo_name)
         selected = select_recent_prs(scoped, count=n, skip=m)
         messages = format_pr_list_messages(
-            contributor_mention=contributor.mention,
+            contributor_mention=target.mention,
             github_user=github_user,
             prs=selected,
             org=config.github.org,
