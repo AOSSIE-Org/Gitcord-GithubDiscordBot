@@ -106,7 +106,7 @@ def render_markdown_report(
     summary_lines = [
         "## Summary",
         f"- Runtime mode: `{config.runtime.mode.value}`",
-        f"- Organization: `{config.github.org}`",
+        f"- Owner: `{config.github.org}` ({config.github.owner_type})",
         f"- Discord role changes: `{len(discord_sorted)}`",
         f"- GitHub assignments: `{len(github_sorted)}`",
     ]
@@ -118,7 +118,7 @@ def render_markdown_report(
     else:
         summary_lines.append("- Repo filter: `all`")
     if repo_count == 0:
-        summary_lines.append("- Repositories discovered: 0 (new or empty organization)")
+        summary_lines.append("- Repositories discovered: 0 (new or empty account)")
 
     sections = [
         "\n".join(summary_lines),

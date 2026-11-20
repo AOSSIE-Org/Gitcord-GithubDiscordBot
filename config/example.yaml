@@ -8,7 +8,12 @@ runtime:
   storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
 
 github:
-  org: "example-org"
+  # Owner of the monitored repositories: a personal account OR an organization.
+  # (`org:` is the legacy name for `owner:` and still works.)
+  owner: "example-org"
+  # "auto" (default) detects user vs organization; or set "user" / "organization".
+  # Personal-account example: config/examples/personal-account.yaml
+  owner_type: "auto"
   token: "${GITHUB_TOKEN}"
   api_base: "https://api.github.com"
   permissions:

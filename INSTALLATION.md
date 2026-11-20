@@ -57,7 +57,7 @@ Before starting, ensure you have:
 
 **Expiration:** Set appropriate expiration (recommended: 90 days or custom)
 
-**Resource owner:** Select your **organization** (not only your personal account) if Gitcord will scan org repositories.
+**Resource owner:** Select the account that owns the repositories: your **organization** for org repositories, or your **personal account** for personal repositories (see [docs/PERSONAL_ACCOUNTS.md](docs/PERSONAL_ACCOUNTS.md)).
 
 **Repository access:**
 
@@ -272,7 +272,7 @@ Your active config is always **`config/config.yaml`** (gitignored — create it 
 
 **Minimum edits (local full config):**
 
-1. `github.org` — your GitHub organization name
+1. `github.owner` (legacy key `github.org` also works) — the GitHub organization **or personal account** that owns the repos; optionally `github.owner_type: auto|user|organization` ([personal accounts](docs/PERSONAL_ACCOUNTS.md))
 2. `discord.guild_id` — server ID from [Step 3.6](#36-copy-server-id-guild-id)
 3. `role_mappings` / `assignments.issue_assignees` — use **exact Discord role names** that exist in your server
 4. Local only: `runtime.data_dir: "./data"`

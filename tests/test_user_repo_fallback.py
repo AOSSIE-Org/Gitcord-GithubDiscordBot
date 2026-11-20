@@ -44,7 +44,9 @@ def test_user_repo_fallback_on_org_unauthorized(monkeypatch, caplog) -> None:
             return [], 401
         if path == "/user/repos":
             return [
-                {"name": "repo-a", "owner": {"login": "user"}, "full_name": "user/repo-a"}
+                {"name": "repo-a", "owner": {"login": "AOSSIE-Org"}, "full_name": "AOSSIE-Org/repo-a"},
+                # /user/repos spans every owner the token sees; other owners are dropped.
+                {"name": "repo-a", "owner": {"login": "someone-else"}, "full_name": "someone-else/repo-a"},
             ], 200
         return [], 200
 

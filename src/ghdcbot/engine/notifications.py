@@ -1408,7 +1408,7 @@ def _build_opened_github_link_comment(
         "\n"
         f"Thanks for opening this {opened_label}, **@{author_github}**!\n"
         "\n"
-        "To receive Discord notifications and contributor tracking for this organization:\n"
+        "To receive Discord notifications and contributor tracking for this GitHub project:\n"
         "\n"
         f"1. **Join Discord:** {invite_url}\n"
         f"2. In Discord, run `/link {author_github}`\n"

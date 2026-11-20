@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, HttpUrl, PrivateAttr, field_validator, model_validator
 
+from ghdcbot.core.github_owner import normalize_owner_type
 from ghdcbot.core.modes import RunMode
 
 
@@ -59,13 +60,53 @@ class RuntimeConfig(BaseModel):
 
 
 class GitHubConfig(BaseModel):
-    org: str
+    """GitHub connection settings.
+
+    The repository owner is a personal account or an organization. Configure it with
+    ``owner`` (preferred) or the legacy ``org`` key; both are accepted and, after
+    validation, both attributes hold the same login so existing code that reads
+    ``config.github.org`` keeps working for personal accounts too.
+    """
+
+    owner: str = ""
+    # Legacy alias of ``owner`` (kept for existing deployments).
+    org: str = ""
+    # "auto" detects user vs organization via GET /users/{owner}; set "user" or
+    # "organization" to skip detection.
+    owner_type: str = "auto"
     # Optional when GitHub App env vars are set (GITHUB_APP_ID + installation + private key).
     token: str = ""
     api_base: HttpUrl = Field(default="https://api.github.com")
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     repos: RepoFilterConfig | None = None
     user_fallback: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def unify_owner_and_org(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        merged = dict(data)
+        owner = str(merged.get("owner") or "").strip()
+        legacy = str(merged.get("org") or "").strip()
+        if owner and legacy and owner.lower() != legacy.lower():
+            raise ValueError(
+                "github.owner and github.org (legacy alias) are both set but differ; "
+                "use only github.owner"
+            )
+        login = owner or legacy
+        if not login:
+            raise ValueError("github.owner is required (legacy key: github.org)")
+        if "/" in login or any(ch.isspace() for ch in login):
+            raise ValueError("github.owner must be a bare account login (no '/' or spaces)")
+        merged["owner"] = login
+        merged["org"] = login
+        return merged
+
+    @field_validator("owner_type", mode="before")
+    @classmethod
+    def validate_owner_type(cls, value: object) -> str:
+        return normalize_owner_type(None if value is None else str(value))
 
 
 class SlashCommandPermissionRule(BaseModel):

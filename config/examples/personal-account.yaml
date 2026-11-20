@@ -1,0 +1,56 @@
+# Gitcord for a PERSONAL GitHub account (no organization needed).
+# Copy to config/config.yaml, keep runtime.mode "dry-run" until /audit output looks right.
+# Secrets stay in the environment (.env): GITHUB_TOKEN, DISCORD_TOKEN.
+
+runtime:
+  mode: "dry-run"
+  log_level: "INFO"
+  data_dir: "/opt/gitcord/data"
+  activity_period_days: 30
+  github_adapter: "ghdcbot.adapters.github.rest:GitHubRestAdapter"
+  discord_adapter: "ghdcbot.adapters.discord.api:DiscordApiAdapter"
+  storage_adapter: "ghdcbot.adapters.storage.sqlite:SqliteStorage"
+  # Keep false while testing so no Discord role is ever added/removed.
+  enable_discord_role_updates: false
+
+github:
+  owner: "MystifiedSky"      # your GitHub login (legacy key `org:` still works)
+  owner_type: "user"         # "user" | "organization" | "auto" (detect via GET /users/{owner})
+  token: "${GITHUB_TOKEN}"
+  api_base: "https://api.github.com"
+  permissions:
+    read: true
+    write: false
+  repos:
+    mode: "allow"            # allowlisted repos are fetched directly (private repos work)
+    names:
+      - "GitCraft"
+
+discord:
+  guild_id: "000000000000000000"
+  token: "${DISCORD_TOKEN}"
+  permissions:
+    read: true
+    write: false
+  command_permissions:
+    sync:
+      role_names: ["Mentor"]
+      allow_discord_administrators: true
+
+assignments:
+  review_roles: []
+  issue_assignees: []
+
+# Contributor rewards (promotion-only; roles are never auto-removed).
+# The Discord roles below must already exist in your server.
+merge_role_rules:
+  enabled: true
+  rules:
+    - discord_role: "Contributor"
+      min_merged_prs: 1
+    - discord_role: "Active Contributor"
+      min_merged_prs: 5
+    - discord_role: "Core Contributor"
+      min_merged_prs: 15
+
+identity_mappings: []

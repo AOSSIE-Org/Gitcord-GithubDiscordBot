@@ -138,7 +138,7 @@ Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 
 Before installing Gitcord, you need:
 
-- ✅ **GitHub Organization** access
+- ✅ **GitHub organization or personal account** that owns the repositories ([personal-account setup](docs/PERSONAL_ACCOUNTS.md))
 - ✅ **Discord Server** with admin permissions
 - ✅ **GitHub Personal Access Token** (fine-grained PAT) - [How to create](INSTALLATION.md#step-1-create-github-token-pat)
 - ✅ **Discord Bot Token** - [How to create](INSTALLATION.md#step-2-create-discord-bot)
@@ -250,7 +250,7 @@ Copy and edit:
 cp config/example.yaml config/config.yaml
 ```
 
-Edit `config/config.yaml`: set `github.org`, `discord.guild_id`, and `runtime.data_dir: "./data"`. Match `role_mappings` to role names in your Discord server.
+Edit `config/config.yaml`: set `github.owner` (or legacy `github.org`; an organization or a personal account — see [docs/PERSONAL_ACCOUNTS.md](docs/PERSONAL_ACCOUNTS.md)), `discord.guild_id`, and `runtime.data_dir: "./data"`. Match `role_mappings` to role names in your Discord server.
 
 **7. Test Run (Dry-Run Mode)**
 
