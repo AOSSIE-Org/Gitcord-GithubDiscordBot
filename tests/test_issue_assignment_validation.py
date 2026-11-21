@@ -223,3 +223,47 @@ def test_unassign_issue_malformed_json_response() -> None:
     result = adapter.unassign_issue("owner", "repo", 42, "user1")
 
     assert result is False
+
+
+def test_unassign_issue_missing_assignees_field() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_assignees_not_a_list() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42, "assignees": "collaborator1"}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_invalid_assignee_entries() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42, "assignees": [{"id": 123}]}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+    mock_response.json.return_value = {"number": 42, "assignees": ["plain_string"]}
+    result2 = adapter.unassign_issue("owner", "repo", 42, "user1")
+    assert result2 is False
+
