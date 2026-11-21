@@ -44,7 +44,7 @@ discord:
   # Optional: channel names where PR URLs trigger passive preview (requires message content intent)
   # Example: ["mentor-chat", "review-queue"]
   pr_preview_channels: []
-  # Who may run /assign-issue, /issue-requests, /sync (role_ids preferred; role_names optional).
+  # Who may run /assign-issue, /issue-requests, /sync, /create-issue (role_ids preferred; role_names optional).
   # If you omit this block entirely, the bot uses assignments.issue_assignees (role names) for those commands.
   command_permissions:
     assign-issue:
@@ -55,6 +55,9 @@ discord:
       allow_discord_administrators: true
     sync:
       role_names: ["Mentor"]
+      allow_discord_administrators: true
+    create-issue:
+      role_names: ["Contributor"]
       allow_discord_administrators: true
   # Optional: verified-only GitHub → Discord notifications for the full issue/PR lifecycle
   # Each notification type can be independently enabled/disabled

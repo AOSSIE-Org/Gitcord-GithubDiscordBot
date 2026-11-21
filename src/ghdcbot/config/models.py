@@ -69,7 +69,7 @@ class GitHubConfig(BaseModel):
 
 
 class SlashCommandPermissionRule(BaseModel):
-    """Who may run a restricted slash command (e.g. assign-issue, issue-requests, sync).
+    """Who may run a restricted slash command (e.g. assign-issue, issue-requests, sync, create-issue).
 
     If a command is omitted from ``discord.command_permissions``, the bot falls back to
     ``assignments.issue_assignees`` (role name match), for backward compatibility.
@@ -196,7 +196,7 @@ class DiscordConfig(BaseModel):
     pr_open_channels: dict[str, str] = Field(default_factory=dict)
     # Optional: verified-only GitHub → Discord notifications
     notifications: NotificationConfig | None = None
-    # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync, pr-channel;
+    # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync, pr-channel, create-issue;
     # pr-channel falls back to the sync rule). See SlashCommandPermissionRule.
     command_permissions: dict[str, SlashCommandPermissionRule] | None = None
     # TESTING ONLY: if true, any guild member may run assign-issue / issue-requests / sync. Turn off for production.
