@@ -46,6 +46,7 @@ discord:
   pr_preview_channels: []
   # Who may run /assign-issue, /issue-requests, /sync, /create-issue (role_ids preferred; role_names optional).
   # If you omit this block entirely, the bot uses assignments.issue_assignees (role names) for those commands.
+  # Exception for create-issue: if no rule is configured, all verified members may use it; add a create-issue rule to restrict it.
   command_permissions:
     assign-issue:
       role_names: ["Mentor"]
@@ -56,8 +57,9 @@ discord:
     sync:
       role_names: ["Mentor"]
       allow_discord_administrators: true
+    # Example: restrict /create-issue to Mentor role (by default, any verified member may use it)
     create-issue:
-      role_names: ["Contributor"]
+      role_names: ["Mentor"]
       allow_discord_administrators: true
   # Optional: verified-only GitHub → Discord notifications for the full issue/PR lifecycle
   # Each notification type can be independently enabled/disabled

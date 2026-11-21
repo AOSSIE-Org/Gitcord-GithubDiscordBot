@@ -73,6 +73,8 @@ class SlashCommandPermissionRule(BaseModel):
 
     If a command is omitted from ``discord.command_permissions``, the bot falls back to
     ``assignments.issue_assignees`` (role name match), for backward compatibility.
+    Exception for create-issue: if no rule is configured, all verified members may use it;
+    add a create-issue rule to restrict it.
     """
 
     role_ids: list[str] = Field(default_factory=list)
@@ -197,7 +199,8 @@ class DiscordConfig(BaseModel):
     # Optional: verified-only GitHub → Discord notifications
     notifications: NotificationConfig | None = None
     # Optional: per-command slash permission (keys: assign-issue, issue-requests, sync, pr-channel, create-issue;
-    # pr-channel falls back to the sync rule). See SlashCommandPermissionRule.
+    # pr-channel falls back to the sync rule; create-issue is open to all verified members when omitted).
+    # See SlashCommandPermissionRule.
     command_permissions: dict[str, SlashCommandPermissionRule] | None = None
     # TESTING ONLY: if true, any guild member may run assign-issue / issue-requests / sync. Turn off for production.
     unrestricted_slash_commands: bool = False
