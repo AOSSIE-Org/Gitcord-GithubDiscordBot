@@ -581,3 +581,70 @@ assignments:
     import json as json_lib
     parsed = json_lib.loads(out)
     assert parsed == []
+
+
+def test_filter_audit_events_handles_none_context() -> None:
+    """Events with context: None must not raise AttributeError when filtered."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "test_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": None,
+        },
+        {
+            "actor_type": "discord_user",
+            "actor_id": "456",
+            "event_type": "test_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "alice"},
+        },
+    ]
+    # Filter by user matching actor_id of event with context: None
+    filtered_actor = filter_audit_events(events, user="123")
+    assert len(filtered_actor) == 1
+    assert filtered_actor[0]["actor_id"] == "123"
+
+    # Filter by user not matching
+    filtered_none = filter_audit_events(events, user="bob")
+    assert len(filtered_none) == 0
+
+    # Filter by github user
+    filtered_gh = filter_audit_events(events, user="alice")
+    assert len(filtered_gh) == 1
+
+
+def test_format_audit_csv_handles_none_context() -> None:
+    """format_audit_csv must safely handle events where context is None."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "legacy_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": None,
+        }
+    ]
+    csv_output = format_audit_csv(events)
+    lines = csv_output.strip().splitlines()
+    assert len(lines) == 2
+    assert "legacy_event" in lines[1]
+    assert "{}" in lines[1]
+
+
+def test_format_audit_markdown_handles_none_context() -> None:
+    """format_audit_markdown must safely handle events where context is None."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "legacy_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": None,
+        }
+    ]
+    md_output = format_audit_markdown(events)
+    assert "## legacy_event" in md_output
+    assert "discord_user:123" in md_output
+    assert "—" in md_output
