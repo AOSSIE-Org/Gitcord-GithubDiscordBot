@@ -32,7 +32,7 @@ def filter_audit_events(
             for e in filtered
             if (
                 e.get("actor_id") == user
-                or e.get("context", {}).get("github_user") == user
+                or (e.get("context") or {}).get("github_user") == user
             )
         ]
     if event_type:
@@ -71,7 +71,7 @@ def format_audit_csv(events: list[dict]) -> str:
     w = csv.writer(buf)
     w.writerow(["ts", "event_type", "github_user", "discord_user_id", "repo", "target", "details"])
     for e in events:
-        context = e.get("context", {})
+        context = e.get("context") or {}
         github_user = context.get("github_user", "")
         discord_user_id = e.get("actor_id", "") if e.get("actor_type") == "discord_user" else ""
         repo = context.get("repo", "")
@@ -111,7 +111,7 @@ def format_audit_markdown(events: list[dict]) -> str:
         lines.append("| Timestamp | Actor | GitHub User | Details |")
         lines.append("|-----------|-------|-------------|---------|")
         for e in group_events:
-            context = e.get("context", {})
+            context = e.get("context") or {}
             github_user = context.get("github_user", "")
             actor_type = e.get("actor_type", "")
             actor_id = e.get("actor_id", "")
