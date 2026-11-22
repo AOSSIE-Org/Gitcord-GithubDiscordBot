@@ -140,7 +140,12 @@ def plan_discord_roles(
     If repo_contributor_roles is set, adds roles per repo where user has a merged PR (all-time).
     Final role per user = score_based | merge_based | repo_contributor_based.
     """
-    score_lookup = {score.github_user: score.points for score in scores}
+    score_lookup: dict[str, int] = {}
+    for score in scores:
+        if not score.github_user:
+            continue
+        key = score.github_user.strip().lower()
+        score_lookup[key] = max(score_lookup.get(key, 0), score.points)
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
     managed_roles = {mapping.discord_role for mapping in role_thresholds}
 
@@ -175,7 +180,11 @@ def plan_discord_roles(
     
     for mapping in sorted(identity_list, key=lambda m: m.discord_user_id):
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
-        points = score_lookup.get(mapping.github_user, 0)
+        points = (
+            score_lookup.get(mapping.github_user.strip().lower(), 0)
+            if mapping.github_user
+            else 0
+        )
         
         # Score-based roles
         score_desired = {
