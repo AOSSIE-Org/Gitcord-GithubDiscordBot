@@ -59,6 +59,45 @@ def test_filter_audit_events_by_user_discord(tmp_path: Path) -> None:
     assert filtered[0]["actor_id"] == "123"
 
 
+def test_filter_audit_events_by_user_ignores_github_login_case() -> None:
+    """A login typed as "Alice" in /link and "alice" from the GitHub API are the same user."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "identity_verified",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "Alice"},
+        },
+        {
+            "event_type": "github_notification_sent",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "alice", "discord_user_id": "123"},
+        },
+    ]
+    for user in ("alice", "ALICE"):
+        assert filter_audit_events(events, user=user) == events
+
+
+def test_filter_audit_events_by_discord_user_id_in_context() -> None:
+    """Notification events carry the recipient's Discord ID in context, not as actor."""
+    events = [
+        {
+            "event_type": "github_notification_sent",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "alice", "discord_user_id": "123", "repo": "Gitcord"},
+        },
+        {
+            "event_type": "github_notification_sent",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "bob", "discord_user_id": "456", "repo": "Gitcord"},
+        },
+    ]
+    assert filter_audit_events(events, user="123") == events[:1]
+    rows = format_audit_csv(events[:1]).splitlines()
+    assert rows[1].split(",")[1:5] == ["github_notification_sent", "alice", "123", "Gitcord"]
+
+
 def test_filter_audit_events_by_event_type(tmp_path: Path) -> None:
     events = [
         {
