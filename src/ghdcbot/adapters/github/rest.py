@@ -1580,38 +1580,45 @@ class GitHubRestAdapter:
                         timeline_events, index, merged_at
                     ):
                         continue
-                    closed_by = ((event.get("actor") or {}).get("login") or "").strip() or author
+                    payload = {
+                        "pr_number": pr_number,
+                        "pr_title": pr.get("title"),
+                        "title": pr.get("title"),
+                        "pr_author": author,
+                        "repository": repo,
+                        "html_url": pr.get("html_url"),
+                        "closed_at": event.get("created_at"),
+                    }
+                    # Only a known closer: a missing actor must not look like the author closing it.
+                    closed_by = ((event.get("actor") or {}).get("login") or "").strip()
+                    if closed_by:
+                        payload["closed_by"] = closed_by
                     yield ContributionEvent(
                         github_user=author,
                         event_type="pr_closed",
                         repo=repo,
                         created_at=created_at,
-                        payload={
-                            "pr_number": pr_number,
-                            "pr_title": pr.get("title"),
-                            "title": pr.get("title"),
-                            "pr_author": author,
-                            "closed_by": closed_by,
-                            "repository": repo,
-                            "html_url": pr.get("html_url"),
-                            "closed_at": event.get("created_at"),
-                        },
+                        payload=payload,
                     )
                 elif event_type == "reopened":
+                    payload = {
+                        "pr_number": pr_number,
+                        "title": pr.get("title"),
+                        "pr_title": pr.get("title"),
+                        "pr_author": author,
+                        "repository": repo,
+                        "html_url": pr.get("html_url"),
+                        "reopened_at": event.get("created_at"),
+                    }
+                    reopened_by = ((event.get("actor") or {}).get("login") or "").strip()
+                    if reopened_by:
+                        payload["reopened_by"] = reopened_by
                     yield ContributionEvent(
                         github_user=author,
                         event_type="pr_reopened",
                         repo=repo,
                         created_at=created_at,
-                        payload={
-                            "pr_number": pr_number,
-                            "title": pr.get("title"),
-                            "pr_title": pr.get("title"),
-                            "pr_author": author,
-                            "repository": repo,
-                            "html_url": pr.get("html_url"),
-                            "reopened_at": event.get("created_at"),
-                        },
+                        payload=payload,
                     )
         except Exception as e:
             self._logger.debug(
@@ -1991,10 +1998,14 @@ class GitHubRestAdapter:
                 )
                 continue
 
+            actor = event.get("actor") if isinstance(event.get("actor"), dict) else None
+            reopened_by = (actor.get("login") if actor else None) or ""
             for resolved_assignee in assignees_to_notify:
                 payload = _issue_payload(issue)
                 payload["reopened_at"] = event.get("created_at")
                 payload["assignee"] = resolved_assignee
+                if reopened_by:
+                    payload["reopened_by"] = reopened_by
                 yield ContributionEvent(
                     github_user=resolved_assignee,
                     event_type="issue_reopened",
