@@ -880,6 +880,18 @@ def run_issue_inactivity_lifecycle(
                                 )
                                 mark_sent(dedupe_key, event, discord_user_id, None, assignee)
 
+                            audit_fn = getattr(storage, "append_audit_event", None)
+                            if callable(audit_fn):
+                                audit_fn(_inactivity_audit_event(
+                                    "issue_inactivity_checkin",
+                                    repo=repo,
+                                    issue_number=issue_number,
+                                    assignee=assignee,
+                                    discord_user_id=discord_user_id,
+                                    when=current_time,
+                                    days=inactivity_days,
+                                ))
+
                             logger.info(
                                 "Sent %s inactivity check-in reminder",
                                 inactivity_label,
@@ -969,6 +981,18 @@ def run_issue_inactivity_lifecycle(
                                         payload={"issue_number": issue_number, "days": inactivity_days},
                                     )
                                     mark_sent(dedupe_key, event, "", None, assignee)
+
+                                audit_fn = getattr(storage, "append_audit_event", None)
+                                if callable(audit_fn):
+                                    audit_fn(_inactivity_audit_event(
+                                        "issue_inactivity_checkin",
+                                        repo=repo,
+                                        issue_number=issue_number,
+                                        assignee=assignee,
+                                        discord_user_id=None,
+                                        when=current_time,
+                                        days=inactivity_days,
+                                    ))
 
                                 logger.info(
                                     "Posted %s inactivity check-in comment for unverified contributor",

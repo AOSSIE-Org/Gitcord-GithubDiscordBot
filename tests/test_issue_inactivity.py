@@ -571,6 +571,18 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
 
+        assert len(storage.audit_events) == 1
+        event = storage.audit_events[0]
+        assert event["event_type"] == "issue_inactivity_checkin"
+        assert event["actor_type"] == "system"
+        assert event["context"]["repo"] == "Gitcord"
+        assert event["context"]["issue_number"] == 42
+        assert event["context"]["github_user"] == "alex"
+        assert event["context"]["discord_user_id"] == "11223344"
+        assert event["context"]["days"] == 7
+        assert filter_audit_events(storage.audit_events, event_type="issue_inactivity_checkin") == [event]
+        assert filter_audit_events(storage.audit_events, user="alex") == [event]
+
     def test_activity_resets_reminder_and_delays_stage_1(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
@@ -862,6 +874,18 @@ class TestInactivityLifecycleExecution:
         assert rec is not None
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
+
+        assert len(storage.audit_events) == 1
+        event = storage.audit_events[0]
+        assert event["event_type"] == "issue_inactivity_checkin"
+        assert event["actor_type"] == "system"
+        assert event["context"]["repo"] == "Gitcord"
+        assert event["context"]["issue_number"] == 42
+        assert event["context"]["github_user"] == "unverified_bob"
+        assert event["context"]["discord_user_id"] is None
+        assert event["context"]["days"] == 7
+        assert filter_audit_events(storage.audit_events, event_type="issue_inactivity_checkin") == [event]
+        assert filter_audit_events(storage.audit_events, user="unverified_bob") == [event]
 
     def test_unverified_contributor_stage_1_dry_run_records_audit_event_without_comment(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
