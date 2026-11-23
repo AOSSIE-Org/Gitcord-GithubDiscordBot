@@ -8,6 +8,7 @@ import httpx
 from ghdcbot.adapters.github.app_auth import build_github_httpx_client
 from ghdcbot.core.models import GitHubAssignmentPlan
 from ghdcbot.core.modes import MutationPolicy, mutation_skip_reason
+from ghdcbot.engine.metrics import same_github_user
 
 
 class GitHubPlanWriter:
@@ -44,11 +45,19 @@ class GitHubPlanWriter:
             if skip_reason:
                 self._log_plan(plan, result=skip_reason)
                 continue
-            dedupe_key = (plan.repo, plan.target_type, plan.target_number, plan.action, plan.assignee)
+            # GitHub logins are case-insensitive.
+            dedupe_key = (
+                plan.repo,
+                plan.target_type,
+                plan.target_number,
+                plan.action,
+                plan.assignee.lower(),
+            )
             if dedupe_key in seen:
                 self._log_plan(plan, result="skipped (duplicate)")
                 continue
-            if plan.action == "request_review" and plan.assignee == plan.source.get("author"):
+            author = plan.source.get("author")
+            if plan.action == "request_review" and same_github_user(plan.assignee, author):
                 self._log_plan(plan, result="skipped (author)")
                 continue
             seen.add(dedupe_key)
