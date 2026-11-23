@@ -201,7 +201,28 @@ def _record_live_checkin_audit(
     delivered_at: datetime,
     days: int,
 ) -> bool:
-    """Write the live Stage 1 event, persisting delivery context if the write fails."""
+    """Write the live Stage 1 event, persisting delivery context if the write fails.
+
+    The reminder window is checked first so a retry after a tracking-write failure
+    cannot append a second event for the same window. If the audit log cannot be
+    read, the delivery context is buffered and the append is deferred.
+    """
+    recorded = _checkin_audit_recorded(storage, repo, issue_number, assignee, last_activity)
+    if recorded is True:
+        return True
+    if recorded is None:
+        _record_pending_checkin_audit(
+            storage,
+            repo=repo,
+            issue_number=issue_number,
+            assignee=assignee,
+            discord_user_id=discord_user_id,
+            last_activity=last_activity,
+            delivered_at=delivered_at,
+            days=days,
+        )
+        return False
+
     written = _write_inactivity_audit(
         storage,
         "issue_inactivity_checkin",
@@ -277,6 +298,11 @@ def _reconcile_pending_checkin_audits(storage: Any) -> None:
                 last_activity=last_activity.isoformat(),
             )
             if not written:
+                continue
+            # Confirm the replayed event is readable before dropping the recovery
+            # context; a partial/concatenated line must not lose the pending record.
+            confirmed = _checkin_audit_recorded(storage, repo, issue_number, assignee, last_activity)
+            if confirmed is not True:
                 continue
 
         try:

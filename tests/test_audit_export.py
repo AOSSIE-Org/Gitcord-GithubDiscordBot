@@ -222,6 +222,20 @@ def test_storage_list_audit_events_empty_when_no_file(tmp_path: Path) -> None:
     assert events == []
 
 
+def test_storage_append_audit_event_after_partial_line(tmp_path: Path) -> None:
+    storage = SqliteStorage(data_dir=str(tmp_path))
+    audit_path = Path(tmp_path) / "audit_events.jsonl"
+    audit_path.write_text('{"event_type":"truncated"', encoding="utf-8")
+
+    storage.append_audit_event(
+        {"event_type": "issue_inactivity_checkin", "context": {"github_user": "alice"}}
+    )
+
+    events = storage.list_audit_events()
+    assert len(events) == 1
+    assert events[0]["event_type"] == "issue_inactivity_checkin"
+
+
 def test_cli_export_audit_csv_no_filters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from ghdcbot.cli import main
     import sys

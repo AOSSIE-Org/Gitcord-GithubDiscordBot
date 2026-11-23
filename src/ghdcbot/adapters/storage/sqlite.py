@@ -776,7 +776,16 @@ class SqliteStorage:
         if "timestamp" not in payload:
             payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         line = json.dumps(payload, separators=(",", ":")) + "\n"
+        # Ensure a previous partial write cannot concatenate with this event and make
+        # both lines unreadable; a stray newline keeps the JSONL records separable.
+        needs_newline = False
+        if path.exists() and path.stat().st_size:
+            with path.open("rb") as f:
+                f.seek(-1, 2)
+                needs_newline = f.read(1) != b"\n"
         with path.open("a", encoding="utf-8") as f:
+            if needs_newline:
+                f.write("\n")
             f.write(line)
 
     def list_audit_events(self) -> list[dict]:

@@ -717,6 +717,65 @@ class TestInactivityLifecycleExecution:
         assert discord_writer.send_dm.call_count == 1
         assert len(storage.audit_events) == 1
 
+    def test_stage_1_audit_is_not_duplicated_when_tracking_write_fails(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """A re-delivery after a failed tracking write must not append a second event."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+
+        def failing_reminder(
+            repo: str, issue_number: int, github_user: str, reminder_sent_at: datetime
+        ) -> None:
+            raise RuntimeError("tracking write failed")
+
+        storage.record_issue_inactivity_reminder = failing_reminder  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError):
+            run_issue_inactivity_lifecycle(
+                github_reader=github_reader,
+                github_writer=github_writer,
+                discord_writer=discord_writer,
+                storage=storage,
+                policy=policy,
+                config=config,
+                github_org="AOSSIE-Org",
+                now=now,
+            )
+
+        assert len(storage.audit_events) == 1
+
+        del storage.record_issue_inactivity_reminder
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert discord_writer.send_dm.call_count == 2
+        assert len(storage.audit_events) == 1
+
     def test_unverified_stage_1_audit_failure_is_retried_without_reposting(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
