@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from ghdcbot.adapters.github.rest import GitHubRestAdapter
 
@@ -20,10 +19,19 @@ class _SequenceMockClient:
             raise outcome
         return outcome
 
+    def post(
+        self, path: str, json: dict | None = None, **kwargs: object
+    ) -> httpx.Response:
+        self.call_count += 1
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
 
 def _adapter_with_client(client: _SequenceMockClient) -> GitHubRestAdapter:
     adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
-    adapter._client = client  # noqa: SLF001
+    adapter._client = client
     return adapter
 
 
@@ -176,3 +184,27 @@ def test_rate_limit_403_missing_reset_no_transient_retry(caplog) -> None:
     assert any(
         getattr(r, "event", None) == "github_rate_limit_missing_reset" for r in caplog.records
     )
+
+
+def test_create_issue_comment_connect_timeout_returns_false(caplog) -> None:
+    client = _SequenceMockClient([httpx.ConnectTimeout("Connection timed out")])
+    adapter = _adapter_with_client(client)
+    caplog.set_level("WARNING")
+
+    result = adapter.create_issue_comment("AOSSIE", "Gitcord", 42, "Checkin reminder")
+
+    assert result is False
+    assert client.call_count == 1
+    assert any("connect timed out (not sent)" in r.message for r in caplog.records)
+
+
+def test_create_issue_comment_read_timeout_returns_true(caplog) -> None:
+    client = _SequenceMockClient([httpx.ReadTimeout("Read timed out")])
+    adapter = _adapter_with_client(client)
+    caplog.set_level("WARNING")
+
+    result = adapter.create_issue_comment("AOSSIE", "Gitcord", 42, "Checkin reminder")
+
+    assert result is True
+    assert client.call_count == 1
+    assert any("outcome uncertain; treating as success" in r.message for r in caplog.records)
