@@ -583,6 +583,169 @@ class TestInactivityLifecycleExecution:
         assert filter_audit_events(storage.audit_events, event_type="issue_inactivity_checkin") == [event]
         assert filter_audit_events(storage.audit_events, user="alex") == [event]
 
+    def test_stage_1_audit_failure_is_retried_without_resending_dm(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """A failed audit append must not abort the run and is reconciled on the next run."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+
+        def failing_append(event: dict) -> None:
+            raise RuntimeError("audit storage unavailable")
+
+        storage.append_audit_event = failing_append  # type: ignore[method-assign]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert storage.audit_events == []
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "alex")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert discord_writer.send_dm.call_count == 1
+
+        storage.append_audit_event = MockStorage.append_audit_event.__get__(storage, MockStorage)
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert discord_writer.send_dm.call_count == 1
+        assert len(storage.audit_events) == 1
+        event = storage.audit_events[0]
+        assert event["event_type"] == "issue_inactivity_checkin"
+        assert event["context"]["github_user"] == "alex"
+        assert event["context"]["last_activity"] == assigned_at.isoformat()
+
+    def test_stage_1_audit_is_not_duplicated_across_runs(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Re-running the lifecycle must not append a second check-in audit event."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "alex", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "alex"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = True
+
+        for _ in range(2):
+            run_issue_inactivity_lifecycle(
+                github_reader=github_reader,
+                github_writer=github_writer,
+                discord_writer=discord_writer,
+                storage=storage,
+                policy=policy,
+                config=config,
+                github_org="AOSSIE-Org",
+                now=now,
+            )
+
+        assert discord_writer.send_dm.call_count == 1
+        assert len(storage.audit_events) == 1
+
+    def test_unverified_stage_1_audit_failure_is_retried_without_reposting(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """The comment fallback reconciles its audit event without reposting the comment."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.verified_mappings = []
+        storage.track_issue_assignment("Gitcord", 42, "unverified_bob", assigned_at)
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Refactor error handling",
+                "assignees": [{"login": "unverified_bob"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        github_writer.create_issue_comment.return_value = True
+
+        def failing_append(event: dict) -> None:
+            raise RuntimeError("audit storage unavailable")
+
+        storage.append_audit_event = failing_append  # type: ignore[method-assign]
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert storage.audit_events == []
+        assert github_writer.create_issue_comment.call_count == 1
+
+        storage.append_audit_event = MockStorage.append_audit_event.__get__(storage, MockStorage)
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        assert github_writer.create_issue_comment.call_count == 1
+        assert len(storage.audit_events) == 1
+        event = storage.audit_events[0]
+        assert event["event_type"] == "issue_inactivity_checkin"
+        assert event["context"]["github_user"] == "unverified_bob"
+        assert event["context"]["discord_user_id"] is None
+
     def test_activity_resets_reminder_and_delays_stage_1(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:
