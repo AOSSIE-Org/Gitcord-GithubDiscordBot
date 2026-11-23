@@ -103,6 +103,7 @@ from ghdcbot.plugins.registry import build_adapter
 
 SLASH_CMD_SYNC = "sync"
 SLASH_CMD_PR_STATUS = "pr-status"
+SLASH_CMD_CREATE_ISSUE = "create-issue"
 SLASH_CMD_HELP_LINK = HELP_LINK_COMMAND_NAME
 
 logger = logging.getLogger("ghdcbot.bot")
@@ -2380,6 +2381,12 @@ def run_bot(config_path: str) -> None:
         description: str = "",
         label: str | None = None,
     ) -> None:
+        if not slash_command_allowed(interaction, config, SLASH_CMD_CREATE_ISSUE, allow_all_by_default=True):
+            await interaction.response.send_message(
+                format_slash_command_permission_denied(config, SLASH_CMD_CREATE_ISSUE), ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         discord_user_id = str(interaction.user.id)
         
@@ -2470,6 +2477,8 @@ def run_bot(config_path: str) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        if not slash_command_allowed(interaction, config, SLASH_CMD_CREATE_ISSUE, allow_all_by_default=True):
+            return []
         discord_user_id = str(interaction.user.id)
         
         # Check permissions
