@@ -753,20 +753,100 @@ class GitHubRestAdapter:
             )
 
         if response.status_code in {200, 201}:
-            self._logger.info(
-                "Issue unassigned successfully",
-                extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
-            )
-            return True
+            try:
+                response_data = response.json()
+                if not isinstance(response_data, dict) or "assignees" not in response_data:
+                    self._logger.warning(
+                        "Issue unassignment response missing 'assignees' field",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "assignee": assignee,
+                        },
+                    )
+                    return False
+
+                actual_assignees = response_data["assignees"]
+                if not isinstance(actual_assignees, list):
+                    self._logger.warning(
+                        "Issue unassignment response 'assignees' field is not a list",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "assignee": assignee,
+                        },
+                    )
+                    return False
+
+                assignee_logins = []
+                for a in actual_assignees:
+                    if not isinstance(a, dict) or not isinstance(a.get("login"), str) or not a["login"]:
+                        self._logger.warning(
+                            "Issue unassignment response contains invalid assignee entry",
+                            extra={
+                                "owner": owner,
+                                "repo": repo,
+                                "issue_number": issue_number,
+                                "assignee": assignee,
+                            },
+                        )
+                        return False
+                    assignee_logins.append(a["login"])
+
+                assignee_logins_lower = [login.lower() for login in assignee_logins]
+                if assignee.lower() in assignee_logins_lower:
+                    self._logger.warning(
+                        "Assignee removal was silently ignored by GitHub",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "requested_unassignee": assignee,
+                            "actual_assignees_from_github": assignee_logins,
+                        },
+                    )
+                    return False
+
+                self._logger.info(
+                    "Issue unassigned successfully",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "unassigned_user": assignee,
+                        "remaining_assignees_from_github": assignee_logins,
+                    },
+                )
+                return True
+            except (ValueError, TypeError, AttributeError) as exc:
+                self._logger.warning(
+                    "Issue unassignment response could not be verified",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "assignee": assignee,
+                        "error": str(exc),
+                    },
+                )
+                return False
         else:
+            error_body = getattr(response, "text", "") or ""
+            if isinstance(error_body, str):
+                error_body = error_body[:500]
+            else:
+                error_body = ""
             self._logger.warning(
-                "Issue unassignment failed",
+                "Issue unassignment failed (GitHub API non-2xx)",
                 extra={
                     "owner": owner,
                     "repo": repo,
                     "issue_number": issue_number,
                     "assignee": assignee,
                     "status_code": response.status_code,
+                    "error_response": error_body,
                 },
             )
             return False

@@ -109,3 +109,161 @@ def test_assign_issue_malformed_json_response() -> None:
     result = adapter.assign_issue("owner", "repo", 42, "user1")
 
     assert result is False
+
+
+def test_unassign_issue_success() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {
+        "number": 42,
+        "assignees": [],
+    }
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "collaborator1")
+
+    assert result is True
+    mock_client.request.assert_called_once_with(
+        "DELETE",
+        "/repos/owner/repo/issues/42/assignees",
+        json={"assignees": ["collaborator1"]},
+    )
+
+
+def test_unassign_issue_case_insensitive() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {
+        "number": 42,
+        "assignees": [],
+    }
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "Collaborator1")
+
+    assert result is True
+
+
+def test_unassign_issue_silently_ignored_by_github() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    # Target assignee still present in response assignees list
+    mock_response.json.return_value = {
+        "number": 42,
+        "assignees": [{"login": "collaborator1"}],
+    }
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "collaborator1")
+
+    assert result is False
+
+
+def test_unassign_issue_case_insensitive_silent_ignore() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    # Login in response has different casing, should still detect that user was NOT removed
+    mock_response.json.return_value = {
+        "number": 42,
+        "assignees": [{"login": "Collaborator1"}],
+    }
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "collaborator1")
+
+    assert result is False
+
+
+def test_unassign_issue_success_when_other_assignees_remain() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    # Other users remain assigned, but target assignee was removed
+    mock_response.json.return_value = {
+        "number": 42,
+        "assignees": [{"login": "other_user"}],
+    }
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "collaborator1")
+
+    assert result is True
+
+
+def test_unassign_issue_non_2xx_failure() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 403
+    mock_response.headers = {}
+    mock_response.text = "Forbidden"
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_malformed_json_response() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.side_effect = ValueError("Invalid JSON")
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_missing_assignees_field() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_assignees_not_a_list() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42, "assignees": "collaborator1"}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+
+def test_unassign_issue_invalid_assignee_entries() -> None:
+    adapter, mock_client = _build_adapter()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json.return_value = {"number": 42, "assignees": [{"id": 123}]}
+    mock_client.request.return_value = mock_response
+
+    result = adapter.unassign_issue("owner", "repo", 42, "user1")
+
+    assert result is False
+
+    mock_response.json.return_value = {"number": 42, "assignees": ["plain_string"]}
+    result2 = adapter.unassign_issue("owner", "repo", 42, "user1")
+    assert result2 is False
+
