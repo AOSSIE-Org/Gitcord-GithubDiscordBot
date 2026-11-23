@@ -128,8 +128,12 @@ def _checkin_audit_recorded(
     issue_number: int,
     assignee: str,
     last_activity: datetime,
-) -> bool:
-    """Whether the live Stage 1 check-in audit event for this reminder window exists."""
+) -> bool | None:
+    """Whether the live Stage 1 check-in audit event exists for this reminder window.
+
+    Returns ``None`` when the audit log cannot be read. Callers must defer the
+    reconciliation in that case instead of appending a possible duplicate.
+    """
     list_fn = getattr(storage, "list_audit_events", None)
     if callable(list_fn):
         try:
@@ -139,11 +143,11 @@ def _checkin_audit_recorded(
                 "Failed to read audit events while reconciling check-in reminder",
                 extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
             )
-            return False
+            return None
     else:
         events = getattr(storage, "audit_events", None)
-    if not isinstance(events, list):
-        return False
+        if not isinstance(events, list):
+            return None
     return _audit_logged(
         events,
         "issue_inactivity_checkin",
@@ -154,7 +158,7 @@ def _checkin_audit_recorded(
     )
 
 
-def _ensure_checkin_audit_recorded(
+def _record_pending_checkin_audit(
     storage: Any,
     *,
     repo: str,
@@ -162,23 +166,126 @@ def _ensure_checkin_audit_recorded(
     assignee: str,
     discord_user_id: str | None,
     last_activity: datetime,
-    when: datetime,
+    delivered_at: datetime,
+    days: int,
+) -> None:
+    """Persist the delivery-time context of a check-in whose audit append failed."""
+    record_fn = getattr(storage, "record_pending_checkin_audit", None)
+    if not callable(record_fn):
+        return
+    try:
+        record_fn(
+            repo,
+            issue_number,
+            assignee,
+            last_activity.isoformat(),
+            discord_user_id,
+            days,
+            delivered_at.isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to persist pending check-in audit context",
+            extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+        )
+
+
+def _record_live_checkin_audit(
+    storage: Any,
+    *,
+    repo: str,
+    issue_number: int,
+    assignee: str,
+    discord_user_id: str | None,
+    last_activity: datetime,
+    delivered_at: datetime,
     days: int,
 ) -> bool:
-    """Write the live Stage 1 audit event if it is missing for this reminder window."""
-    if _checkin_audit_recorded(storage, repo, issue_number, assignee, last_activity):
-        return True
-    return _write_inactivity_audit(
+    """Write the live Stage 1 event, persisting delivery context if the write fails."""
+    written = _write_inactivity_audit(
         storage,
         "issue_inactivity_checkin",
         repo=repo,
         issue_number=issue_number,
         assignee=assignee,
         discord_user_id=discord_user_id,
-        when=when,
+        when=delivered_at,
         days=days,
         last_activity=last_activity.isoformat(),
     )
+    if not written:
+        _record_pending_checkin_audit(
+            storage,
+            repo=repo,
+            issue_number=issue_number,
+            assignee=assignee,
+            discord_user_id=discord_user_id,
+            last_activity=last_activity,
+            delivered_at=delivered_at,
+            days=days,
+        )
+    return written
+
+
+def _reconcile_pending_checkin_audits(storage: Any) -> None:
+    """Retry pending Stage 1 audit writes using their saved delivery-time context."""
+    list_fn = getattr(storage, "list_pending_checkin_audits", None)
+    clear_fn = getattr(storage, "clear_pending_checkin_audit", None)
+    if not callable(list_fn) or not callable(clear_fn):
+        return
+    try:
+        pending = list_fn()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read pending check-in audits", extra={"error": str(exc)})
+        return
+    if not isinstance(pending, list):
+        return
+
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        repo = item.get("repo")
+        issue_number = item.get("issue_number")
+        assignee = item.get("github_user")
+        last_activity = _parse_utc_datetime(item.get("last_activity"))
+        delivered_at = _parse_utc_datetime(item.get("delivered_at"))
+        days = item.get("days")
+        if (
+            not repo
+            or not isinstance(issue_number, int)
+            or not assignee
+            or last_activity is None
+            or delivered_at is None
+            or not isinstance(days, int)
+        ):
+            continue
+
+        recorded = _checkin_audit_recorded(storage, repo, issue_number, assignee, last_activity)
+        if recorded is None:
+            # Audit log is unreadable; keep the pending record for a later run.
+            continue
+        if not recorded:
+            written = _write_inactivity_audit(
+                storage,
+                "issue_inactivity_checkin",
+                repo=repo,
+                issue_number=issue_number,
+                assignee=assignee,
+                discord_user_id=item.get("discord_user_id"),
+                when=delivered_at,
+                days=days,
+                last_activity=last_activity.isoformat(),
+            )
+            if not written:
+                continue
+
+        try:
+            clear_fn(repo, issue_number, assignee, last_activity.isoformat())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to clear pending check-in audit",
+                extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+            )
 
 
 def _parse_utc_datetime(value: str | datetime | None) -> datetime | None:
@@ -449,6 +556,10 @@ def run_issue_inactivity_lifecycle(
         inactivity_label = f"{inactivity_days} days"
         escalate_delta = timedelta(days=escalate_days)
         total_time_label = f"{inactivity_days + escalate_days} days"
+
+        # Retry any check-in audit writes that failed on a previous scan, using the
+        # delivery-time context that was persisted alongside the reminder.
+        _reconcile_pending_checkin_audits(storage)
 
         # Maintainer / mentor check helper
         permission_cache: dict[str, bool] = {}
@@ -731,27 +842,6 @@ def run_issue_inactivity_lifecycle(
                 last_act = _parse_utc_datetime(record.get("last_activity_at")) or issue_created_at
                 reminder_sent_at = _parse_utc_datetime(record.get("reminder_sent_at"))
 
-                # Reconcile the audit trail for an already-delivered Stage 1 reminder. If the
-                # original append failed, retry it here without re-sending the reminder and
-                # without creating a duplicate event once it succeeds. Only reminders that
-                # were delivered by this flow are marked as a sent notification.
-                if reminder_sent_at is not None:
-                    reminder_key = (
-                        f"issue_inactivity_checkin:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
-                    )
-                    was_sent = getattr(storage, "was_notification_sent", None)
-                    if callable(was_sent) and was_sent(reminder_key):
-                        _ensure_checkin_audit_recorded(
-                            storage,
-                            repo=repo,
-                            issue_number=issue_number,
-                            assignee=assignee,
-                            discord_user_id=resolve_github_to_discord(storage, assignee),
-                            last_activity=last_act,
-                            when=reminder_sent_at,
-                            days=inactivity_days,
-                        )
-
                 # Skip activity fetches when both inactivity and escalation clocks are below thresholds
                 is_inactivity_due = (reminder_sent_at is None) and ((current_time - last_act) >= inactivity_delta)
                 is_escalation_due = auto_unassign and (
@@ -944,7 +1034,7 @@ def run_issue_inactivity_lifecycle(
                             extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                         )
 
-                        _write_inactivity_audit(
+                        written = _write_inactivity_audit(
                             storage,
                             "issue_inactivity_escalated_dry_run",
                             repo=repo,
@@ -954,6 +1044,8 @@ def run_issue_inactivity_lifecycle(
                             when=current_time,
                             total_time=total_time_label,
                         )
+                        if not written:
+                            continue
 
                         mark_sent = getattr(storage, "mark_notification_sent", None)
                         if callable(mark_sent):
@@ -975,16 +1067,6 @@ def run_issue_inactivity_lifecycle(
                     )
                     was_sent = getattr(storage, "was_notification_sent", None)
                     if callable(was_sent) and was_sent(dedupe_key):
-                        _ensure_checkin_audit_recorded(
-                            storage,
-                            repo=repo,
-                            issue_number=issue_number,
-                            assignee=assignee,
-                            discord_user_id=discord_user_id,
-                            last_activity=last_act,
-                            when=current_time,
-                            days=inactivity_days,
-                        )
                         continue
 
                     if discord_user_id:
@@ -1005,14 +1087,14 @@ def run_issue_inactivity_lifecycle(
                             policy=policy,
                         )
                         if sent:
-                            _ensure_checkin_audit_recorded(
+                            _record_live_checkin_audit(
                                 storage,
                                 repo=repo,
                                 issue_number=issue_number,
                                 assignee=assignee,
                                 discord_user_id=discord_user_id,
                                 last_activity=last_act,
-                                when=current_time,
+                                delivered_at=current_time,
                                 days=inactivity_days,
                             )
 
@@ -1063,7 +1145,7 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
 
-                            _write_inactivity_audit(
+                            written = _write_inactivity_audit(
                                 storage,
                                 "issue_inactivity_checkin_dry_run",
                                 repo=repo,
@@ -1073,6 +1155,8 @@ def run_issue_inactivity_lifecycle(
                                 when=current_time,
                                 days=inactivity_days,
                             )
+                            if not written:
+                                continue
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):
@@ -1105,14 +1189,14 @@ def run_issue_inactivity_lifecycle(
                                         extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
                                     )
                             if posted:
-                                _ensure_checkin_audit_recorded(
+                                _record_live_checkin_audit(
                                     storage,
                                     repo=repo,
                                     issue_number=issue_number,
                                     assignee=assignee,
                                     discord_user_id=None,
                                     last_activity=last_act,
-                                    when=current_time,
+                                    delivered_at=current_time,
                                     days=inactivity_days,
                                 )
 
@@ -1163,7 +1247,7 @@ def run_issue_inactivity_lifecycle(
                                 extra={"repo": repo, "issue": issue_number, "assignee": assignee},
                             )
 
-                            _write_inactivity_audit(
+                            written = _write_inactivity_audit(
                                 storage,
                                 "issue_inactivity_checkin_dry_run",
                                 repo=repo,
@@ -1173,6 +1257,8 @@ def run_issue_inactivity_lifecycle(
                                 when=current_time,
                                 days=inactivity_days,
                             )
+                            if not written:
+                                continue
 
                             mark_sent = getattr(storage, "mark_notification_sent", None)
                             if callable(mark_sent):

@@ -137,6 +137,17 @@ class SqliteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_notifications_sent_github_user ON notifications_sent (github_user);
                 CREATE INDEX IF NOT EXISTS idx_notifications_sent_discord_user ON notifications_sent (discord_user_id);
+                CREATE TABLE IF NOT EXISTS pending_checkin_audits (
+                    repo TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    github_user TEXT NOT NULL,
+                    last_activity TEXT NOT NULL,
+                    discord_user_id TEXT,
+                    days INTEGER NOT NULL,
+                    delivered_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (repo, issue_number, github_user, last_activity)
+                );
                 CREATE TABLE IF NOT EXISTS social_profiles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     discord_user_id TEXT NOT NULL,
@@ -785,6 +796,67 @@ class SqliteStorage:
                         except json.JSONDecodeError:
                             continue
         return events
+
+    def record_pending_checkin_audit(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        last_activity: str,
+        discord_user_id: str | None,
+        days: int,
+        delivered_at: str,
+    ) -> None:
+        """Persist delivery-time context for a check-in audit event that could not be written.
+
+        Optional method; used by the inactivity engine to retry the audit append later
+        without losing the values that were true when the reminder was delivered.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO pending_checkin_audits
+                (repo, issue_number, github_user, last_activity, discord_user_id, days, delivered_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (repo, issue_number, github_user, last_activity, discord_user_id, days, delivered_at, now),
+            )
+
+    def list_pending_checkin_audits(self) -> list[dict]:
+        """Return pending check-in audit records that still need to be written."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT repo, issue_number, github_user, last_activity, discord_user_id, days, delivered_at "
+                "FROM pending_checkin_audits"
+            ).fetchall()
+        return [
+            {
+                "repo": row[0],
+                "issue_number": row[1],
+                "github_user": row[2],
+                "last_activity": row[3],
+                "discord_user_id": row[4],
+                "days": row[5],
+                "delivered_at": row[6],
+            }
+            for row in rows
+        ]
+
+    def clear_pending_checkin_audit(
+        self,
+        repo: str,
+        issue_number: int,
+        github_user: str,
+        last_activity: str,
+    ) -> None:
+        """Remove a pending check-in audit record once its event has been written."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_checkin_audits "
+                "WHERE repo = ? AND issue_number = ? AND github_user = ? AND last_activity = ?",
+                (repo, issue_number, github_user, last_activity),
+            )
 
     def was_notification_sent(self, dedupe_key: str) -> bool:
         """Check if notification was already sent (deduplication)."""
