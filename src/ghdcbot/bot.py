@@ -650,17 +650,18 @@ def _pr_status_embed_kwargs(embeds: list[discord.Embed]) -> dict[str, Any]:
     return {"embeds": embeds}
 
 
-def build_pr_status_embeds(
+def _build_pr_status_embeds_full(
     statuses: list[PRHealthStatus],
     org: str,
     skip: int = 0,
     total: int = 0,
     filter_health: str | None = None,
-) -> list[discord.Embed]:
-    """Build rich, attractive dashboard card embeds for PR status.
+    display_skip: int = 0,
+) -> tuple[list[discord.Embed], int, int]:
+    """Internal builder — returns (embeds, entries_shown, omitted_this_page).
 
-    Splits across multiple embeds if the total formatted description exceeds
-    Discord's 4096-character limit so no entries are dropped.
+    ``display_skip`` offsets into the filtered list so callers can page through
+    entries that did not fit in an earlier render of the same server page.
     """
     sorted_statuses = sorted(
         statuses,
@@ -715,7 +716,7 @@ def build_pr_status_embeds(
             color=color,
         )
         embed.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
-        return [embed]
+        return [embed], 0, 0
 
     # Discord limits: 4096 chars per embed description, 6000 chars combined across
     # all embeds in a single message payload (titles + descriptions + footers).
@@ -735,8 +736,12 @@ def build_pr_status_embeds(
     head_lines = list(desc_lines)
 
     # --- build PR entry text blocks ---
+    # Apply display_skip: start rendering from this offset within the filtered list.
+    # This lets the view page through entries that didn't fit in an earlier render
+    # of the same server page without advancing the server-side skip cursor.
+    display_filtered = filtered[display_skip:] if display_skip > 0 else filtered
     entry_blocks: list[list[str]] = []
-    for s in filtered:
+    for s in display_filtered:
         health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
         detail_chips = []
 
@@ -821,13 +826,15 @@ def build_pr_status_embeds(
     # Pagination / truncation notice
     shown_end = skip + len(statuses)
     omitted_next_page = total - shown_end  # already paginated away by server
-    omitted_this_page = len(filtered) - entries_shown  # cut by combined-char limit
+    omitted_this_page = len(display_filtered) - entries_shown  # cut by combined-char limit
 
     if omitted_this_page > 0:
-        # Some entries were dropped due to the combined char limit — show a note.
+        # Some entries were dropped due to the combined char limit — direct users to
+        # the display-level "More ▶" button which advances display_skip within this
+        # server page, keeping every entry reachable without advancing to the next page.
         notice = (
-            f"*…{omitted_this_page} more PR(s) on this page exceed the display limit. "
-            f"Use **Next** ▶ to paginate to smaller pages.*"
+            f"*…{omitted_this_page} more PR(s) on this page not shown. "
+            f"Use **More ▶** below to view them.*"
         )
         if len("\n".join(current_lines + [notice])) <= _MAX_DESC:
             current_lines = list(current_lines) + [notice]
@@ -861,6 +868,21 @@ def build_pr_status_embeds(
             e.set_footer(text=_FOOTER_TEXT)
         embeds.append(e)
 
+    return embeds, entries_shown, omitted_this_page
+
+
+def build_pr_status_embeds(
+    statuses: list[PRHealthStatus],
+    org: str,
+    skip: int = 0,
+    total: int = 0,
+    filter_health: str | None = None,
+    display_skip: int = 0,
+) -> list[discord.Embed]:
+    """Public wrapper — returns only the embed list (see _build_pr_status_embeds_full)."""
+    embeds, _, _ = _build_pr_status_embeds_full(
+        statuses, org, skip=skip, total=total, filter_health=filter_health, display_skip=display_skip
+    )
     return embeds
 
 
@@ -967,6 +989,7 @@ class PRDetailView(discord.ui.View):
             skip=self.parent_view.skip,
             total=self.parent_view.total,
             filter_health=self.parent_view.active_filter,
+            display_skip=self.parent_view.display_skip,
         )
         messages = format_all_pr_status(
             self.parent_view.statuses,
@@ -1033,6 +1056,7 @@ class PRStatusView(discord.ui.View):
         self.total = 0
         self.statuses: list[PRHealthStatus] = []
         self.active_filter: str | None = None
+        self.display_skip = 0  # display-level offset within the current server page
         self.message: discord.Message | None = None
         self._build_components()
 
@@ -1123,6 +1147,7 @@ class PRStatusView(discord.ui.View):
 
         async def _all_callback(interaction: discord.Interaction) -> None:
             self.active_filter = None
+            self.display_skip = 0
             self._build_components()
             embeds = build_pr_status_embeds(
                 self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=None
@@ -1149,6 +1174,7 @@ class PRStatusView(discord.ui.View):
 
             async def _blocked_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "blocked" if self.active_filter != "blocked" else None
+                self.display_skip = 0
                 self._build_components()
                 embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
@@ -1175,6 +1201,7 @@ class PRStatusView(discord.ui.View):
 
             async def _attention_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "needs_attention" if self.active_filter != "needs_attention" else None
+                self.display_skip = 0
                 self._build_components()
                 embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
@@ -1201,6 +1228,7 @@ class PRStatusView(discord.ui.View):
 
             async def _safe_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "safe_to_merge" if self.active_filter != "safe_to_merge" else None
+                self.display_skip = 0
                 self._build_components()
                 embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
@@ -1273,6 +1301,68 @@ class PRStatusView(discord.ui.View):
         next_btn.callback = _next_callback
         self.add_item(next_btn)
 
+        # Display-level pagination buttons — shown when the char budget cuts entries
+        # from the current server page, so users can page through without server Next.
+        if self.statuses:
+            _, entries_shown, omitted_this_page = _build_pr_status_embeds_full(
+                self.statuses,
+                self.config.github.org,
+                skip=self.skip,
+                total=self.total,
+                filter_health=self.active_filter,
+                display_skip=self.display_skip,
+            )
+            if self.display_skip > 0:
+                prev_disp_btn = discord.ui.Button(
+                    label="◀ Prev (page)",
+                    style=discord.ButtonStyle.secondary,
+                    row=3,
+                )
+
+                async def _prev_disp_callback(interaction: discord.Interaction) -> None:
+                    await self._show_display_page(interaction, max(0, self.display_skip - entries_shown))
+
+                prev_disp_btn.callback = _prev_disp_callback
+                self.add_item(prev_disp_btn)
+
+            if omitted_this_page > 0:
+                more_btn = discord.ui.Button(
+                    label=f"More ▶ ({omitted_this_page} hidden)",
+                    style=discord.ButtonStyle.secondary,
+                    row=3,
+                )
+
+                async def _more_callback(interaction: discord.Interaction) -> None:
+                    await self._show_display_page(
+                        interaction, self.display_skip + entries_shown
+                    )
+
+                more_btn.callback = _more_callback
+                self.add_item(more_btn)
+
+    async def _show_display_page(self, interaction: discord.Interaction, new_display_skip: int) -> None:
+        """Re-render the dashboard embed at a different display_skip without re-fetching."""
+        self.display_skip = max(0, new_display_skip)
+        self._build_components()
+        embeds = build_pr_status_embeds(
+            self.statuses,
+            self.config.github.org,
+            skip=self.skip,
+            total=self.total,
+            filter_health=self.active_filter,
+            display_skip=self.display_skip,
+        )
+        messages = format_all_pr_status(
+            self.statuses, self.config.github.org, skip=self.skip, total=self.total,
+            filter_health=self.active_filter,
+        )
+        first_msg = messages[0] if messages else "📋 **PR Status Dashboard**\n\nNo open PRs found."
+        embed_kwargs = _pr_status_embed_kwargs(embeds)
+        try:
+            await interaction.response.edit_message(content="", view=self, **embed_kwargs)
+        except Exception:
+            await interaction.response.edit_message(content=first_msg, view=self)
+
     async def _send_dashboard(self, interaction: discord.Interaction, *, skip: int) -> None:
         user_id = interaction.user.id
         refusal = _claim_pr_status_fetch(user_id)
@@ -1312,6 +1402,7 @@ class PRStatusView(discord.ui.View):
         self.skip = skip
         self.total = total
         self.statuses = statuses
+        self.display_skip = 0  # reset display offset on every server-page navigation
         self._build_components()
 
         embeds = build_pr_status_embeds(
@@ -1326,6 +1417,7 @@ class PRStatusView(discord.ui.View):
         embed_kwargs = _pr_status_embed_kwargs(embeds)
 
         updated = False
+        used_text_fallback = False
         try:
             edit_orig = getattr(interaction, "edit_original_response", None)
             if callable(edit_orig):
@@ -1339,6 +1431,7 @@ class PRStatusView(discord.ui.View):
                 await interaction.followup.send(view=self, ephemeral=True, **embed_kwargs)
             except Exception:
                 await interaction.followup.send(first_msg, view=self, ephemeral=True, suppress_embeds=True)
+                used_text_fallback = True
 
         try:
             get_orig = getattr(interaction, "original_response", None)
@@ -1347,11 +1440,16 @@ class PRStatusView(discord.ui.View):
         except Exception:
             pass
 
-        for extra in messages[1:]:
-            try:
-                await interaction.followup.send(extra, ephemeral=True, suppress_embeds=True)
-            except Exception:
-                pass
+        # Send overflow text chunks only when the text fallback path was used.
+        # When embeds were delivered successfully, omitted entries are reachable
+        # via the display-level "More ▶" button; unconditional text continuations
+        # would duplicate content and clutter the channel.
+        if used_text_fallback:
+            for extra in messages[1:]:
+                try:
+                    await interaction.followup.send(extra, ephemeral=True, suppress_embeds=True)
+                except Exception:
+                    pass
 
     async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button | None = None) -> None:
         self.active_filter = None

@@ -125,10 +125,10 @@ def test_build_pr_status_embeds_respects_combined_6000_char_limit() -> None:
         )
 
     # Because 25 verbose entries exceed the combined limit, a truncation notice
-    # must be present so the user knows to use Next to see more.
+    # must be present directing users to the display-level More button (not Next).
     all_descriptions = "\n".join(e.description or "" for e in embeds)
-    assert "Next" in all_descriptions or "paginate" in all_descriptions.lower(), (
-        "Expected a 'Next' / pagination notice when entries were cut by the combined limit"
+    assert "More ▶" in all_descriptions, (
+        "Expected a 'More ▶' display-pagination notice when entries were cut by the combined limit"
     )
 
 
@@ -239,3 +239,62 @@ def test_split_embeds_kwargs_combined_limit() -> None:
     assert total_chars_f <= _DISCORD_COMBINED_LIMIT, (
         f"Filter-path combined chars {total_chars_f} exceeds {_DISCORD_COMBINED_LIMIT}"
     )
+
+
+def test_display_skip_makes_omitted_entries_reachable() -> None:
+    """Regression: entries cut by the char budget are reachable via display_skip,
+    not by advancing the server-side Next page (which would skip them entirely)."""
+    statuses = [
+        _make_health(
+            repo=f"very-long-repository-name-{i}",
+            number=i * 100,
+            title=f"Feature implementation with substantial description for module #{i}",
+            author=f"lead-senior-developer-account-{i}",
+            ci_status="failing" if i % 2 == 0 else "passing",
+            review_state="changes_requested" if i % 2 == 0 else "approved",
+            mergeable=(i % 3 != 0),
+            has_coderabbit_comments=True,
+            coderabbit_comment_count=i + 1,
+            is_draft=(i % 4 == 0),
+        )
+        for i in range(25)
+    ]
+
+    # First render: get the initial embeds and notice how many were cut.
+    embeds_first = build_pr_status_embeds(statuses, "org", skip=0, total=25, display_skip=0)
+    all_first = "\n".join(e.description or "" for e in embeds_first)
+
+    # Count which repo#number entries appear in the first render.
+    shown_first = {
+        f"{s.repo}#{s.number}" for s in statuses
+        if f"{s.repo}#{s.number}" in all_first
+    }
+
+    # If nothing was cut, the test scenario doesn't apply — skip gracefully.
+    if len(shown_first) == len(statuses):
+        return  # all entries fit; no omission to test
+
+    # Determine display_skip that reveals the omitted entries.
+    hidden = [s for s in statuses if f"{s.repo}#{s.number}" not in shown_first]
+    assert hidden, "Expected some entries to be hidden in first render"
+
+    # Advance display_skip by the count shown in the first page.
+    next_display_skip = len(shown_first)
+    embeds_second = build_pr_status_embeds(
+        statuses, "org", skip=0, total=25, display_skip=next_display_skip
+    )
+    all_second = "\n".join(e.description or "" for e in embeds_second)
+
+    # Combined limit still respected on the second display page.
+    assert _combined_chars(embeds_second) <= _DISCORD_COMBINED_LIMIT, (
+        "Second display page exceeds Discord 6000-char combined limit"
+    )
+
+    # At least one previously hidden entry now appears.
+    newly_shown = [s for s in hidden if f"{s.repo}#{s.number}" in all_second]
+    assert newly_shown, (
+        f"display_skip={next_display_skip} did not make any hidden entries visible. "
+        f"Hidden: {[f'{s.repo}#{s.number}' for s in hidden]}"
+    )
+
+

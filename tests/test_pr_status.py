@@ -2337,8 +2337,8 @@ class TestPRStatusUINavigation:
         dropdowns = [c for c in view.children if isinstance(c, PRSelectDropdown)]
         assert len(dropdowns) == 1
         assert len(dropdowns[0].options) == 2
-        assert dropdowns[0].options[0].value == "10"
-        assert dropdowns[0].options[1].value == "20"
+        assert dropdowns[0].options[0].value == "my-repo:10"
+        assert dropdowns[0].options[1].value == "my-repo:20"
 
         buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
         labels = [b.label for b in buttons if b.label]
@@ -2361,7 +2361,7 @@ class TestPRStatusUINavigation:
         view._build_components()
 
         dropdown = next(c for c in view.children if isinstance(c, PRSelectDropdown))
-        dropdown._values = ["10"]
+        dropdown._values = [dropdown.options[0].value]
 
         interaction = MagicMock()
         interaction.response.edit_message = AsyncMock()
