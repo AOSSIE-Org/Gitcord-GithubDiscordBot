@@ -291,7 +291,7 @@ Optional blocks (`notifications`, `repos` filter, weekly `discord.digest`) are c
 
 ### 6.3 Validate setup (recommended)
 
-Before your first sync or bot start, run the read-only preflight check. It loads config, verifies tokens against GitHub and Discord, checks guild access, and (when `enable_discord_role_updates: true`) confirms configured Discord roles exist.
+Before your first sync or bot start, run the read-only preflight check. It loads config, verifies credentials against GitHub (PAT or GitHub App) and Discord, checks guild access, and (when `enable_discord_role_updates: true`) confirms configured Discord roles exist.
 
 **Docker:**
 
@@ -309,14 +309,20 @@ Example success output:
 
 ```text
 ✓ Config file loaded
+  config/config.yaml
 ✓ YAML valid and schema OK
 ✓ GITHUB_TOKEN configured
-✓ DISCORD_TOKEN configured
 ✓ GitHub authentication successful
-✓ Discord authentication successful
+  Authenticated as octocat.
 ✓ Organization accessible
+  example-org
 ✓ Repositories visible
+  5+ repo(s) visible (e.g. repo-one, repo-two, repo-three...)
+✓ DISCORD_TOKEN configured
+✓ Discord authentication successful
+  Bot user: Gitcord
 ✓ Guild found
+  Guild: Example Server
 ✓ Role "Contributor" found
 
 Validation passed.
@@ -474,8 +480,10 @@ Run `ghdcbot --config config/config.yaml validate` (or the Docker equivalent) af
 
 | Message | Fix |
 |---------|-----|
-| `GITHUB_TOKEN is missing` | Add token to `.env` |
-| `GitHub authentication failed` | Regenerate PAT; confirm org access |
+| `Missing required environment variable: GITHUB_TOKEN` | Add token to `.env` |
+| `GitHub credentials not configured` | Set `GITHUB_TOKEN` or the GitHub App env vars |
+| `Invalid GITHUB_TOKEN` / `GitHub authentication failed` | Regenerate PAT; confirm org access |
+| `Organization not accessible` | Fix `github.org`; grant the token/App access to the org |
 | `Discord authentication failed` | Reset bot token in Developer Portal |
 | `Guild not found` | Re-invite bot; fix `discord.guild_id` |
 | `Role "…" not found` | Create role in Discord or fix YAML spelling |

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from ghdcbot.config.loader import load_config
+from ghdcbot.config.setup_validate import run_validate
 from ghdcbot.config.sync_safety import assert_sync_safe, collect_sync_safety_violations
 from ghdcbot.core.errors import AdapterError, ConfigError
 from ghdcbot.adapters.github.app_auth import resolve_github_token
@@ -83,6 +84,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-once", help="Run a single orchestration cycle")
     sub.add_parser(
+        "validate",
+        help="Check config, tokens, and GitHub/Discord access without starting the bot (read-only)",
+    )
+    sub.add_parser(
         "preflight-sync",
         help="Validate config is safe for run-once (blocks bulk issue assign / PR review requests)",
     )
@@ -122,6 +127,9 @@ def main() -> None:
     export_p.add_argument("--to", dest="to_time", type=str, default=None, help="Filter to time (ISO-8601 UTC)")
 
     args = parser.parse_args()
+    if args.command == "validate":
+        raise SystemExit(run_validate(args.config))
+
     orchestrator = None
     try:
         identity_reader = None
