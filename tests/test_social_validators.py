@@ -6,7 +6,11 @@ Unit tests for X/Twitter, LinkedIn, Bluesky, and Mastodon profile validators
 
 import pytest
 
-from ghdcbot.core.social_models import LinkedInProfile, parse_linkedin_profile_url
+from ghdcbot.core.social_models import (
+    LinkedInProfile,
+    SocialProfileInput,
+    parse_linkedin_profile_url,
+)
 from ghdcbot.core.social_validators import (
     XProfileValidator,
     LinkedInProfileValidator,
@@ -123,6 +127,19 @@ class TestXProfileValidator:
         result = validator.validate("user123")
         
         assert result["normalized"] == "user123"
+
+
+    def test_normalize_username_to_lowercase(self):
+        """Should store X usernames in a consistent lowercase form"""
+        result = XProfileValidator().validate("AbC_123")
+
+        assert result["normalized"] == "abc_123"
+        assert result["display"] == "https://x.com/abc_123"
+
+    def test_reject_non_ascii_username(self):
+        """X usernames must use the platform's ASCII username alphabet"""
+        with pytest.raises(ValueError):
+            XProfileValidator().validate("用户")
 
 
 class TestLinkedInProfileValidator:
@@ -387,6 +404,9 @@ class TestLinkedInProfileValidator:
             "ab",  # too short
             "a" * 101,  # too long
             "-john",  # must start with a letter or digit
+            "john%ZZ",  # malformed percent escape
+            "john%",  # incomplete percent escape
+            "john%2Fdoe",  # encoded path separator
         ],
     )
     def test_reject_unsafe_or_out_of_range_profile_ids(self, profile_id):
@@ -496,6 +516,33 @@ class TestBlueskyProfileValidator:
             validator.validate("")
 
 
+    def test_validate_bare_app_url_and_trailing_slash(self):
+        result = BlueskyProfileValidator().validate(
+            "bsky.app/profile/Alice.Bsky.Social/"
+        )
+
+        assert result["normalized"] == "alice.bsky.social"
+        assert result["display"] == "https://bsky.app/profile/alice.bsky.social"
+
+    @pytest.mark.parametrize(
+        "input_value",
+        [
+            "https://evil.example/bsky.app/profile/alice.bsky.social",
+            "https://bsky.app.evil.example/profile/alice.bsky.social",
+            "https://user@bsky.app/profile/alice.bsky.social",
+            "ftp://bsky.app/profile/alice.bsky.social",
+            "https://bsky.app/profile/alice.bsky.social/extra",
+            "https://bsky.app/profile/",
+            "alice..bsky.social",
+            "alice bsky.social",
+            "alice/extra",
+        ],
+    )
+    def test_reject_spoofed_urls_and_malformed_handles(self, input_value):
+        with pytest.raises(ValueError):
+            BlueskyProfileValidator().validate(input_value)
+
+
 class TestMastodonProfileValidator:
     """Tests for Mastodon profile validator"""
     
@@ -521,6 +568,29 @@ class TestMastodonProfileValidator:
         
         with pytest.raises(ValueError):
             validator.validate("just_username")
+
+
+    def test_accept_custom_instance_and_normalize_case(self):
+        result = MastodonProfileValidator().validate("@Alice@social.example")
+
+        assert result["normalized"] == "alice@social.example"
+
+    @pytest.mark.parametrize(
+        "input_value",
+        [
+            "https://mastodon.social/path/@alice",
+            "https://mastodon.social/@alice/extra",
+            "https://mastodon.social/@alice/123",
+            "https://user@mastodon.social/@alice",
+            "@@alice@mastodon.social",
+            "@alice@mastodon.social/extra",
+            "@alice@invalid..example",
+            "@alice@mastodon.social:bad",
+        ],
+    )
+    def test_reject_malformed_urls_and_handles(self, input_value):
+        with pytest.raises(ValueError):
+            MastodonProfileValidator().validate(input_value)
 
 
 class TestGetValidator:
@@ -565,3 +635,9 @@ class TestGetValidator:
         assert isinstance(validator_lower, XProfileValidator)
         assert isinstance(validator_upper, XProfileValidator)
         assert isinstance(validator_mixed, LinkedInProfileValidator)
+        assert isinstance(get_validator("  X  "), XProfileValidator)
+
+    def test_social_profile_input_strips_platform_name(self):
+        profile = SocialProfileInput(platform="  X  ", value="@alice")
+
+        assert profile.platform == "x"

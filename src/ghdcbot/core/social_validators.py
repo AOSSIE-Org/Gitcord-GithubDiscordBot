@@ -6,6 +6,7 @@ Validators for different social media platforms with normalization
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 
@@ -88,11 +89,8 @@ class XProfileValidator(PlatformValidator):
         username = self._extract_username(input_value)
         
         # Validate username format
-        if not username or len(username) < 1 or len(username) > 15:
-            raise ValueError("X username must be 1-15 characters")
-        
-        if not all(c.isalnum() or c == "_" for c in username):
-            raise ValueError("X username can only contain letters, numbers, and underscores")
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
+            raise ValueError("X username can only contain ASCII letters, numbers, and underscores")
         
         # Create profile object to trigger Pydantic validation
         profile = XProfile(username=username)
@@ -148,32 +146,135 @@ class LinkedInProfileValidator(PlatformValidator):
         }
 
 
+_BLUESKY_DOMAIN_LABEL_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+_MASTODON_DOMAIN_LABEL_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+_MASTODON_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _validate_bluesky_handle(handle: str) -> str:
+    """Validate an AT Protocol handle and return its lowercase form."""
+    if not handle or len(handle) > 253:
+        raise ValueError("Bluesky handle must be a valid domain name")
+
+    labels = handle.split(".")
+    if (
+        len(labels) < 2
+        or len(labels[-1]) < 2
+        or labels[-1].isdigit()
+        or any(
+            not label
+            or len(label) > 63
+            or not _BLUESKY_DOMAIN_LABEL_RE.fullmatch(label)
+            for label in labels
+        )
+    ):
+        raise ValueError("Bluesky handle must be a valid domain name")
+
+    return handle.lower()
+
+
+def _normalize_mastodon_instance(instance: str) -> str:
+    """Validate an instance authority and return its canonical host[:port]."""
+    try:
+        parsed = urlparse(f"//{instance}")
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        raise ValueError("Invalid Mastodon instance hostname or port") from None
+
+    if (
+        not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and port == 0)
+    ):
+        raise ValueError("Invalid Mastodon instance hostname or port")
+
+    try:
+        hostname = hostname.rstrip(".").encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        raise ValueError("Invalid Mastodon instance hostname") from None
+
+    labels = hostname.split(".")
+    if (
+        not hostname
+        or len(hostname) > 253
+        or any(
+            not label
+            or len(label) > 63
+            or not _MASTODON_DOMAIN_LABEL_RE.fullmatch(label)
+            for label in labels
+        )
+    ):
+        raise ValueError("Invalid Mastodon instance hostname")
+
+    return f"{hostname}:{port}" if port is not None else hostname
+
+
 class BlueskyProfileValidator(PlatformValidator):
-    """Validator for Bluesky profiles"""
-    
+    """Validator for Bluesky profiles."""
+
     def validate(self, input_value: str) -> dict:
         """
         Accept:
         - https://bsky.app/profile/handle
+        - bsky.app/profile/handle
         - handle
         - @handle
+
+        URL inputs must use the bsky.app host and contain exactly one profile
+        handle. Plain handles are checked against the AT Protocol domain rules.
         """
         value = input_value.strip()
-        
-        # Remove @mention prefix
-        if value.startswith("@"):
-            value = value[1:]
-        
-        # Extract handle from URL
-        if "bsky.app/profile/" in value:
-            handle = value.split("bsky.app/profile/")[1].split("?")[0]
-        else:
-            handle = value
-        
-        # Basic validation
-        if not handle or len(handle) < 1:
+        if not value:
             raise ValueError("Bluesky handle cannot be empty")
-        
+
+        is_url = "://" in value or value.lower().startswith("bsky.app/")
+        if is_url:
+            url_candidate = value
+            if "://" not in url_candidate:
+                url_candidate = f"https://{url_candidate}"
+
+            try:
+                parsed = urlparse(url_candidate)
+                port = parsed.port
+            except ValueError:
+                raise ValueError("Bluesky profile URL is malformed") from None
+
+            if parsed.scheme.lower() not in {"http", "https"}:
+                raise ValueError("Bluesky profile URL must use http or https scheme")
+            if (
+                parsed.hostname != "bsky.app"
+                or parsed.username is not None
+                or parsed.password is not None
+                or port is not None
+            ):
+                raise ValueError("Bluesky profile URL must use the bsky.app host")
+
+            path_parts = parsed.path.split("/")
+            if path_parts and path_parts[-1] == "":
+                path_parts = path_parts[:-1]
+            if (
+                len(path_parts) != 3
+                or path_parts[0] != ""
+                or path_parts[1] != "profile"
+                or not path_parts[2]
+            ):
+                raise ValueError("Bluesky URL must use /profile/<handle>")
+
+            handle = path_parts[2]
+        else:
+            handle = value[1:] if value.startswith("@") else value
+
+        handle = _validate_bluesky_handle(handle)
+
         return {
             "normalized": handle,
             "display": f"https://bsky.app/profile/{handle}",
@@ -182,35 +283,59 @@ class BlueskyProfileValidator(PlatformValidator):
 
 
 class MastodonProfileValidator(PlatformValidator):
-    """Validator for Mastodon profiles"""
-    
+    """Validator for Mastodon profiles across arbitrary instances."""
+
     def validate(self, input_value: str) -> dict:
         """
         Accept:
         - https://mastodon.social/@username
+        - http://another.instance/@username
         - @username@instance.social
+
+        The instance is validated syntactically, not restricted to a particular
+        provider, because Mastodon is a federated platform.
         """
         value = input_value.strip()
-        
-        # URL format
-        if value.startswith("https://") or value.startswith("http://"):
-            # Extract username from URL
-            if "/@" in value:
-                parts = value.split("/@")
-                instance = parts[0].replace("https://", "").replace("http://", "")
-                username = parts[1].split("?")[0]
-                handle = f"{username}@{instance}"
-            else:
-                raise ValueError("Invalid Mastodon URL format")
+        if not value:
+            raise ValueError("Mastodon profile cannot be empty")
+
+        if value.lower().startswith(("https://", "http://")):
+            try:
+                parsed = urlparse(value)
+                # Accessing .port validates malformed and out-of-range ports.
+                _ = parsed.port
+            except ValueError:
+                raise ValueError("Mastodon profile URL is malformed") from None
+
+            if parsed.scheme.lower() not in {"http", "https"}:
+                raise ValueError("Mastodon profile URL must use http or https scheme")
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError("Mastodon profile URL must not contain user information")
+
+            instance = _normalize_mastodon_instance(parsed.netloc)
+            path = parsed.path
+            if path.endswith("/"):
+                path = path[:-1]
+            if not path.startswith("/@") or path.count("/") != 1:
+                raise ValueError("Mastodon URL must use /@<username>")
+
+            username = path[2:]
         else:
-            # Already in @username@instance format
             if not value.startswith("@"):
                 raise ValueError("Mastodon handle should be @username@instance")
-            handle = value[1:]  # Remove leading @
-        
-        if not handle or "@" not in handle:
-            raise ValueError("Mastodon handle must be in @username@instance format")
-        
+
+            parts = value[1:].split("@")
+            if len(parts) != 2:
+                raise ValueError("Mastodon handle must be in @username@instance format")
+
+            username, raw_instance = parts
+            instance = _normalize_mastodon_instance(raw_instance)
+
+        if not username or not _MASTODON_USERNAME_RE.fullmatch(username):
+            raise ValueError("Mastodon username can only contain letters, numbers, and underscores")
+
+        handle = f"{username.lower()}@{instance}"
+
         return {
             "normalized": handle,
             "display": f"Mastodon: {handle}",
@@ -230,7 +355,7 @@ SOCIAL_VALIDATORS: dict[str, type[PlatformValidator]] = {
 
 def get_validator(platform: str) -> PlatformValidator:
     """Get validator instance for a platform"""
-    platform_lower = platform.lower()
+    platform_lower = platform.strip().lower()
     validator_class = SOCIAL_VALIDATORS.get(platform_lower)
     if not validator_class:
         raise ValueError(

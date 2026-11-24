@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -54,7 +54,7 @@ class SocialProfileInput(BaseModel):
     def validate_platform(cls, value: str) -> str:
         from ghdcbot.core.social_validators import SOCIAL_VALIDATORS
 
-        normalized = value.lower()
+        normalized = value.strip().lower()
         supported = tuple(SOCIAL_VALIDATORS.keys())
         if normalized not in SOCIAL_VALIDATORS:
             raise ValueError(f"Unknown platform: {value}. Supported: {', '.join(supported)}")
@@ -78,12 +78,11 @@ class XProfile(BaseModel):
     @field_validator("username")
     @classmethod
     def validate_username(cls, value: str) -> str:
-        if not value or len(value) < 1 or len(value) > 15:
-            raise ValueError("X username must be 1-15 characters")
-        # Allow only alphanumeric and underscore
-        if not all(c.isalnum() or c == "_" for c in value):
-            raise ValueError("X username can only contain letters, numbers, and underscores")
-        return value
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", value):
+            raise ValueError(
+                "X username must contain 1-15 ASCII letters, numbers, or underscores"
+            )
+        return value.lower()
     
     def display_url(self) -> str:
         return f"https://x.com/{self.username}"
@@ -192,6 +191,19 @@ def parse_linkedin_profile_url(url: str) -> tuple[str, str]:
         raise ValueError(
             "LinkedIn profile ID must be 3-100 characters of letters, numbers, "
             "hyphens or underscores"
+        )
+
+    # Percent-encoding is supported for non-ASCII vanity IDs, but malformed
+    # escapes and encoded path/control characters must not survive validation.
+    try:
+        decoded_profile_id = unquote(profile_id, encoding="utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise ValueError("LinkedIn profile ID contains invalid UTF-8 encoding") from None
+
+    if not all(char.isalnum() or char in "_-" for char in decoded_profile_id):
+        raise ValueError(
+            "LinkedIn profile ID must be 3-100 characters of letters, numbers, "
+            "hyphens or underscores with valid percent-encoding"
         )
 
     return f"https://linkedin.com/in/{profile_id}", profile_id
