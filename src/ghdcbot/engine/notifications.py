@@ -190,6 +190,22 @@ def send_notification_for_event(
     return sent
 
 
+def _channel_for_repo(pr_open_channels: dict[str, str], repo: str) -> str | None:
+    """Channel mapped to ``repo`` in ``pr_open_channels``, matching the name case-insensitively.
+
+    GitHub repository names are case-insensitive, so a ``gitcord.yaml`` key such as
+    ``gitcord`` must still match events for the ``Gitcord`` repository.
+    """
+    channel_id = pr_open_channels.get(repo)
+    if channel_id:
+        return channel_id
+    wanted = (repo or "").lower()
+    for name, mapped in pr_open_channels.items():
+        if name.lower() == wanted:
+            return mapped
+    return None
+
+
 def send_pr_opened_channel_notification(
     event: ContributionEvent,
     storage: Storage,
@@ -209,7 +225,7 @@ def send_pr_opened_channel_notification(
     if event.event_type != "pr_opened":
         return False
 
-    channel_id = pr_open_channels.get(event.repo)
+    channel_id = _channel_for_repo(pr_open_channels, event.repo)
     if not channel_id:
         return False
 
@@ -529,7 +545,7 @@ def send_issue_opened_channel_notification(
     if event.event_type != "issue_opened":
         return False
 
-    channel_id = pr_open_channels.get(event.repo)
+    channel_id = _channel_for_repo(pr_open_channels, event.repo)
     if not channel_id:
         return False
 

@@ -2792,13 +2792,15 @@ def _apply_repo_filter(
         return []
 
     names = {name.strip() for name in repo_filter.names}
-    repo_names = {repo["name"] for repo in repos}
+    # GitHub repository names are case-insensitive, so match them the same way
+    # as is_repo_allowed does (e.g. "gitcord" in the config matches "Gitcord").
+    names_lower = {name.lower() for name in names}
     if repo_filter.mode == "allow":
-        allowed = [repo for repo in repos if repo["name"] in names]
-        skipped = sorted(repo_names - names)
+        allowed = [repo for repo in repos if repo["name"].lower() in names_lower]
     else:
-        allowed = [repo for repo in repos if repo["name"] not in names]
-        skipped = sorted(repo_names & names)
+        allowed = [repo for repo in repos if repo["name"].lower() not in names_lower]
+    allowed_names = {repo["name"] for repo in allowed}
+    skipped = sorted(repo["name"] for repo in repos if repo["name"] not in allowed_names)
 
     logger.info(
         "Applied repo filter",
