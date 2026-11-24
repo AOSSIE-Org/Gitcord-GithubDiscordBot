@@ -310,9 +310,7 @@ class MastodonProfileValidator(PlatformValidator):
                 raise ValueError("Mastodon profile URL must not contain user information")
 
             instance = _normalize_mastodon_instance(parsed.netloc)
-            path = parsed.path
-            if path.endswith("/"):
-                path = path[:-1]
+            path = parsed.path.removesuffix("/")
             if not path.startswith("/@") or path.count("/") != 1:
                 raise ValueError("Mastodon URL must use /@<username>")
 
