@@ -407,6 +407,7 @@ class TestLinkedInProfileValidator:
             "john%ZZ",  # malformed percent escape
             "john%",  # incomplete percent escape
             "john%2Fdoe",  # encoded path separator
+            "john%00doe",  # encoded control character
         ],
     )
     def test_reject_unsafe_or_out_of_range_profile_ids(self, profile_id):
@@ -424,6 +425,8 @@ class TestLinkedInProfileValidator:
             "john-doe-1a2b3c4d5",
             "john_doe",
             "%E5%BC%A0%E4%BC%9F-123",  # percent-encoded non-ASCII ID
+            "%E0%A4%B6%E0%A4%B0%E0%A5%8D%E0%A4%AE%E0%A4%BE-%E0%A4%9C%E0%A5%80-91648421",
+            # Devanagari ID: शर्मा-जी-91648421
         ],
     )
     def test_accept_well_formed_profile_ids(self, profile_id):
@@ -494,6 +497,11 @@ class TestBlueskyProfileValidator:
         assert result["normalized"] == "user.bsky.social"
         assert result["display"] == "https://bsky.app/profile/user.bsky.social"
     
+    def test_accept_alice_bsky_social(self):
+        result = BlueskyProfileValidator().validate("alice.bsky.social")
+
+        assert result["normalized"] == "alice.bsky.social"
+
     def test_validate_with_at_symbol(self):
         """Should accept @handle format"""
         validator = BlueskyProfileValidator()
@@ -534,6 +542,7 @@ class TestBlueskyProfileValidator:
             "https://bsky.app/profile/alice.bsky.social/extra",
             "https://bsky.app/profile/",
             "alice..bsky.social",
+            "alice.1com",
             "alice bsky.social",
             "alice/extra",
         ],

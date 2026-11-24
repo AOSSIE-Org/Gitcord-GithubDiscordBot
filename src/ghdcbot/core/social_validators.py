@@ -161,7 +161,7 @@ def _validate_bluesky_handle(handle: str) -> str:
     if (
         len(labels) < 2
         or len(labels[-1]) < 2
-        or labels[-1].isdigit()
+        or not (labels[-1][0].isascii() and labels[-1][0].isalpha())
         or any(
             not label
             or len(label) > 63

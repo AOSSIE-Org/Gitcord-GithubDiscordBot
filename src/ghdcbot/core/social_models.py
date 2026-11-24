@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+import unicodedata
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -200,7 +201,20 @@ def parse_linkedin_profile_url(url: str) -> tuple[str, str]:
     except UnicodeDecodeError:
         raise ValueError("LinkedIn profile ID contains invalid UTF-8 encoding") from None
 
-    if not all(char.isalnum() or char in "_-" for char in decoded_profile_id):
+    for index, char in enumerate(decoded_profile_id):
+        if char.isalnum() or char in "_-":
+            continue
+
+        # Unicode combining marks are valid in international profile IDs,
+        # but must follow a letter/number or another mark. Separators,
+        # whitespace, controls and format characters remain rejected.
+        previous_char = decoded_profile_id[index - 1] if index else ""
+        if unicodedata.category(char).startswith("M") and previous_char and (
+            previous_char.isalnum()
+            or unicodedata.category(previous_char).startswith("M")
+        ):
+            continue
+
         raise ValueError(
             "LinkedIn profile ID must be 3-100 characters of letters, numbers, "
             "hyphens or underscores with valid percent-encoding"
