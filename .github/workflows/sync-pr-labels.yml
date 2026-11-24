@@ -69,10 +69,13 @@ jobs:
       - name: Apply issue-based labels
         if: steps.extract-issue.outputs.issue_number != ''
         uses: actions/github-script@v7
+        env:
+          # Digits-only today, but keep out of the script source anyway.
+          ISSUE_NUMBER: ${{ steps.extract-issue.outputs.issue_number }}
         with:
           github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
-            const issueNumber = '${{ steps.extract-issue.outputs.issue_number }}';
+            const issueNumber = process.env.ISSUE_NUMBER || '';
             const prNumber = context.payload.pull_request.number;
             
             try {
@@ -143,11 +146,15 @@ jobs:
 
       - name: Apply file-based labels
         uses: actions/github-script@v7
+        env:
+          # PR file names are attacker-controlled on fork PRs. Never interpolate
+          # them into the script source (JSON.stringify does not escape ').
+          CHANGED_FILES: ${{ steps.changed-files.outputs.files }}
         with:
           github-token: ${{ env.LABELS_GITHUB_TOKEN }}
           script: |
             const prNumber = context.payload.pull_request.number;
-            const changedFiles = JSON.parse('${{ steps.changed-files.outputs.files }}');
+            const changedFiles = JSON.parse(process.env.CHANGED_FILES || '[]');
             
             const fileLabels = [];
             
