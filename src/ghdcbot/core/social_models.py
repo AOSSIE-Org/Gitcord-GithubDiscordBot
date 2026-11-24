@@ -239,7 +239,7 @@ class LinkedInProfile(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_id_matches_url(self) -> "LinkedInProfile":
+    def validate_id_matches_url(self) -> LinkedInProfile:
         if self.profile_url != f"https://linkedin.com/in/{self.profile_id}":
             raise ValueError("LinkedIn profile ID does not match profile URL")
         return self

@@ -34,7 +34,6 @@ class PlatformValidator(ABC):
         Raises:
             ValueError: If input is invalid
         """
-        pass
 
 
 class XProfileValidator(PlatformValidator):
@@ -46,8 +45,7 @@ class XProfileValidator(PlatformValidator):
         value = input_value.strip()
         
         # Remove @mention prefix if present
-        if value.startswith("@"):
-            value = value[1:]
+        value = value.removeprefix("@")
         
         url_candidate = value
         lowered = value.lower()
@@ -62,8 +60,7 @@ class XProfileValidator(PlatformValidator):
             if scheme not in ("http", "https"):
                 raise ValueError("X profile URL must use http or https scheme")
             host = (parsed.hostname or "").lower()
-            if host.startswith("www."):
-                host = host[4:]
+            host = host.removeprefix("www.")
             if host in {"x.com", "twitter.com"}:
                 profile_path = parsed.path.strip("/")
                 if not profile_path or "/" in profile_path:
@@ -271,7 +268,7 @@ class BlueskyProfileValidator(PlatformValidator):
 
             handle = path_parts[2]
         else:
-            handle = value[1:] if value.startswith("@") else value
+            handle = value.removeprefix("@")
 
         handle = _validate_bluesky_handle(handle)
 

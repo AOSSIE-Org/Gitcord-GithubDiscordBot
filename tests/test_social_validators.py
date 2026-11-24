@@ -12,10 +12,10 @@ from ghdcbot.core.social_models import (
     parse_linkedin_profile_url,
 )
 from ghdcbot.core.social_validators import (
-    XProfileValidator,
-    LinkedInProfileValidator,
     BlueskyProfileValidator,
+    LinkedInProfileValidator,
     MastodonProfileValidator,
+    XProfileValidator,
     get_validator,
 )
 
