@@ -642,14 +642,26 @@ def build_pr_status_initial_embed(repo: str | None, org: str) -> discord.Embed:
     return embed
 
 
-def build_pr_status_embed(
+def _pr_status_embed_kwargs(embeds: list[discord.Embed]) -> dict[str, Any]:
+    if not embeds:
+        return {}
+    if len(embeds) == 1:
+        return {"embed": embeds[0]}
+    return {"embeds": embeds}
+
+
+def build_pr_status_embeds(
     statuses: list[PRHealthStatus],
     org: str,
     skip: int = 0,
     total: int = 0,
     filter_health: str | None = None,
-) -> discord.Embed:
-    """Build a rich, attractive dashboard card embed for PR status."""
+) -> list[discord.Embed]:
+    """Build rich, attractive dashboard card embeds for PR status.
+
+    Splits across multiple embeds if the total formatted description exceeds
+    Discord's 4096-character limit so no entries are dropped.
+    """
     sorted_statuses = sorted(
         statuses,
         key=lambda s: (_HEALTH_SORT_ORDER.get(s.health_indicator, 99), s.repo, s.number),
@@ -697,55 +709,105 @@ def build_pr_status_embed(
     if not filtered:
         filter_label = _HEALTH_LABEL.get(filter_health, filter_health) if filter_health else ""
         desc_lines.append(f"*No open PRs currently matching filter '{filter_label}'.*")
-    else:
-        for s in filtered:
-            health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
-            detail_chips = []
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(desc_lines),
+            color=color,
+        )
+        embed.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
+        return [embed]
 
-            ci_emoji = _CI_EMOJI.get(s.ci_status, "❓")
-            detail_chips.append(f"`CI: {ci_emoji}`")
+    embeds_lines: list[list[str]] = []
+    current_lines = list(desc_lines)
+    max_desc_len = 4000
 
-            if s.review_state == "approved":
-                detail_chips.append("`Review: ✅ Approved`")
-            elif s.review_state == "changes_requested":
-                detail_chips.append("`Review: 🔄 Changes requested`")
-            elif s.review_state == "awaiting_review":
-                detail_chips.append("`Review: ⏳ Awaiting`")
-            else:
-                detail_chips.append("`Review: 💬 Comment`")
+    for s in filtered:
+        health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
+        detail_chips = []
 
-            if s.mergeable is False:
-                detail_chips.append("`⚠️ Conflicts`")
-            elif s.mergeable is True:
-                detail_chips.append("`Mergeable: ✅`")
+        ci_emoji = _CI_EMOJI.get(s.ci_status, "❓")
+        detail_chips.append(f"`CI: {ci_emoji}`")
 
-            if s.has_coderabbit_comments:
-                detail_chips.append(f"`🐰 CodeRabbit: {s.coderabbit_comment_count} pending`")
+        if s.review_state == "approved":
+            detail_chips.append("`Review: ✅ Approved`")
+        elif s.review_state == "changes_requested":
+            detail_chips.append("`Review: 🔄 Changes requested`")
+        elif s.review_state == "awaiting_review":
+            detail_chips.append("`Review: ⏳ Awaiting`")
+        else:
+            detail_chips.append("`Review: 💬 Comment`")
 
-            if s.is_draft:
-                detail_chips.append("`Draft`")
+        if s.mergeable is False:
+            detail_chips.append("`⚠️ Conflicts`")
+        elif s.mergeable is True:
+            detail_chips.append("`Mergeable: ✅`")
 
-            title_text = _truncate(s.title, 60)
-            url_part = f"<{s.html_url}>" if s.html_url else ""
-            repo_pr = f"{s.repo}#{s.number}"
-            link_md = f"[{repo_pr}]({url_part})" if url_part else repo_pr
-            chips_line = " ".join(detail_chips)
-            author_chip = f"`@{s.author}` • " if s.author else ""
+        if s.has_coderabbit_comments:
+            detail_chips.append(f"`🐰 CodeRabbit: {s.coderabbit_comment_count} pending`")
 
-            desc_lines.append(f"{health_emoji} **{link_md}** — {title_text}")
-            desc_lines.append(f"> {author_chip}{chips_line}\n")
+        if s.is_draft:
+            detail_chips.append("`Draft`")
+
+        title_text = _truncate(s.title, 60)
+        url_part = f"<{s.html_url}>" if s.html_url else ""
+        repo_pr = f"{s.repo}#{s.number}"
+        link_md = f"[{repo_pr}]({url_part})" if url_part else repo_pr
+        chips_line = " ".join(detail_chips)
+        author_chip = f"`@{s.author}` • " if s.author else ""
+
+        entry_lines = [
+            f"{health_emoji} **{link_md}** — {title_text}",
+            f"> {author_chip}{chips_line}\n",
+        ]
+
+        if current_lines and len("\n".join(current_lines + entry_lines)) > max_desc_len:
+            embeds_lines.append(current_lines)
+            current_lines = list(entry_lines)
+        else:
+            current_lines.extend(entry_lines)
 
     shown_end = skip + len(statuses)
     if shown_end < total:
-        desc_lines.append(f"*…and {total - shown_end} more. Use **Next** below to paginate.*")
+        footer_line = f"*…and {total - shown_end} more. Use **Next** below to paginate.*"
+        if current_lines and len("\n".join(current_lines + [footer_line])) > max_desc_len:
+            embeds_lines.append(current_lines)
+            current_lines = [footer_line]
+        else:
+            current_lines.append(footer_line)
 
-    embed = discord.Embed(
-        title=title,
-        description="\n".join(desc_lines),
-        color=color,
-    )
-    embed.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
-    return embed
+    if current_lines:
+        embeds_lines.append(current_lines)
+
+    if not embeds_lines:
+        embeds_lines = [desc_lines]
+
+    embeds: list[discord.Embed] = []
+    total_parts = len(embeds_lines)
+    for i, lines in enumerate(embeds_lines):
+        part_title = title if i == 0 else f"{title} (cont.)"
+        e = discord.Embed(
+            title=part_title,
+            description="\n".join(lines),
+            color=color,
+        )
+        if i == total_parts - 1:
+            e.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
+        embeds.append(e)
+
+    return embeds
+
+
+def build_pr_status_embed(
+    statuses: list[PRHealthStatus],
+    org: str,
+    skip: int = 0,
+    total: int = 0,
+    filter_health: str | None = None,
+) -> discord.Embed:
+    """Build a rich, attractive dashboard card embed for PR status."""
+    return build_pr_status_embeds(
+        statuses, org, skip=skip, total=total, filter_health=filter_health
+    )[0]
 
 
 def build_single_pr_embed(status: PRHealthStatus, org: str) -> discord.Embed:
@@ -832,7 +894,7 @@ class PRDetailView(discord.ui.View):
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         self.parent_view._build_components()
-        embed = build_pr_status_embed(
+        embeds = build_pr_status_embeds(
             self.parent_view.statuses,
             self.parent_view.config.github.org,
             skip=self.parent_view.skip,
@@ -847,8 +909,9 @@ class PRDetailView(discord.ui.View):
             filter_health=self.parent_view.active_filter,
         )
         first_msg = messages[0] if messages else "📋 **PR Status Dashboard**\n\nNo open PRs found."
+        embed_kwargs = _pr_status_embed_kwargs(embeds)
         try:
-            await interaction.response.edit_message(content="", embed=embed, view=self.parent_view)
+            await interaction.response.edit_message(content="", view=self.parent_view, **embed_kwargs)
         except Exception:
             await interaction.response.edit_message(content=first_msg, view=self.parent_view)
 
@@ -987,14 +1050,15 @@ class PRStatusView(discord.ui.View):
         async def _all_callback(interaction: discord.Interaction) -> None:
             self.active_filter = None
             self._build_components()
-            embed = build_pr_status_embed(
+            embeds = build_pr_status_embeds(
                 self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=None
             )
             msgs = format_all_pr_status(
                 self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=None
             )
+            embed_kwargs = _pr_status_embed_kwargs(embeds)
             try:
-                await interaction.response.edit_message(content="", embed=embed, view=self)
+                await interaction.response.edit_message(content="", view=self, **embed_kwargs)
             except Exception:
                 await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
 
@@ -1012,14 +1076,15 @@ class PRStatusView(discord.ui.View):
             async def _blocked_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "blocked" if self.active_filter != "blocked" else None
                 self._build_components()
-                embed = build_pr_status_embed(
+                embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
                 msgs = format_all_pr_status(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
+                embed_kwargs = _pr_status_embed_kwargs(embeds)
                 try:
-                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                    await interaction.response.edit_message(content="", view=self, **embed_kwargs)
                 except Exception:
                     await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
 
@@ -1037,14 +1102,15 @@ class PRStatusView(discord.ui.View):
             async def _attention_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "needs_attention" if self.active_filter != "needs_attention" else None
                 self._build_components()
-                embed = build_pr_status_embed(
+                embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
                 msgs = format_all_pr_status(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
+                embed_kwargs = _pr_status_embed_kwargs(embeds)
                 try:
-                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                    await interaction.response.edit_message(content="", view=self, **embed_kwargs)
                 except Exception:
                     await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
 
@@ -1062,14 +1128,15 @@ class PRStatusView(discord.ui.View):
             async def _safe_callback(interaction: discord.Interaction) -> None:
                 self.active_filter = "safe_to_merge" if self.active_filter != "safe_to_merge" else None
                 self._build_components()
-                embed = build_pr_status_embed(
+                embeds = build_pr_status_embeds(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
                 msgs = format_all_pr_status(
                     self.statuses, self.config.github.org, skip=self.skip, total=self.total, filter_health=self.active_filter
                 )
+                embed_kwargs = _pr_status_embed_kwargs(embeds)
                 try:
-                    await interaction.response.edit_message(content="", embed=embed, view=self)
+                    await interaction.response.edit_message(content="", view=self, **embed_kwargs)
                 except Exception:
                     await interaction.response.edit_message(content=msgs[0] if msgs else "", view=self)
 
@@ -1173,7 +1240,7 @@ class PRStatusView(discord.ui.View):
         self.statuses = statuses
         self._build_components()
 
-        embed = build_pr_status_embed(
+        embeds = build_pr_status_embeds(
             statuses, self.config.github.org, skip=skip, total=total, filter_health=self.active_filter
         )
 
@@ -1182,18 +1249,20 @@ class PRStatusView(discord.ui.View):
         )
         first_msg = messages[0] if messages else "📋 **PR Status Dashboard**\n\nNo open PRs found."
 
+        embed_kwargs = _pr_status_embed_kwargs(embeds)
+
         updated = False
         try:
             edit_orig = getattr(interaction, "edit_original_response", None)
             if callable(edit_orig):
-                await edit_orig(content="", embed=embed, view=self)
+                await edit_orig(content="", view=self, **embed_kwargs)
                 updated = True
         except Exception:
             pass
 
         if not updated:
             try:
-                await interaction.followup.send(embed=embed, view=self, ephemeral=True)
+                await interaction.followup.send(view=self, ephemeral=True, **embed_kwargs)
             except Exception:
                 await interaction.followup.send(first_msg, view=self, ephemeral=True, suppress_embeds=True)
 
