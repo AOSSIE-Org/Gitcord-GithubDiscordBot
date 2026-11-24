@@ -17,7 +17,8 @@ def filter_audit_events(
     
     Args:
         events: List of audit event dicts
-        user: Match github_user in context OR actor_id (discord_user_id)
+        user: Match actor_id, or github_user or discord_user_id in context.
+            GitHub logins are matched case-insensitively.
         event_type: Exact match on event_type field
         from_time: Inclusive lower bound (UTC)
         to_time: Inclusive upper bound (UTC)
@@ -27,14 +28,8 @@ def filter_audit_events(
     """
     filtered = events
     if user:
-        filtered = [
-            e
-            for e in filtered
-            if (
-                e.get("actor_id") == user
-                or e.get("context", {}).get("github_user") == user
-            )
-        ]
+        wanted = user.strip().lower()
+        filtered = [e for e in filtered if wanted in _event_users(e)]
     if event_type:
         filtered = [e for e in filtered if e.get("event_type") == event_type]
     if from_time:
@@ -73,7 +68,11 @@ def format_audit_csv(events: list[dict]) -> str:
     for e in events:
         context = e.get("context", {})
         github_user = context.get("github_user", "")
-        discord_user_id = e.get("actor_id", "") if e.get("actor_type") == "discord_user" else ""
+        discord_user_id = (
+            e.get("actor_id", "")
+            if e.get("actor_type") == "discord_user"
+            else context.get("discord_user_id", "")
+        )
         repo = context.get("repo", "")
         target = context.get("target", "") or context.get("location", "") or ""
         details = json.dumps(context, separators=(",", ":"))
@@ -125,6 +124,13 @@ def format_audit_markdown(events: list[dict]) -> str:
             lines.append(f"| {ts} | {actor} | {github_user} | {details} |")
         lines.append("")
     return "\n".join(lines)
+
+
+def _event_users(event: dict) -> set[str]:
+    """Lowercased actor ID, GitHub login and Discord user ID that an event is about."""
+    context = event.get("context") or {}
+    values = (event.get("actor_id"), context.get("github_user"), context.get("discord_user_id"))
+    return {str(value).strip().lower() for value in values if value}
 
 
 def _ensure_utc(value: datetime) -> datetime:

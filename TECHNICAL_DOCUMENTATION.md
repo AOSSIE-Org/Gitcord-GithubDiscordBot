@@ -857,7 +857,8 @@ discord:
   #   hour_utc: 12
   # Optional: Channel names where PR URLs trigger passive preview (requires message content intent)
   pr_preview_channels: []
-  # Optional: Per-command permission rules (if omitted, falls back to assignments.issue_assignees)
+  # Optional: Per-command permission rules (if omitted, falls back to assignments.issue_assignees;
+  # create-issue is open to all verified members unless a create-issue rule is configured)
   command_permissions:
     sync:
       role_ids: []
