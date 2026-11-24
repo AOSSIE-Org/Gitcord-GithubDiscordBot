@@ -731,18 +731,36 @@ def apply_discord_roles(
                     )
                     break
         for role in newly_added_roles:
-            discord_writer.add_role(mapping.discord_user_id, role)
-            # Send congratulatory message for newly assigned roles
-            _send_role_congratulation(
-                discord_writer=discord_writer,
-                discord_user_id=mapping.discord_user_id,
-                role_name=role,
-                policy=policy,
-            )
+            if discord_writer.add_role(mapping.discord_user_id, role):
+                if storage is not None:
+                    storage.append_audit_event(
+                        "discord_role_added",
+                        {
+                            "discord_user_id": mapping.discord_user_id,
+                            "github_user": mapping.github_user,
+                            "role": role,
+                        },
+                    )
+                # Send congratulatory message for newly assigned roles
+                _send_role_congratulation(
+                    discord_writer=discord_writer,
+                    discord_user_id=mapping.discord_user_id,
+                    role_name=role,
+                    policy=policy,
+                )
         # Remove roles only when score-based says so; never remove merge-based or repo-contributor roles
         roles_to_remove = (current_roles & managed_roles) - desired_roles
         for role in sorted(roles_to_remove):
-            discord_writer.remove_role(mapping.discord_user_id, role)
+            if discord_writer.remove_role(mapping.discord_user_id, role):
+                if storage is not None:
+                    storage.append_audit_event(
+                        "discord_role_removed",
+                        {
+                            "discord_user_id": mapping.discord_user_id,
+                            "github_user": mapping.github_user,
+                            "role": role,
+                        },
+                    )
 
 
 def _send_role_congratulation(
