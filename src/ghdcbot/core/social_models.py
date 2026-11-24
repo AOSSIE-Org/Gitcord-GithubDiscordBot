@@ -7,9 +7,9 @@ Pydantic models for storing and validating social profiles (X, LinkedIn, etc.)
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-import unicodedata
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, field_validator, model_validator
