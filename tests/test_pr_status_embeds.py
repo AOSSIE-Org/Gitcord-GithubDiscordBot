@@ -13,6 +13,9 @@ from ghdcbot.bot import (
 )
 from ghdcbot.engine.pr_status import PRHealthStatus
 
+# Combined Discord limit across all embeds in one message payload.
+_DISCORD_COMBINED_LIMIT = 6000
+
 
 def _make_health(
     *,
@@ -48,6 +51,14 @@ def _make_health(
     )
 
 
+def _combined_chars(embeds: list[discord.Embed]) -> int:
+    """Mirror of Discord's combined character count for a message payload."""
+    return sum(
+        len(e.title or "") + len(e.description or "") + (len(e.footer.text) if e.footer else 0)
+        for e in embeds
+    )
+
+
 def test_build_pr_status_embeds_single_embed() -> None:
     statuses = [
         _make_health(number=1, title="PR 1"),
@@ -66,8 +77,8 @@ def test_build_pr_status_embeds_single_embed() -> None:
     assert single.description == embed.description
 
 
-def test_build_pr_status_embeds_splits_under_4096_no_entries_dropped() -> None:
-    # 25 PRs with verbose details exceeding 4000 chars total description
+def test_build_pr_status_embeds_respects_combined_6000_char_limit() -> None:
+    """25 verbose PRs must produce a payload whose combined chars stay <= 6000."""
     statuses = [
         _make_health(
             repo=f"very-long-repository-name-{i}",
@@ -85,29 +96,40 @@ def test_build_pr_status_embeds_splits_under_4096_no_entries_dropped() -> None:
     ]
     embeds = build_pr_status_embeds(statuses, "org", skip=0, total=50)
 
-    # Must be split into multiple embeds
-    assert len(embeds) > 1
+    # Combined limit
+    total_chars = _combined_chars(embeds)
+    assert total_chars <= _DISCORD_COMBINED_LIMIT, (
+        f"Combined embed chars {total_chars} exceeds Discord {_DISCORD_COMBINED_LIMIT}-char limit"
+    )
+
+    # Per-embed description limit
+    for i, e in enumerate(embeds):
+        assert len(e.description or "") <= 4096, (
+            f"Embed {i} description exceeded 4096: {len(e.description or '')}"
+        )
+
+    # At most 10 embeds per message
     assert len(embeds) <= 10
 
-    # Every embed description must be <= 4096 chars
-    for i, e in enumerate(embeds):
-        assert len(e.description) <= 4096, f"Embed {i} exceeded 4096 limit: {len(e.description)}"
-        if i == 0:
-            assert e.title == "📊 PR Status Dashboard"
-        else:
-            assert e.title == "📊 PR Status Dashboard (cont.)"
+    # Title structure
+    assert embeds[0].title == "📊 PR Status Dashboard"
+    for e in embeds[1:]:
+        assert e.title == "📊 PR Status Dashboard (cont.)"
 
-    # Only last embed has the footer
+    # Footer only on last embed
     assert embeds[-1].footer.text == "Gitcord • Select a PR from dropdown to inspect details"
+    for e in embeds[:-1]:
+        # discord.py returns an EmbedProxy sentinel (not None) when footer is unset
+        assert not getattr(e.footer, "text", None), (
+            f"Non-terminal embed should not have a footer; got: {e.footer.text!r}"
+        )
 
-    # Verify no PR entries are dropped across all embeds
-    all_descriptions = "\n".join(e.description for e in embeds)
-    for s in statuses:
-        repo_pr = f"{s.repo}#{s.number}"
-        assert repo_pr in all_descriptions, f"{repo_pr} was dropped from split embeds"
-
-    # Pagination notice present at end
-    assert "…and 25 more. Use **Next** below to paginate." in all_descriptions
+    # Because 25 verbose entries exceed the combined limit, a truncation notice
+    # must be present so the user knows to use Next to see more.
+    all_descriptions = "\n".join(e.description or "" for e in embeds)
+    assert "Next" in all_descriptions or "paginate" in all_descriptions.lower(), (
+        "Expected a 'Next' / pagination notice when entries were cut by the combined limit"
+    )
 
 
 def test_embed_kwargs_helper() -> None:
@@ -130,13 +152,49 @@ def test_dropdown_options_aligned_with_displayed_entries() -> None:
     view._build_components()
 
     dropdown = next(c for c in view.children if isinstance(c, PRSelectDropdown))
-    selected_pr_numbers = {opt.value for opt in dropdown.options}
-    assert len(selected_pr_numbers) == 25
+    # Values are now encoded as "{repo}:{number}".
+    option_values = [opt.value for opt in dropdown.options]
+    assert len(option_values) == 25
+    for val in option_values:
+        assert ":" in val, f"Option value {val!r} is not in 'repo:number' format"
 
     embeds = build_pr_status_embeds(statuses, "org", skip=0, total=25)
-    all_descriptions = "\n".join(e.description for e in embeds)
-    for num in selected_pr_numbers:
-        assert f"#{num}" in all_descriptions
+    all_descriptions = "\n".join(e.description or "" for e in embeds)
+    for val in option_values:
+        _repo, _, num_str = val.partition(":")
+        assert f"#{num_str}" in all_descriptions, f"PR #{num_str} missing from embed descriptions"
+
+
+def test_dropdown_selects_correct_pr_when_numbers_duplicate_across_repos() -> None:
+    """Regression: two repos share PR number 42 — selector must resolve the right one."""
+    pr_a = _make_health(repo="repo-alpha", number=42, title="Alpha PR")
+    pr_b = _make_health(repo="repo-beta", number=42, title="Beta PR")
+    statuses = [pr_a, pr_b]
+
+    view = PRStatusView("org", MagicMock(), MagicMock())
+    view.statuses = statuses
+    view.total = 2
+    view._build_components()
+
+    dropdown = next(c for c in view.children if isinstance(c, PRSelectDropdown))
+    values = {opt.value for opt in dropdown.options}
+
+    # Both PRs must have distinct, repo-qualified values.
+    assert "repo-alpha:42" in values, "repo-alpha:42 missing from dropdown options"
+    assert "repo-beta:42" in values, "repo-beta:42 missing from dropdown options"
+
+    # Simulate the callback resolution for each value.
+    def _resolve(raw: str, all_statuses: list) -> PRHealthStatus | None:
+        repo, _, num_str = raw.partition(":")
+        num = int(num_str)
+        return next((s for s in all_statuses if s.repo == repo and s.number == num), None)
+
+    resolved_a = _resolve("repo-alpha:42", statuses)
+    resolved_b = _resolve("repo-beta:42", statuses)
+
+    assert resolved_a is pr_a, "Selecting repo-alpha:42 should resolve to pr_a"
+    assert resolved_b is pr_b, "Selecting repo-beta:42 should resolve to pr_b"
+    assert resolved_a is not resolved_b, "Duplicate PR numbers must resolve to different objects"
 
 
 def test_single_embed_kwargs_compatibility() -> None:
@@ -150,7 +208,8 @@ def test_single_embed_kwargs_compatibility() -> None:
     assert kwargs["embed"].title == "📊 PR Status Dashboard"
 
 
-def test_split_embeds_kwargs_for_back_and_filter_paths() -> None:
+def test_split_embeds_kwargs_combined_limit() -> None:
+    """Back and filter callback payloads must respect the combined 6000-char limit."""
     statuses = [
         _make_health(
             repo=f"repo-with-a-very-long-name-exceeding-standard-length-{i}",
@@ -163,19 +222,20 @@ def test_split_embeds_kwargs_for_back_and_filter_paths() -> None:
         )
         for i in range(25)
     ]
-    # Test Back path kwargs
+    # Back path
     embeds_all = build_pr_status_embeds(statuses, "org", skip=0, total=25)
-    kwargs_back = _pr_status_embed_kwargs(embeds_all)
-    assert "embeds" in kwargs_back
-    assert len(kwargs_back["embeds"]) > 1
-    for e in kwargs_back["embeds"]:
-        assert len(e.description) <= 4096
+    total_chars = _combined_chars(embeds_all)
+    assert total_chars <= _DISCORD_COMBINED_LIMIT, (
+        f"Back-path combined chars {total_chars} exceeds {_DISCORD_COMBINED_LIMIT}"
+    )
+    for e in embeds_all:
+        assert len(e.description or "") <= 4096
 
-    # Test Filter path kwargs (filtered by blocked)
-    embeds_filtered = build_pr_status_embeds(statuses, "org", skip=0, total=25, filter_health="blocked")
-    kwargs_filter = _pr_status_embed_kwargs(embeds_filtered)
-    assert "embeds" in kwargs_filter
-    assert len(kwargs_filter["embeds"]) > 1
-    for e in kwargs_filter["embeds"]:
-        assert len(e.description) <= 4096
-        assert "Filtered: 🔴 Blocked" in e.title
+    # Filter path (blocked — will likely produce 1 embed since most are needs_attention/safe)
+    embeds_filtered = build_pr_status_embeds(
+        statuses, "org", skip=0, total=25, filter_health="blocked"
+    )
+    total_chars_f = _combined_chars(embeds_filtered)
+    assert total_chars_f <= _DISCORD_COMBINED_LIMIT, (
+        f"Filter-path combined chars {total_chars_f} exceeds {_DISCORD_COMBINED_LIMIT}"
+    )

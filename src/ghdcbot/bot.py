@@ -717,10 +717,25 @@ def build_pr_status_embeds(
         embed.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
         return [embed]
 
-    embeds_lines: list[list[str]] = []
-    current_lines = list(desc_lines)
-    max_desc_len = 4000
+    # Discord limits: 4096 chars per embed description, 6000 chars combined across
+    # all embeds in a single message payload (titles + descriptions + footers).
+    # We build embeds one at a time and stop adding PR entries once the combined
+    # payload would exceed the safe limit, adding a "use Next" notice instead.
+    _MAX_DESC = 4000  # per-embed description hard cap (< 4096 for safety margin)
+    _FOOTER_TEXT = "Gitcord • Select a PR from dropdown to inspect details"
+    _CONT_SUFFIX = " (cont.)"
+    # Title overhead: len(title) or len(title + cont_suffix), footer, plus a small buffer.
+    _title_len = len(title)
+    _cont_title_len = len(title) + len(_CONT_SUFFIX)
+    _footer_len = len(_FOOTER_TEXT)
+    # 5800 leaves ~200 chars headroom under the 6000 combined limit.
+    _MAX_COMBINED = 5800
 
+    # Shared heading lines that go in the first embed's description.
+    head_lines = list(desc_lines)
+
+    # --- build PR entry text blocks ---
+    entry_blocks: list[list[str]] = []
     for s in filtered:
         health_emoji = _HEALTH_EMOJI.get(s.health_indicator, "❓")
         detail_chips = []
@@ -755,43 +770,95 @@ def build_pr_status_embeds(
         chips_line = " ".join(detail_chips)
         author_chip = f"`@{s.author}` • " if s.author else ""
 
-        entry_lines = [
-            f"{health_emoji} **{link_md}** — {title_text}",
-            f"> {author_chip}{chips_line}\n",
-        ]
+        entry_blocks.append(
+            [
+                f"{health_emoji} **{link_md}** — {title_text}",
+                f"> {author_chip}{chips_line}\n",
+            ]
+        )
 
-        if current_lines and len("\n".join(current_lines + entry_lines)) > max_desc_len:
-            embeds_lines.append(current_lines)
-            current_lines = list(entry_lines)
+    # --- pack entry blocks into embed descriptions, respecting both limits ---
+    # An embed_group is a list of description-line-lists that form one message payload.
+    embed_descs: list[str] = []  # final description string per embed in this message
+    current_lines: list[str] = list(head_lines)
+    entries_shown = 0
+
+    def _combined_chars(descs: list[str], next_desc: str) -> int:
+        """Estimate combined char count for the full message payload."""
+        all_descs = descs + [next_desc]
+        total = 0
+        for idx, d in enumerate(all_descs):
+            # title overhead
+            total += _cont_title_len if idx > 0 else _title_len
+            total += len(d)
+        # footer on last embed
+        total += _footer_len
+        return total
+
+    for block in entry_blocks:
+        block_text = "\n".join(block)
+        candidate = "\n".join(current_lines + block)
+
+        # Would this entry overflow the per-embed description limit?
+        if current_lines and len(candidate) > _MAX_DESC:
+            # Seal current embed, start a new one with this entry.
+            # First check whether sealing + new embed still fits combined limit.
+            new_desc = block_text
+            if _combined_chars(embed_descs + ["\n".join(current_lines)], new_desc) > _MAX_COMBINED:
+                # Combined limit would be blown — stop here, emit truncation notice later.
+                break
+            embed_descs.append("\n".join(current_lines))
+            current_lines = block
+            entries_shown += 1
         else:
-            current_lines.extend(entry_lines)
+            # Check combined limit before accepting the entry into current embed.
+            if _combined_chars(embed_descs, candidate) > _MAX_COMBINED:
+                # Combined limit would be blown — stop here, emit truncation notice later.
+                break
+            current_lines = list(current_lines) + block if current_lines else list(block)
+            entries_shown += 1
 
+    # Pagination / truncation notice
     shown_end = skip + len(statuses)
-    if shown_end < total:
-        footer_line = f"*…and {total - shown_end} more. Use **Next** below to paginate.*"
-        if current_lines and len("\n".join(current_lines + [footer_line])) > max_desc_len:
-            embeds_lines.append(current_lines)
-            current_lines = [footer_line]
+    omitted_next_page = total - shown_end  # already paginated away by server
+    omitted_this_page = len(filtered) - entries_shown  # cut by combined-char limit
+
+    if omitted_this_page > 0:
+        # Some entries were dropped due to the combined char limit — show a note.
+        notice = (
+            f"*…{omitted_this_page} more PR(s) on this page exceed the display limit. "
+            f"Use **Next** ▶ to paginate to smaller pages.*"
+        )
+        if len("\n".join(current_lines + [notice])) <= _MAX_DESC:
+            current_lines = list(current_lines) + [notice]
         else:
-            current_lines.append(footer_line)
+            embed_descs.append("\n".join(current_lines))
+            current_lines = [notice]
+    elif omitted_next_page > 0:
+        footer_line = f"*…and {omitted_next_page} more. Use **Next** below to paginate.*"
+        if len("\n".join(current_lines + [footer_line])) <= _MAX_DESC:
+            current_lines = list(current_lines) + [footer_line]
+        else:
+            embed_descs.append("\n".join(current_lines))
+            current_lines = [footer_line]
 
     if current_lines:
-        embeds_lines.append(current_lines)
+        embed_descs.append("\n".join(current_lines))
 
-    if not embeds_lines:
-        embeds_lines = [desc_lines]
+    if not embed_descs:
+        embed_descs = ["\n".join(desc_lines)]
 
     embeds: list[discord.Embed] = []
-    total_parts = len(embeds_lines)
-    for i, lines in enumerate(embeds_lines):
-        part_title = title if i == 0 else f"{title} (cont.)"
+    total_parts = len(embed_descs)
+    for i, desc in enumerate(embed_descs):
+        part_title = title if i == 0 else f"{title}{_CONT_SUFFIX}"
         e = discord.Embed(
             title=part_title,
-            description="\n".join(lines),
+            description=desc,
             color=color,
         )
         if i == total_parts - 1:
-            e.set_footer(text="Gitcord • Select a PR from dropdown to inspect details")
+            e.set_footer(text=_FOOTER_TEXT)
         embeds.append(e)
 
     return embeds
@@ -931,11 +998,18 @@ class PRSelectDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
-            selected_num = int(self.values[0])
+            raw = self.values[0]
+            # Value is encoded as "{repo}:{number}" to disambiguate duplicate PR
+            # numbers that exist across different repositories.
+            repo, _, num_str = raw.partition(":")
+            selected_num = int(num_str)
         except (ValueError, IndexError):
             return
 
-        matched = next((s for s in self.pr_view.statuses if s.number == selected_num), None)
+        matched = next(
+            (s for s in self.pr_view.statuses if s.repo == repo and s.number == selected_num),
+            None,
+        )
         if not matched:
             await interaction.response.send_message("❌ PR not found in current view.", ephemeral=True)
             return
@@ -1026,7 +1100,7 @@ class PRStatusView(discord.ui.View):
             options = [
                 discord.SelectOption(
                     label=f"#{s.number}: {_truncate(s.title, 40)}",
-                    value=str(s.number),
+                    value=f"{s.repo}:{s.number}",
                     description=_truncate(f"{s.repo} · {_REVIEW_LABEL.get(s.review_state, s.review_state)}", 50),
                     emoji=_HEALTH_EMOJI.get(s.health_indicator, "❓"),
                 )
