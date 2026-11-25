@@ -293,6 +293,106 @@ class GitHubRestAdapter:
             repo=repo,
         )
 
+    def list_review_requests_for_user(
+        self, github_user: str, *, repo: str | None = None
+    ) -> list[dict]:
+        """List open PRs requesting review from github_user via GitHub Search API.
+
+        Results are limited to the configured org and filtered by active repo
+        allowlist/denylist. When ``repo`` is set, search is limited to that repository.
+        """
+        user = (github_user or "").strip()
+        if not user:
+            return []
+
+        repo_filter = _load_repo_filter()
+        allowed_names: set[str] | None = None
+        denied_names: set[str] = set()
+        if repo_filter is not None:
+            names = {name.strip() for name in repo_filter.names if name and name.strip()}
+            if repo_filter.mode == "allow":
+                allowed_names = names
+            else:
+                denied_names = names
+
+        allowed_lower = (
+            {n.lower() for n in allowed_names} if allowed_names is not None else None
+        )
+        denied_lower = {n.lower() for n in denied_names}
+
+        repo_name = (repo or "").strip()
+        if repo_name:
+            if allowed_lower is not None and repo_name.lower() not in allowed_lower:
+                return []
+            if repo_name.lower() in denied_lower:
+                return []
+            scope = f"repo:{self._org}/{repo_name}"
+        else:
+            scope = f"org:{self._org}"
+
+        query = f"is:pr is:open review-requested:{user} {scope}"
+        queries = _build_author_pr_search_queries(query)
+
+        results: list[dict] = []
+        seen: set[tuple[str, object]] = set()
+        for q in queries:
+            page = 1
+            while page <= _GITHUB_SEARCH_MAX_PAGES:
+                params: dict[str, str | int] = {
+                    "q": q,
+                    "sort": "created",
+                    "order": "asc",
+                    "per_page": 100,
+                    "page": page,
+                }
+                response = self._request("GET", "/search/issues", params=params)
+                if response is None or response.status_code != 200:
+                    if response is not None:
+                        self._logger.warning(
+                            "GitHub search failed for review requests",
+                            extra={
+                                "status_code": response.status_code,
+                                "github_user": user,
+                                "org": self._org,
+                            },
+                        )
+                    break
+                payload = response.json()
+                items = payload.get("items") if isinstance(payload, dict) else None
+                if not isinstance(items, list) or not items:
+                    break
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    r_name = _repo_name_from_search_issue(item, self._org)
+                    if not r_name:
+                        continue
+                    repo_key = r_name.lower()
+                    if allowed_lower is not None and repo_key not in allowed_lower:
+                        continue
+                    if repo_key in denied_lower:
+                        continue
+                    dedupe_key = (r_name, item.get("number"))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    pr_user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                    row: dict = {
+                        "repo": r_name,
+                        "number": item.get("number"),
+                        "author": pr_user.get("login") or "unknown",
+                        "title": item.get("title") or "No title",
+                        "html_url": item.get("html_url") or "",
+                        "created_at": item.get("created_at"),
+                        "updated_at": item.get("updated_at"),
+                        "draft": bool(item.get("draft")),
+                    }
+                    results.append(row)
+                if len(items) < 100:
+                    break
+                page += 1
+        return results
+
     def _search_pull_requests_for_author(
         self,
         github_user: str,
