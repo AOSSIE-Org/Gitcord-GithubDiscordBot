@@ -1418,14 +1418,24 @@ def run_bot(config_path: str) -> None:
     @app_commands.describe(
         contributor="Discord member whose pending review queue to view (defaults to yourself)",
         repo="Repository name (optional; omit for all configured repos)",
+        page="Page number to view (optional, default 1)",
     )
     @app_commands.checks.cooldown(1, 15.0)
     async def reviews_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member | None = None,
         repo: str | None = None,
+        page: app_commands.Range[int, 1, 50] = 1,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+
+        if contributor is not None and contributor.id != interaction.user.id:
+            if not slash_command_allowed(interaction, config, "reviews", allow_all_by_default=False):
+                await interaction.followup.send(
+                    format_slash_command_permission_denied(config, "reviews"),
+                    ephemeral=True,
+                )
+                return
 
         target_member = contributor if contributor is not None else interaction.user
         github_user = resolve_discord_to_github(storage, str(target_member.id))
@@ -1438,12 +1448,14 @@ def run_bot(config_path: str) -> None:
             return
 
         repo_name = (repo or "").strip() or None
+        page_num = int(page) if page is not None else 1
         logger.info(
             "/reviews requested",
             extra={
                 "github_user": github_user,
                 "discord_user_id": str(target_member.id),
                 "repo": repo_name,
+                "page": page_num,
             },
         )
 
@@ -1476,6 +1488,7 @@ def run_bot(config_path: str) -> None:
             github_user=github_user,
             target_mention=target_member.mention,
             org=config.github.org,
+            page=page_num,
         )
         embed = discord.Embed.from_dict(embed_dict)
         await interaction.followup.send(embed=embed, ephemeral=True)

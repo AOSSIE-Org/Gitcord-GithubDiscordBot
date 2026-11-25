@@ -347,16 +347,16 @@ class GitHubRestAdapter:
                 }
                 response = self._request("GET", "/search/issues", params=params)
                 if response is None or response.status_code != 200:
-                    if response is not None:
-                        self._logger.warning(
-                            "GitHub search failed for review requests",
-                            extra={
-                                "status_code": response.status_code,
-                                "github_user": user,
-                                "org": self._org,
-                            },
-                        )
-                    break
+                    status_code = response.status_code if response is not None else "no_response"
+                    self._logger.warning(
+                        "GitHub search failed for review requests",
+                        extra={
+                            "status_code": status_code,
+                            "github_user": user,
+                            "org": self._org,
+                        },
+                    )
+                    raise RuntimeError(f"GitHub search failed for review requests (status: {status_code})")
                 payload = response.json()
                 items = payload.get("items") if isinstance(payload, dict) else None
                 if not isinstance(items, list) or not items:
@@ -386,6 +386,7 @@ class GitHubRestAdapter:
                         "created_at": item.get("created_at"),
                         "updated_at": item.get("updated_at"),
                         "draft": bool(item.get("draft")),
+                        "requested_at": item.get("requested_at") or item.get("created_at"),
                     }
                     results.append(row)
                 if len(items) < 100:

@@ -6,6 +6,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+DISCORD_EMBED_CHAR_LIMIT = 6000
+EMBED_SAFE_BUDGET = 5800
+
 
 def classify_review_staleness(
     created_at: datetime | str | None,
@@ -69,9 +72,11 @@ def build_review_queue_embed(
     org: str,
     now: datetime | None = None,
     max_items: int = 15,
+    page: int = 1,
 ) -> dict[str, Any]:
     """Build a rich Discord embed dictionary for pending review requests.
 
+    Enforces Discord's 6000-character embed limit and supports pagination.
     Returns dict suitable for discord.Embed.from_dict().
     """
     if now is None:
@@ -88,14 +93,22 @@ def build_review_queue_embed(
             "footer": {"text": f"Organization: {org} • /reviews"},
         }
 
+    # Sort reviews by active review request timestamp (or creation timestamp as fallback), oldest first
+    sorted_reviews = sorted(
+        reviews,
+        key=lambda r: _parse_iso_datetime(r.get("requested_at") or r.get("created_at"))
+        or datetime.max.replace(tzinfo=UTC),
+    )
+
     fresh_count = 0
     aging_count = 0
     stale_count = 0
     classified: list[tuple[dict, str, str, str]] = []
 
-    for pr in reviews:
-        tier, emoji = classify_review_staleness(pr.get("created_at"), now)
-        wait_str = format_review_wait_time(pr.get("created_at"), now)
+    for pr in sorted_reviews:
+        timestamp = pr.get("requested_at") or pr.get("created_at")
+        tier, emoji = classify_review_staleness(timestamp, now)
+        wait_str = format_review_wait_time(timestamp, now)
         if tier == "stale":
             stale_count += 1
         elif tier == "aging":
@@ -105,6 +118,9 @@ def build_review_queue_embed(
         classified.append((pr, tier, emoji, wait_str))
 
     total = len(reviews)
+    page_size = max(1, max_items)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(max(1, page), total_pages)
 
     if stale_count > 0:
         embed_color = 0xED4245  # Red
@@ -124,21 +140,37 @@ def build_review_queue_embed(
         f"{summary_counts}"
     )
 
-    fields: list[dict[str, Any]] = []
-    shown = classified[:max_items]
+    start_idx = (current_page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_items = classified[start_idx:end_idx]
 
-    for pr, _tier, emoji, wait_str in shown:
+    title = f"📋 Pending Review Requests ({total})"
+    if total_pages > 1:
+        footer_base = f"Page {current_page} of {total_pages} • Organization: {org} • /reviews"
+        if current_page < total_pages:
+            footer_base += f" (use page:{current_page + 1})"
+    else:
+        footer_base = f"Organization: {org} • /reviews"
+
+    footer_text = footer_base
+
+    # Aggregate character budget check
+    char_budget_used = len(title) + len(description) + len(footer_text)
+    fields: list[dict[str, Any]] = []
+    items_shown_count = 0
+
+    for pr, _tier, emoji, wait_str in page_items:
         repo = pr.get("repo", "?")
         number = pr.get("number", "?")
-        title = (pr.get("title") or "No title").strip()
-        if len(title) > 65:
-            title = f"{title[:62]}..."
+        title_text = (pr.get("title") or "No title").strip()
+        if len(title_text) > 65:
+            title_text = f"{title_text[:62]}..."
         author = pr.get("author", "unknown")
         url = pr.get("html_url") or f"https://github.com/{org}/{repo}/pull/{number}"
         files_url = f"{url}/files"
         draft_badge = " `[Draft]`" if pr.get("draft") else ""
 
-        field_name = f"{emoji} {repo}#{number}{draft_badge} — {title}"
+        field_name = f"{emoji} {repo}#{number}{draft_badge} — {title_text}"
         if len(field_name) > 256:
             field_name = field_name[:253] + "..."
 
@@ -146,20 +178,28 @@ def build_review_queue_embed(
             f"Author: `{author}` • **{wait_str}**\n"
             f"[View PR]({url}) • [Review Diff]({files_url})"
         )
+        if len(field_value) > 1024:
+            field_value = field_value[:1021] + "..."
+
+        field_chars = len(field_name) + len(field_value)
+        if char_budget_used + field_chars > EMBED_SAFE_BUDGET:
+            # Stop adding fields if budget would be exceeded
+            break
 
         fields.append({
             "name": field_name,
             "value": field_value,
             "inline": False,
         })
+        char_budget_used += field_chars
+        items_shown_count += 1
 
-    remaining = total - len(shown)
-    footer_text = f"Organization: {org} • /reviews"
-    if remaining > 0:
-        footer_text = f"…and {remaining} more PR(s) • " + footer_text
+    remaining_on_page = len(page_items) - items_shown_count
+    if remaining_on_page > 0:
+        footer_text = f"…and {remaining_on_page} more on this page • " + footer_base
 
     return {
-        "title": f"📋 Pending Review Requests ({total})",
+        "title": title,
         "description": description,
         "color": embed_color,
         "fields": fields,

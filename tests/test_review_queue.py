@@ -140,7 +140,7 @@ def test_build_review_queue_embed_tiers_and_colors() -> None:
     )
     assert embed_aging["color"] == 0xFEE75C  # Yellow
     assert "🟡 **1** aging" in embed_aging["description"]
-    assert "`[Draft]`" in embed_aging["fields"][1]["name"]
+    assert any("`[Draft]`" in f["name"] for f in embed_aging["fields"])
 
     # Contains stale -> Red embed
     reviews_stale = reviews_aging + [
@@ -166,25 +166,94 @@ def test_build_review_queue_embed_tiers_and_colors() -> None:
     assert "Total: **3**" in embed_stale["description"]
 
 
-def test_build_review_queue_embed_overflow_and_truncation() -> None:
+def test_build_review_queue_embed_requested_at_precedence() -> None:
+    """requested_at timestamp takes precedence over PR created_at for review age and sorting."""
     now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
-    long_title = "A" * 100
 
-    many_reviews = [
+    # PR created 6 months ago, but review requested 5 hours ago
+    reviews = [
         {
-            "repo": f"Repo{i}",
-            "number": i,
-            "title": long_title,
-            "author": f"user{i}",
-            "created_at": (now - timedelta(hours=i * 2)).isoformat(),
-            "html_url": f"https://github.com/AOSSIE-Org/Repo{i}/pull/{i}",
-            "draft": False,
+            "repo": "Gitcord",
+            "number": 10,
+            "title": "Old PR Recent Request",
+            "author": "bob",
+            "created_at": (now - timedelta(days=180)).isoformat(),
+            "requested_at": (now - timedelta(hours=5)).isoformat(),
+            "html_url": "https://github.com/AOSSIE-Org/Gitcord/pull/10",
         }
-        for i in range(20)
     ]
 
     embed = build_review_queue_embed(
-        reviews=many_reviews,
+        reviews=reviews,
+        github_user="alice",
+        target_mention="<@123>",
+        org="AOSSIE-Org",
+        now=now,
+    )
+
+    assert "🟢 **1** fresh" in embed["description"]
+    assert "5h waiting" in embed["fields"][0]["value"]
+
+
+def test_build_review_queue_embed_pagination() -> None:
+    now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
+    reviews = [
+        {
+            "repo": f"Repo{i}",
+            "number": i,
+            "title": f"PR {i}",
+            "author": f"user{i}",
+            "created_at": (now - timedelta(hours=i + 1)).isoformat(),
+            "html_url": f"https://github.com/AOSSIE-Org/Repo{i}/pull/{i}",
+        }
+        for i in range(25)
+    ]
+
+    # Page 1 (items 0 to 14)
+    embed_p1 = build_review_queue_embed(
+        reviews=reviews,
+        github_user="alice",
+        target_mention="<@123>",
+        org="AOSSIE-Org",
+        now=now,
+        max_items=15,
+        page=1,
+    )
+    assert len(embed_p1["fields"]) == 15
+    assert "Page 1 of 2" in embed_p1["footer"]["text"]
+    assert "use page:2" in embed_p1["footer"]["text"]
+
+    # Page 2 (items 15 to 24)
+    embed_p2 = build_review_queue_embed(
+        reviews=reviews,
+        github_user="alice",
+        target_mention="<@123>",
+        org="AOSSIE-Org",
+        now=now,
+        max_items=15,
+        page=2,
+    )
+    assert len(embed_p2["fields"]) == 10
+    assert "Page 2 of 2" in embed_p2["footer"]["text"]
+
+
+def test_build_review_queue_embed_character_budget() -> None:
+    now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
+    huge_title = "X" * 200
+    reviews = [
+        {
+            "repo": f"VeryLongRepositoryNameWithManyCharactersToTestEmbedLimits{i}",
+            "number": i,
+            "title": huge_title,
+            "author": f"user_with_a_long_username_{i}",
+            "created_at": (now - timedelta(hours=i + 1)).isoformat(),
+            "html_url": f"https://github.com/AOSSIE-Org/VeryLongRepositoryNameWithManyCharactersToTestEmbedLimits{i}/pull/{i}",
+        }
+        for i in range(25)
+    ]
+
+    embed = build_review_queue_embed(
+        reviews=reviews,
         github_user="alice",
         target_mention="<@123>",
         org="AOSSIE-Org",
@@ -192,10 +261,10 @@ def test_build_review_queue_embed_overflow_and_truncation() -> None:
         max_items=15,
     )
 
-    # Maximum items displayed is capped at 15
-    assert len(embed["fields"]) == 15
-    # Long titles are truncated
-    assert embed["fields"][0]["name"].endswith("...")
-    assert len(embed["fields"][0]["name"]) < 80
-    # Footer notes remaining items
-    assert "…and 5 more PR(s)" in embed["footer"]["text"]
+    total_chars = (
+        len(embed["title"])
+        + len(embed["description"])
+        + len(embed["footer"]["text"])
+        + sum(len(f["name"]) + len(f["value"]) for f in embed["fields"])
+    )
+    assert total_chars <= 6000

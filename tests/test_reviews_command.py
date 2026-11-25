@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from ghdcbot.adapters.github.rest import GitHubRestAdapter
-from ghdcbot.config.models import BotConfig, RepoFilterConfig
+from ghdcbot.config.models import BotConfig, RepoFilterConfig, SlashCommandPermissionRule
 
 
 class _SearchMockClient:
@@ -118,10 +118,11 @@ def test_list_review_requests_empty_user_or_error() -> None:
     assert adapter.list_review_requests_for_user("") == []
     assert adapter.list_review_requests_for_user("   ") == []
 
-    # API error returns empty list gracefully without throwing
+    # API error raises RuntimeError to propagate failure
     error_client = _SearchMockClient(status_code=500)
     adapter._client = error_client  # type: ignore[assignment]
-    assert adapter.list_review_requests_for_user("alice") == []
+    with pytest.raises(RuntimeError):
+        adapter.list_review_requests_for_user("alice")
 
 
 # -----------------------------------------------------------------------------
@@ -223,7 +224,7 @@ async def test_reviews_command_self_lookup_success() -> None:
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
 
-    await cmd.callback(interaction, contributor=None, repo=None)
+    await cmd.callback(interaction, contributor=None, repo=None, page=1)
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     mock_github.list_review_requests_for_user.assert_called_once_with("alice", repo=None)
@@ -261,7 +262,7 @@ async def test_reviews_command_contributor_lookup() -> None:
     contributor.id = 222
     contributor.mention = "<@222>"
 
-    await cmd.callback(interaction, contributor=contributor, repo="PictoPy")
+    await cmd.callback(interaction, contributor=contributor, repo="PictoPy", page=1)
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     mock_github.list_review_requests_for_user.assert_called_once_with("mentor_bob", repo="PictoPy")
@@ -271,6 +272,37 @@ async def test_reviews_command_contributor_lookup() -> None:
     assert embed is not None
     assert "All caught up" in embed.description
     assert "<@222>" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_reviews_command_contributor_permission_denied() -> None:
+    config = _build_test_bot_config()
+    config.discord.unrestricted_slash_commands = False
+    config.discord.command_permissions = {
+        "reviews": SlashCommandPermissionRule(role_names=["Mentor"]),
+    }
+    mock_github = MagicMock()
+    mock_storage = MagicMock()
+
+    commands = _setup_commands(config, mock_github, mock_storage)
+    cmd = commands["reviews"]
+
+    interaction = MagicMock()
+    interaction.user.id = 111
+    interaction.user.roles = []  # not a mentor
+    interaction.guild.get_member.return_value = interaction.user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    contributor = MagicMock()
+    contributor.id = 222
+
+    await cmd.callback(interaction, contributor=contributor)
+
+    interaction.followup.send.assert_awaited_once()
+    msg = interaction.followup.send.call_args[0][0]
+    assert "permission" in msg.lower() or "not allowed" in msg.lower()
+    assert interaction.followup.send.call_args[1].get("ephemeral") is True
 
 
 @pytest.mark.asyncio
