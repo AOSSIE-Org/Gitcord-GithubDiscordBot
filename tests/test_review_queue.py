@@ -268,3 +268,102 @@ def test_build_review_queue_embed_character_budget() -> None:
         + sum(len(f["name"]) + len(f["value"]) for f in embed["fields"])
     )
     assert total_chars <= 6000
+
+
+def test_partition_into_pages_no_omitted_or_duplicate_items() -> None:
+    """Every item must appear on exactly one page, even when character budgets force pagination."""
+    now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
+    total_items = 45
+    reviews = [
+        {
+            "repo": f"Repository_{i}",
+            "number": i,
+            "title": f"Feature PR title that contains descriptive text to simulate real pull requests {i}",
+            "author": f"contributor_{i}",
+            "created_at": (now - timedelta(hours=i + 1)).isoformat(),
+            "html_url": f"https://github.com/AOSSIE-Org/Repository_{i}/pull/{i}",
+        }
+        for i in range(total_items)
+    ]
+
+    # Collect items across all pages
+    page_num = 1
+    seen_pr_numbers: list[int] = []
+    while True:
+        embed = build_review_queue_embed(
+            reviews=reviews,
+            github_user="alice",
+            target_mention="<@123>",
+            org="AOSSIE-Org",
+            now=now,
+            max_items=15,
+            page=page_num,
+        )
+        fields = embed.get("fields", [])
+        assert len(fields) <= 25  # Discord hard field limit
+
+        total_chars = (
+            len(embed["title"])
+            + len(embed["description"])
+            + len(embed["footer"]["text"])
+            + sum(len(f["name"]) + len(f["value"]) for f in fields)
+        )
+        assert total_chars <= 6000  # Discord aggregate limit
+
+        for f in fields:
+            # Name format: "🟢 Repository_{i}#{i} — ..."
+            num_part = f["name"].split("#")[1].split(" ")[0]
+            seen_pr_numbers.append(int(num_part))
+
+        footer_text = embed["footer"]["text"]
+        if "Page " not in footer_text:
+            break
+        # Format: "Page X of Y ..."
+        parts = footer_text.split("Page ")[1].split(" of ")
+        curr = int(parts[0])
+        total_p = int(parts[1].split(" ")[0])
+        if curr >= total_p:
+            break
+        page_num += 1
+
+    # Verify 100% of items are accounted for: zero dropped, zero duplicated
+    assert len(seen_pr_numbers) == total_items
+    assert sorted(seen_pr_numbers) == list(range(total_items))
+
+
+def test_build_review_queue_embed_incomplete_results() -> None:
+    now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
+
+    # 1. Empty queue with incomplete=True shows yellow warning embed
+    embed_empty = build_review_queue_embed(
+        reviews=[],
+        github_user="alice",
+        target_mention="<@123>",
+        org="AOSSIE-Org",
+        incomplete=True,
+    )
+    assert embed_empty["color"] == 0xFEE75C  # Yellow warning
+    assert "Search reached the GitHub API limit" in embed_empty["description"]
+    assert "specify the `repo` parameter" in embed_empty["description"]
+
+    # 2. Non-empty queue with incomplete=True shows partial notice
+    reviews = [
+        {
+            "repo": "Gitcord",
+            "number": 1,
+            "title": "PR 1",
+            "author": "bob",
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "html_url": "https://github.com/AOSSIE-Org/Gitcord/pull/1",
+        }
+    ]
+    embed_partial = build_review_queue_embed(
+        reviews=reviews,
+        github_user="alice",
+        target_mention="<@123>",
+        org="AOSSIE-Org",
+        now=now,
+        incomplete=True,
+    )
+    assert "Search limit reached; results may be partial" in embed_partial["description"]
+    assert "⚠️ Partial results" in embed_partial["footer"]["text"]

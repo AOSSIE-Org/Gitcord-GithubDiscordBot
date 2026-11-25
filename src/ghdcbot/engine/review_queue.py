@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-DISCORD_EMBED_CHAR_LIMIT = 6000
+# Discord embeds enforce a hard aggregate maximum of 6000 characters across all text fields.
+# We reserve 200 characters for safety and Discord-internal formatting overhead.
 EMBED_SAFE_BUDGET = 5800
 
 
@@ -73,16 +74,28 @@ def build_review_queue_embed(
     now: datetime | None = None,
     max_items: int = 15,
     page: int = 1,
+    incomplete: bool = False,
 ) -> dict[str, Any]:
     """Build a rich Discord embed dictionary for pending review requests.
 
-    Enforces Discord's 6000-character embed limit and supports pagination.
+    Enforces Discord's 6000-character embed limit and partitions items across budget-aware pages.
     Returns dict suitable for discord.Embed.from_dict().
     """
     if now is None:
         now = datetime.now(UTC)
 
     if not reviews:
+        if incomplete:
+            return {
+                "title": "📋 Pending Review Requests",
+                "description": (
+                    f"⚠️ Search reached the GitHub API limit without completing all matches for "
+                    f"{target_mention} (`{github_user}`). "
+                    f"Please specify the `repo` parameter to inspect a specific repository."
+                ),
+                "color": 0xFEE75C,  # Yellow warning
+                "footer": {"text": f"Organization: {org} • /reviews"},
+            }
         return {
             "title": "📋 Pending Review Requests",
             "description": (
@@ -118,9 +131,6 @@ def build_review_queue_embed(
         classified.append((pr, tier, emoji, wait_str))
 
     total = len(reviews)
-    page_size = max(1, max_items)
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    current_page = min(max(1, page), total_pages)
 
     if stale_count > 0:
         embed_color = 0xED4245  # Red
@@ -134,69 +144,42 @@ def build_review_queue_embed(
         f"🟡 **{aging_count}** aging (2–5d) • "
         f"🔴 **{stale_count}** stale (>5d)"
     )
+    incomplete_notice = "⚠️ *Search limit reached; results may be partial (narrow by repo).*\n" if incomplete else ""
     description = (
         f"Review backlog for {target_mention} (`{github_user}`)\n"
+        f"{incomplete_notice}"
         f"Total: **{total}** pull request(s) awaiting review\n"
         f"{summary_counts}"
     )
 
-    start_idx = (current_page - 1) * page_size
-    end_idx = start_idx + page_size
-    page_items = classified[start_idx:end_idx]
-
     title = f"📋 Pending Review Requests ({total})"
+    base_overhead = len(title) + len(description)
+
+    # Budget-aware partitioning: group items into pages such that every item appears
+    # on exactly one page and no page exceeds the character budget or max_items cap.
+    pages = _partition_into_pages(
+        classified,
+        org=org,
+        base_overhead=base_overhead,
+        max_items=max_items,
+        budget=EMBED_SAFE_BUDGET,
+    )
+
+    total_pages = max(1, len(pages))
+    current_page = min(max(1, page), total_pages)
+    fields = pages[current_page - 1] if pages else []
+
+    footer_parts: list[str] = []
+    if incomplete:
+        footer_parts.append("⚠️ Partial results")
     if total_pages > 1:
-        footer_base = f"Page {current_page} of {total_pages} • Organization: {org} • /reviews"
+        page_str = f"Page {current_page} of {total_pages}"
         if current_page < total_pages:
-            footer_base += f" (use page:{current_page + 1})"
-    else:
-        footer_base = f"Organization: {org} • /reviews"
+            page_str += f" (use page:{current_page + 1})"
+        footer_parts.append(page_str)
+    footer_parts.append(f"Organization: {org} • /reviews")
 
-    footer_text = footer_base
-
-    # Aggregate character budget check
-    char_budget_used = len(title) + len(description) + len(footer_text)
-    fields: list[dict[str, Any]] = []
-    items_shown_count = 0
-
-    for pr, _tier, emoji, wait_str in page_items:
-        repo = pr.get("repo", "?")
-        number = pr.get("number", "?")
-        title_text = (pr.get("title") or "No title").strip()
-        if len(title_text) > 65:
-            title_text = f"{title_text[:62]}..."
-        author = pr.get("author", "unknown")
-        url = pr.get("html_url") or f"https://github.com/{org}/{repo}/pull/{number}"
-        files_url = f"{url}/files"
-        draft_badge = " `[Draft]`" if pr.get("draft") else ""
-
-        field_name = f"{emoji} {repo}#{number}{draft_badge} — {title_text}"
-        if len(field_name) > 256:
-            field_name = field_name[:253] + "..."
-
-        field_value = (
-            f"Author: `{author}` • **{wait_str}**\n"
-            f"[View PR]({url}) • [Review Diff]({files_url})"
-        )
-        if len(field_value) > 1024:
-            field_value = field_value[:1021] + "..."
-
-        field_chars = len(field_name) + len(field_value)
-        if char_budget_used + field_chars > EMBED_SAFE_BUDGET:
-            # Stop adding fields if budget would be exceeded
-            break
-
-        fields.append({
-            "name": field_name,
-            "value": field_value,
-            "inline": False,
-        })
-        char_budget_used += field_chars
-        items_shown_count += 1
-
-    remaining_on_page = len(page_items) - items_shown_count
-    if remaining_on_page > 0:
-        footer_text = f"…and {remaining_on_page} more on this page • " + footer_base
+    footer_text = " • ".join(footer_parts)
 
     return {
         "title": title,
@@ -205,6 +188,77 @@ def build_review_queue_embed(
         "fields": fields,
         "footer": {"text": footer_text},
     }
+
+
+def _format_item_field(pr: dict, emoji: str, wait_str: str, org: str) -> tuple[str, str]:
+    repo = pr.get("repo", "?")
+    number = pr.get("number", "?")
+    title_text = (pr.get("title") or "No title").strip()
+    if len(title_text) > 65:
+        title_text = f"{title_text[:62]}..."
+    author = pr.get("author", "unknown")
+    url = pr.get("html_url") or f"https://github.com/{org}/{repo}/pull/{number}"
+    files_url = f"{url}/files"
+    draft_badge = " `[Draft]`" if pr.get("draft") else ""
+
+    field_name = f"{emoji} {repo}#{number}{draft_badge} — {title_text}"
+    if len(field_name) > 256:
+        field_name = field_name[:253] + "..."
+
+    field_value = (
+        f"Author: `{author}` • **{wait_str}**\n"
+        f"[View PR]({url}) • [Review Diff]({files_url})"
+    )
+    if len(field_value) > 1024:
+        field_value = field_value[:1021] + "..."
+    return (field_name, field_value)
+
+
+def _partition_into_pages(
+    classified: list[tuple[dict, str, str, str]],
+    *,
+    org: str,
+    base_overhead: int,
+    max_items: int = 15,
+    budget: int = EMBED_SAFE_BUDGET,
+) -> list[list[dict[str, Any]]]:
+    """Partition items into pages accounting for item count cap and character budget.
+
+    Guarantees every item appears on exactly one page and no page exceeds the character budget.
+    """
+    if not classified:
+        return []
+
+    max_fields_per_page = min(max(1, max_items), 25)
+    available_fields_budget = max(500, budget - base_overhead - 150)
+
+    pages: list[list[dict[str, Any]]] = []
+    current_page_fields: list[dict[str, Any]] = []
+    current_page_chars = 0
+
+    for pr, _tier, emoji, wait_str in classified:
+        field_name, field_value = _format_item_field(pr, emoji, wait_str, org)
+        field_chars = len(field_name) + len(field_value)
+
+        if current_page_fields and (
+            len(current_page_fields) >= max_fields_per_page
+            or (current_page_chars + field_chars) > available_fields_budget
+        ):
+            pages.append(current_page_fields)
+            current_page_fields = []
+            current_page_chars = 0
+
+        current_page_fields.append({
+            "name": field_name,
+            "value": field_value,
+            "inline": False,
+        })
+        current_page_chars += field_chars
+
+    if current_page_fields:
+        pages.append(current_page_fields)
+
+    return pages
 
 
 def _parse_iso_datetime(value: object) -> datetime | None:

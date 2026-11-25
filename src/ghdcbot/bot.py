@@ -1429,13 +1429,16 @@ def run_bot(config_path: str) -> None:
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        if contributor is not None and contributor.id != interaction.user.id:
-            if not slash_command_allowed(interaction, config, "reviews", allow_all_by_default=False):
-                await interaction.followup.send(
-                    format_slash_command_permission_denied(config, "reviews"),
-                    ephemeral=True,
-                )
-                return
+        if (
+            contributor is not None
+            and contributor.id != interaction.user.id
+            and not slash_command_allowed(interaction, config, "reviews", allow_all_by_default=False)
+        ):
+            await interaction.followup.send(
+                format_slash_command_permission_denied(config, "reviews"),
+                ephemeral=True,
+            )
+            return
 
         target_member = contributor if contributor is not None else interaction.user
         github_user = resolve_discord_to_github(storage, str(target_member.id))
@@ -1483,12 +1486,14 @@ def run_bot(config_path: str) -> None:
             )
             return
 
+        incomplete = getattr(review_prs, "incomplete", False)
         embed_dict = build_review_queue_embed(
             reviews=review_prs,
             github_user=github_user,
             target_mention=target_member.mention,
             org=config.github.org,
             page=page_num,
+            incomplete=incomplete,
         )
         embed = discord.Embed.from_dict(embed_dict)
         await interaction.followup.send(embed=embed, ephemeral=True)

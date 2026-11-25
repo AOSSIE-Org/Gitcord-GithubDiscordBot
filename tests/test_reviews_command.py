@@ -151,7 +151,7 @@ def test_list_review_requests_uses_timeline_review_requested_timestamp(monkeypat
     monkeypatch.setattr(
         adapter,
         "_fetch_issue_timeline",
-        lambda owner, repo, issue_num: [
+        lambda owner, repo, issue_num, **kwargs: [
             {
                 "event": "review_requested",
                 "requested_reviewer": {"login": "Alice"},
@@ -422,3 +422,163 @@ async def test_reviews_repo_autocomplete() -> None:
     choice_values = [c.value for c in choices]
     assert "Gitcord" in choice_values
     assert "PictoPy" not in choice_values
+
+
+def test_list_review_requests_timeline_failure_falls_back_to_created_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient({
+        "items": [
+            {
+                "number": 102,
+                "title": "PR with failing timeline pagination",
+                "html_url": "https://github.com/AOSSIE-Org/PictoPy/pull/102",
+                "created_at": "2026-07-05T10:00:00Z",
+                "repository_url": "https://api.github.com/repos/AOSSIE-Org/PictoPy",
+                "user": {"login": "bob"},
+            }
+        ]
+    })
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: None,
+    )
+
+    def _failing_timeline(*args: Any, **kwargs: Any) -> list[dict]:
+        raise RuntimeError("Timeline pagination failed midway")
+
+    monkeypatch.setattr(adapter, "_fetch_issue_timeline", _failing_timeline)
+
+    prs = adapter.list_review_requests_for_user("alice")
+    assert len(prs) == 1
+    # Fallback to created_at when timeline retrieval fails
+    assert prs[0]["requested_at"] == "2026-07-05T10:00:00Z"
+
+
+def test_list_review_requests_capped_search_marks_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+
+    # Simulate search that returns 5 full pages and total_count = 600
+    page_items = [
+        {
+            "number": i,
+            "title": f"PR {i}",
+            "html_url": f"https://github.com/AOSSIE-Org/Gitcord/pull/{i}",
+            "created_at": "2026-07-01T10:00:00Z",
+            "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord",
+            "user": {"login": "bob"},
+        }
+        for i in range(100)
+    ]
+    client = _SearchMockClient({
+        "total_count": 600,
+        "items": page_items,
+    })
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: None,
+    )
+    monkeypatch.setattr(adapter, "_fetch_active_review_requested_at", lambda *args: None)
+
+    prs = adapter.list_review_requests_for_user("alice")
+    assert getattr(prs, "incomplete", False) is True
+
+
+def test_list_review_requests_capped_search_narrows_allowed_repos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ghdcbot.config.models import RepoFilterConfig
+
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+
+    # When org query runs, it returns total_count = 600 (capped).
+    # Then it should re-run per-repo search for allowed repos "Gitcord" and "PictoPy".
+    calls: list[str] = []
+
+    def mock_request(method: str, path: str, *, params: dict | None = None, **kwargs: Any) -> Any:
+        q = (params or {}).get("q", "")
+        calls.append(q)
+        if "org:AOSSIE-Org" in q:
+            # Org search returns 100 items with total_count=600 to trigger capping
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "total_count": 600,
+                    "items": [
+                        {
+                            "number": 999,
+                            "title": "PR from other repo",
+                            "html_url": "https://github.com/AOSSIE-Org/OtherRepo/pull/999",
+                            "created_at": "2026-07-01T10:00:00Z",
+                            "repository_url": "https://api.github.com/repos/AOSSIE-Org/OtherRepo",
+                            "user": {"login": "bob"},
+                        }
+                    ] * 100,
+                },
+            )
+        # Narrow per-repo search returns 1 repo-specific item and total_count=1 (not capped)
+        repo_target = "Gitcord" if "Gitcord" in q else "PictoPy"
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "total_count": 1,
+                "items": [
+                    {
+                        "number": 1,
+                        "title": f"PR in {repo_target}",
+                        "html_url": f"https://github.com/AOSSIE-Org/{repo_target}/pull/1",
+                        "created_at": "2026-07-01T10:00:00Z",
+                        "repository_url": f"https://api.github.com/repos/AOSSIE-Org/{repo_target}",
+                        "user": {"login": "bob"},
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(adapter, "_request", mock_request)
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: RepoFilterConfig(mode="allow", names=["Gitcord", "PictoPy"]),
+    )
+    monkeypatch.setattr(adapter, "_fetch_active_review_requested_at", lambda *args: None)
+
+    prs = adapter.list_review_requests_for_user("alice")
+    # Both allowed repos were queried narrower
+    assert any("repo:AOSSIE-Org/Gitcord" in c for c in calls)
+    assert any("repo:AOSSIE-Org/PictoPy" in c for c in calls)
+    assert len(prs) == 2
+    assert getattr(prs, "incomplete", False) is False
+
+
+@pytest.mark.asyncio
+async def test_reviews_command_shows_incomplete_warning() -> None:
+    from ghdcbot.adapters.github.rest import ReviewRequestList
+
+    config = _build_test_bot_config()
+    mock_github = MagicMock()
+    mock_github.list_review_requests_for_user.return_value = ReviewRequestList([], incomplete=True)
+    mock_storage = MagicMock()
+    mock_storage.list_verified_identity_mappings.return_value = [
+        SimpleNamespace(discord_user_id="111", github_user="alice"),
+    ]
+
+    commands = _setup_commands(config, mock_github, mock_storage)
+    cmd = commands["reviews"]
+
+    interaction = MagicMock()
+    interaction.user.id = 111
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await cmd.callback(interaction, contributor=None)
+
+    interaction.followup.send.assert_awaited_once()
+    embed = interaction.followup.send.call_args[1].get("embed")
+    assert embed is not None
+    assert embed.color.value == 0xFEE75C  # Yellow warning
+    assert "reached the GitHub API limit" in embed.description

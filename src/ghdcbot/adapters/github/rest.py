@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import httpx
 
@@ -20,6 +20,14 @@ from ghdcbot.core.models import ContributionEvent
 class RateLimitStatus:
     remaining: int | None
     reset_at: datetime | None
+
+
+class ReviewRequestList(list):
+    """List of review request PRs with search completeness status."""
+
+    def __init__(self, iterable: Iterable[dict] = (), *, incomplete: bool = False) -> None:
+        super().__init__(iterable)
+        self.incomplete = incomplete
 
 
 _GITHUB_RETRY_MAX_ATTEMPTS = 4
@@ -295,7 +303,7 @@ class GitHubRestAdapter:
 
     def list_review_requests_for_user(
         self, github_user: str, *, repo: str | None = None
-    ) -> list[dict]:
+    ) -> ReviewRequestList:
         """List open PRs requesting review from github_user via GitHub Search API.
 
         Results are limited to the configured org and filtered by active repo
@@ -303,7 +311,7 @@ class GitHubRestAdapter:
         """
         user = (github_user or "").strip()
         if not user:
-            return []
+            return ReviewRequestList([])
 
         repo_filter = _load_repo_filter()
         allowed_names: set[str] | None = None
@@ -323,9 +331,9 @@ class GitHubRestAdapter:
         repo_name = (repo or "").strip()
         if repo_name:
             if allowed_lower is not None and repo_name.lower() not in allowed_lower:
-                return []
+                return ReviewRequestList([])
             if repo_name.lower() in denied_lower:
-                return []
+                return ReviewRequestList([])
             scope = f"repo:{self._org}/{repo_name}"
         else:
             scope = f"org:{self._org}"
@@ -335,8 +343,11 @@ class GitHubRestAdapter:
 
         results: list[dict] = []
         seen: set[tuple[str, object]] = set()
-        for q in queries:
+
+        def _execute_search(q: str) -> tuple[list[dict], bool]:
             page = 1
+            items_found: list[dict] = []
+            capped = False
             while page <= _GITHUB_SEARCH_MAX_PAGES:
                 params: dict[str, str | int] = {
                     "q": q,
@@ -357,53 +368,86 @@ class GitHubRestAdapter:
                         },
                     )
                     raise RuntimeError(f"GitHub search failed for review requests (status: {status_code})")
-                payload = response.json()
-                items = payload.get("items") if isinstance(payload, dict) else None
+                payload = response.json() if isinstance(response.json(), dict) else {}
+                total_count = int(payload.get("total_count", 0)) if isinstance(payload.get("total_count"), (int, float)) else 0
+                incomplete_results = bool(payload.get("incomplete_results", False))
+                items = payload.get("items")
                 if not isinstance(items, list) or not items:
                     break
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    r_name = _repo_name_from_search_issue(item, self._org)
-                    if not r_name:
-                        continue
-                    repo_key = r_name.lower()
-                    if allowed_lower is not None and repo_key not in allowed_lower:
-                        continue
-                    if repo_key in denied_lower:
-                        continue
-                    dedupe_key = (r_name, item.get("number"))
-                    if dedupe_key in seen:
-                        continue
-                    seen.add(dedupe_key)
-                    pr_user = item.get("user") if isinstance(item.get("user"), dict) else {}
-                    pr_num = item.get("number")
-                    req_at = item.get("requested_at")
-                    if not req_at and isinstance(pr_num, int):
-                        req_at = self._fetch_active_review_requested_at(self._org, r_name, pr_num, user)
-                    row: dict = {
-                        "repo": r_name,
-                        "number": pr_num,
-                        "author": pr_user.get("login") or "unknown",
-                        "title": item.get("title") or "No title",
-                        "html_url": item.get("html_url") or "",
-                        "created_at": item.get("created_at"),
-                        "updated_at": item.get("updated_at"),
-                        "draft": bool(item.get("draft")),
-                        "requested_at": req_at or item.get("created_at"),
-                    }
-                    results.append(row)
+                items_found.extend(items)
                 if len(items) < 100:
                     break
+                if page == _GITHUB_SEARCH_MAX_PAGES and (total_count > page * 100 or incomplete_results):
+                    capped = True
                 page += 1
+            return items_found, capped
+
+        def _ingest_items(items: list[dict]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                r_name = _repo_name_from_search_issue(item, self._org)
+                if not r_name:
+                    continue
+                repo_key = r_name.lower()
+                if allowed_lower is not None and repo_key not in allowed_lower:
+                    continue
+                if repo_key in denied_lower:
+                    continue
+                dedupe_key = (r_name, item.get("number"))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                pr_user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                pr_num = item.get("number")
+                req_at = item.get("requested_at")
+                if not req_at and isinstance(pr_num, int):
+                    req_at = self._fetch_active_review_requested_at(self._org, r_name, pr_num, user)
+                row: dict = {
+                    "repo": r_name,
+                    "number": pr_num,
+                    "author": pr_user.get("login") or "unknown",
+                    "title": item.get("title") or "No title",
+                    "html_url": item.get("html_url") or "",
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "draft": bool(item.get("draft")),
+                    "requested_at": req_at or item.get("created_at"),
+                }
+                results.append(row)
+
+        search_capped = False
+        for q in queries:
+            q_items, q_capped = _execute_search(q)
+            _ingest_items(q_items)
+            if q_capped:
+                search_capped = True
+
+        # If broad org search capped and allowed repos are configured, re-run narrower
+        # searches per allowed repository so that allowed repos aren't drowned out.
+        if search_capped and not repo_name and allowed_names:
+            results.clear()
+            seen.clear()
+            search_capped = False
+            for target_repo in sorted(allowed_names):
+                target_clean = target_repo.strip()
+                if not target_clean or target_clean.lower() in denied_lower:
+                    continue
+                repo_query = f"is:pr is:open review-requested:{user} repo:{self._org}/{target_clean}"
+                repo_queries = _build_author_pr_search_queries(repo_query)
+                for rq in repo_queries:
+                    rq_items, rq_capped = _execute_search(rq)
+                    _ingest_items(rq_items)
+                    if rq_capped:
+                        search_capped = True
 
         def _sort_key(r: dict) -> datetime:
             val = r.get("requested_at") or r.get("created_at")
             parsed = _parse_iso8601(val) if isinstance(val, str) else None
-            return parsed or datetime.max.replace(tzinfo=timezone.utc)
+            return parsed or datetime.max.replace(tzinfo=UTC)
 
         results.sort(key=_sort_key)
-        return results
+        return ReviewRequestList(results, incomplete=search_capped)
 
     def _fetch_active_review_requested_at(
         self, owner: str, repo: str, pr_number: int, user: str
@@ -411,7 +455,7 @@ class GitHubRestAdapter:
         """Find the latest review_requested event timestamp for user on a PR."""
         target = user.strip().lower()
         try:
-            events = self._fetch_issue_timeline(owner, repo, pr_number)
+            events = self._fetch_issue_timeline(owner, repo, pr_number, raise_on_error=True)
             latest_at: str | None = None
             for ev in events:
                 if ev.get("event") == "review_requested":
@@ -419,7 +463,7 @@ class GitHubRestAdapter:
                     if (reviewer.get("login") or "").strip().lower() == target:
                         latest_at = ev.get("created_at")
             return latest_at
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
     def _search_pull_requests_for_author(
@@ -1841,11 +1885,20 @@ class GitHubRestAdapter:
                 },
             )
 
-    def _fetch_issue_timeline(self, owner: str, repo: str, issue_number: int) -> list[dict]:
+    def _fetch_issue_timeline(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
         params = {"per_page": 100}
         timeline_events: list[dict] = []
         for page in self._paginate(
-            f"/repos/{owner}/{repo}/issues/{issue_number}/timeline", params=params
+            f"/repos/{owner}/{repo}/issues/{issue_number}/timeline",
+            params=params,
+            raise_on_error=raise_on_error,
         ):
             timeline_events.extend(page)
         return sorted(
