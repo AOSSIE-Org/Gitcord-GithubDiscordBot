@@ -371,14 +371,16 @@ class GitHubRestAdapter:
                 payload = response.json() if isinstance(response.json(), dict) else {}
                 total_count = int(payload.get("total_count", 0)) if isinstance(payload.get("total_count"), (int, float)) else 0
                 incomplete_results = bool(payload.get("incomplete_results", False))
+                if incomplete_results:
+                    capped = True
                 items = payload.get("items")
                 if not isinstance(items, list) or not items:
                     break
                 items_found.extend(items)
+                if page == _GITHUB_SEARCH_MAX_PAGES and (total_count > page * 100 or len(items) == 100):
+                    capped = True
                 if len(items) < 100:
                     break
-                if page == _GITHUB_SEARCH_MAX_PAGES and (total_count > page * 100 or incomplete_results):
-                    capped = True
                 page += 1
             return items_found, capped
 
@@ -1904,7 +1906,7 @@ class GitHubRestAdapter:
         return sorted(
             timeline_events,
             key=lambda item: (
-                _parse_iso8601(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+                _parse_iso8601(item.get("created_at")) or datetime.min.replace(tzinfo=UTC)
             ),
         )
 

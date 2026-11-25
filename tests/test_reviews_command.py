@@ -582,3 +582,63 @@ async def test_reviews_command_shows_incomplete_warning() -> None:
     assert embed is not None
     assert embed.color.value == 0xFEE75C  # Yellow warning
     assert "reached the GitHub API limit" in embed.description
+
+
+def test_list_review_requests_empty_response_with_incomplete_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When GitHub search times out and returns 0 items with incomplete_results=True, mark incomplete."""
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient({
+        "total_count": 0,
+        "incomplete_results": True,
+        "items": [],
+    })
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: None,
+    )
+
+    prs = adapter.list_review_requests_for_user("alice")
+    assert len(prs) == 0
+    assert getattr(prs, "incomplete", False) is True
+
+
+def test_list_review_requests_short_response_with_incomplete_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When GitHub search returns a partial page (< 100 items) with incomplete_results=True, mark incomplete."""
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient({
+        "total_count": 2,
+        "incomplete_results": True,
+        "items": [
+            {
+                "number": 1,
+                "title": "PR 1",
+                "html_url": "https://github.com/AOSSIE-Org/Gitcord/pull/1",
+                "created_at": "2026-07-01T10:00:00Z",
+                "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord",
+                "user": {"login": "bob"},
+            },
+            {
+                "number": 2,
+                "title": "PR 2",
+                "html_url": "https://github.com/AOSSIE-Org/Gitcord/pull/2",
+                "created_at": "2026-07-02T10:00:00Z",
+                "repository_url": "https://api.github.com/repos/AOSSIE-Org/Gitcord",
+                "user": {"login": "charlie"},
+            },
+        ],
+    })
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: None,
+    )
+    monkeypatch.setattr(adapter, "_fetch_active_review_requested_at", lambda *args: None)
+
+    prs = adapter.list_review_requests_for_user("alice")
+    assert len(prs) == 2
+    assert getattr(prs, "incomplete", False) is True

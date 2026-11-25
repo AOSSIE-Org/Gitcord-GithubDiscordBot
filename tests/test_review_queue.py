@@ -276,19 +276,20 @@ def test_partition_into_pages_no_omitted_or_duplicate_items() -> None:
     total_items = 45
     reviews = [
         {
-            "repo": f"Repository_{i}",
+            "repo": f"LongOrganizationRepositoryNameTestingEmbedPartitioning_{i}",
             "number": i,
-            "title": f"Feature PR title that contains descriptive text to simulate real pull requests {i}",
-            "author": f"contributor_{i}",
+            "title": f"Feature PR title with descriptive text to test Discord embed limits and page budgeting {i}",
+            "author": f"contributor_with_a_fairly_long_username_{i}",
             "created_at": (now - timedelta(hours=i + 1)).isoformat(),
-            "html_url": f"https://github.com/AOSSIE-Org/Repository_{i}/pull/{i}",
+            "html_url": f"https://github.com/AOSSIE-Org/LongOrganizationRepositoryNameTestingEmbedPartitioning_{i}/pull/{i}",
         }
         for i in range(total_items)
     ]
 
-    # Collect items across all pages
+    # Collect items and page sizes across all pages
     page_num = 1
     seen_pr_numbers: list[int] = []
+    page_sizes: list[int] = []
     while True:
         embed = build_review_queue_embed(
             reviews=reviews,
@@ -301,6 +302,7 @@ def test_partition_into_pages_no_omitted_or_duplicate_items() -> None:
         )
         fields = embed.get("fields", [])
         assert len(fields) <= 25  # Discord hard field limit
+        page_sizes.append(len(fields))
 
         total_chars = (
             len(embed["title"])
@@ -311,7 +313,7 @@ def test_partition_into_pages_no_omitted_or_duplicate_items() -> None:
         assert total_chars <= 6000  # Discord aggregate limit
 
         for f in fields:
-            # Name format: "🟢 Repository_{i}#{i} — ..."
+            # Name format: "🟢 LongOrganizationRepositoryNameTestingEmbedPartitioning_{i}#{i} — ..."
             num_part = f["name"].split("#")[1].split(" ")[0]
             seen_pr_numbers.append(int(num_part))
 
@@ -325,6 +327,10 @@ def test_partition_into_pages_no_omitted_or_duplicate_items() -> None:
         if curr >= total_p:
             break
         page_num += 1
+
+    # Verify that the character budget forced at least one non-final page to have fewer than max_items
+    assert len(page_sizes) > 1
+    assert any(size < 15 for size in page_sizes[:-1])
 
     # Verify 100% of items are accounted for: zero dropped, zero duplicated
     assert len(seen_pr_numbers) == total_items
