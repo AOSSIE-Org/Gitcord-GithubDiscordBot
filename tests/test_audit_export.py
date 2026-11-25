@@ -648,3 +648,135 @@ def test_format_audit_markdown_handles_none_context() -> None:
     assert "## legacy_event" in md_output
     assert "discord_user:123" in md_output
     assert "—" in md_output
+
+
+def test_filter_audit_events_handles_string_context() -> None:
+    """Events with JSON-string or plain string context must not raise AttributeError."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "100",
+            "event_type": "json_context_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": '{"github_user": "charlie", "repo": "repo-a"}',
+        },
+        {
+            "actor_type": "discord_user",
+            "actor_id": "101",
+            "event_type": "raw_context_event",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": "unstructured text",
+        },
+    ]
+    # Match user from parsed JSON string
+    matched = filter_audit_events(events, user="charlie")
+    assert len(matched) == 1
+    assert matched[0]["actor_id"] == "100"
+
+    # Match by actor_id for event with raw string context
+    matched_actor = filter_audit_events(events, user="101")
+    assert len(matched_actor) == 1
+    assert matched_actor[0]["actor_id"] == "101"
+
+
+def test_filter_audit_events_case_insensitive_github_user() -> None:
+    """GitHub username filtering must be case-insensitive."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "201",
+            "event_type": "test",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "AliceInWonderland"},
+        }
+    ]
+    assert len(filter_audit_events(events, user="aliceinwonderland")) == 1
+    assert len(filter_audit_events(events, user="ALICEINWONDERLAND")) == 1
+    assert len(filter_audit_events(events, user="AliceInWonderland")) == 1
+
+
+def test_filter_audit_events_handles_malformed_timestamp() -> None:
+    """Events with invalid, non-string, or empty timestamps must not raise exceptions."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "301",
+            "event_type": "bad_ts_1",
+            "timestamp": "invalid-iso-date",
+            "context": {},
+        },
+        {
+            "actor_type": "discord_user",
+            "actor_id": "302",
+            "event_type": "bad_ts_2",
+            "timestamp": 123456789,
+            "context": {},
+        },
+        {
+            "actor_type": "discord_user",
+            "actor_id": "303",
+            "event_type": "valid_ts",
+            "timestamp": "2026-06-01T12:00:00+00:00",
+            "context": {},
+        },
+    ]
+    from_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    filtered = filter_audit_events(events, from_time=from_time)
+    assert len(filtered) == 1
+    assert filtered[0]["actor_id"] == "303"
+
+
+def test_format_audit_csv_handles_string_context_and_legacy_fields() -> None:
+    """format_audit_csv must parse JSON string context and handle legacy root fields."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "401",
+            "event_type": "issue_created",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": '{"github_user": "bob", "repo": "test-repo", "target": "#42"}',
+        },
+        {
+            "actor_type": "unknown",
+            "event_type": "legacy_issue",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "creator_github": "legacy_user",
+            "creator_discord_id": "402",
+            "repo": "legacy-repo",
+            "context": None,
+        },
+    ]
+    csv_out = format_audit_csv(events)
+    lines = csv_out.strip().splitlines()
+    assert len(lines) == 3
+    # Row 1: parsed JSON context
+    assert "bob" in lines[1]
+    assert "test-repo" in lines[1]
+    # Row 2: legacy root fields fallback
+    assert "legacy_user" in lines[2]
+    assert "402" in lines[2]
+    assert "legacy-repo" in lines[2]
+
+
+def test_format_audit_markdown_escapes_pipes_and_newlines() -> None:
+    """format_audit_markdown must escape pipe characters and newlines to keep table valid."""
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "501",
+            "event_type": "table_break_test",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {
+                "github_user": "dave",
+                "notes": "line1\nline2",
+                "pipe_val": "foo|bar",
+            },
+        }
+    ]
+    md_out = format_audit_markdown(events)
+    assert "\\|" in md_out
+    # Ensure no raw linebreaks inside table row
+    table_lines = [ln for ln in md_out.splitlines() if ln.startswith("| 2026-01-01")]
+    assert len(table_lines) == 1
+    assert "foo\\|bar" in table_lines[0]
+    assert "line1 line2" in table_lines[0]
