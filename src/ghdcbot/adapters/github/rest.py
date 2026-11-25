@@ -377,22 +377,50 @@ class GitHubRestAdapter:
                         continue
                     seen.add(dedupe_key)
                     pr_user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                    pr_num = item.get("number")
+                    req_at = item.get("requested_at")
+                    if not req_at and isinstance(pr_num, int):
+                        req_at = self._fetch_active_review_requested_at(self._org, r_name, pr_num, user)
                     row: dict = {
                         "repo": r_name,
-                        "number": item.get("number"),
+                        "number": pr_num,
                         "author": pr_user.get("login") or "unknown",
                         "title": item.get("title") or "No title",
                         "html_url": item.get("html_url") or "",
                         "created_at": item.get("created_at"),
                         "updated_at": item.get("updated_at"),
                         "draft": bool(item.get("draft")),
-                        "requested_at": item.get("requested_at") or item.get("created_at"),
+                        "requested_at": req_at or item.get("created_at"),
                     }
                     results.append(row)
                 if len(items) < 100:
                     break
                 page += 1
+
+        def _sort_key(r: dict) -> datetime:
+            val = r.get("requested_at") or r.get("created_at")
+            parsed = _parse_iso8601(val) if isinstance(val, str) else None
+            return parsed or datetime.max.replace(tzinfo=timezone.utc)
+
+        results.sort(key=_sort_key)
         return results
+
+    def _fetch_active_review_requested_at(
+        self, owner: str, repo: str, pr_number: int, user: str
+    ) -> str | None:
+        """Find the latest review_requested event timestamp for user on a PR."""
+        target = user.strip().lower()
+        try:
+            events = self._fetch_issue_timeline(owner, repo, pr_number)
+            latest_at: str | None = None
+            for ev in events:
+                if ev.get("event") == "review_requested":
+                    reviewer = ev.get("requested_reviewer") or {}
+                    if (reviewer.get("login") or "").strip().lower() == target:
+                        latest_at = ev.get("created_at")
+            return latest_at
+        except Exception:
+            return None
 
     def _search_pull_requests_for_author(
         self,

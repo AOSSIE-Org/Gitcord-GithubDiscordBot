@@ -62,7 +62,7 @@ def test_list_review_requests_for_user_queries_and_filters(monkeypatch: pytest.M
 
     prs = adapter.list_review_requests_for_user("alice")
 
-    assert len(client.calls) == 1
+    assert len(client.calls) >= 1
     method, path, params = client.calls[0]
     assert method == "GET"
     assert path == "/search/issues"
@@ -103,8 +103,10 @@ def test_list_review_requests_for_user_with_repo_scope(monkeypatch: pytest.Monke
 
     prs = adapter.list_review_requests_for_user("alice", repo="Gitcord")
 
-    assert len(client.calls) == 1
-    params = client.calls[0][2]
+    assert len(client.calls) >= 1
+    method, path, params = client.calls[0]
+    assert method == "GET"
+    assert path == "/search/issues"
     assert params is not None
     assert params["q"] == "is:pr is:open review-requested:alice repo:AOSSIE-Org/Gitcord"
     assert len(prs) == 1
@@ -123,6 +125,45 @@ def test_list_review_requests_empty_user_or_error() -> None:
     adapter._client = error_client  # type: ignore[assignment]
     with pytest.raises(RuntimeError):
         adapter.list_review_requests_for_user("alice")
+
+
+def test_list_review_requests_uses_timeline_review_requested_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = GitHubRestAdapter(token="t", org="AOSSIE-Org", api_base="https://api.github.com")
+    client = _SearchMockClient({
+        "items": [
+            {
+                "number": 101,
+                "title": "PR with later review request",
+                "html_url": "https://github.com/AOSSIE-Org/PictoPy/pull/101",
+                "created_at": "2026-07-01T10:00:00Z",
+                "updated_at": "2026-07-25T12:00:00Z",
+                "repository_url": "https://api.github.com/repos/AOSSIE-Org/PictoPy",
+                "user": {"login": "bob"},
+                "draft": False,
+            }
+        ]
+    })
+    adapter._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ghdcbot.adapters.github.rest._load_repo_filter",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_fetch_issue_timeline",
+        lambda owner, repo, issue_num: [
+            {
+                "event": "review_requested",
+                "requested_reviewer": {"login": "Alice"},
+                "created_at": "2026-07-20T15:30:00Z",
+            }
+        ],
+    )
+
+    prs = adapter.list_review_requests_for_user("alice")
+    assert len(prs) == 1
+    assert prs[0]["created_at"] == "2026-07-01T10:00:00Z"
+    assert prs[0]["requested_at"] == "2026-07-20T15:30:00Z"
 
 
 # -----------------------------------------------------------------------------
