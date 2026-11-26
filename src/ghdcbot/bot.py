@@ -2464,7 +2464,6 @@ def run_bot(config_path: str) -> None:
             ctx = format_issue_creation_audit_context(
                 config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
             )
-            ctx["github_user"] = github_username
             try:
                 append_audit({
                     "actor_type": "discord_user",
