@@ -863,6 +863,246 @@ class TestInactivityLifecycleExecution:
         assert rec["status"] == "reminded"
         assert rec["reminder_sent_at"] is not None
 
+    def test_verified_contributor_dm_failure_falls_back_to_github_comment(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When Discord DM delivery fails for a verified contributor, fall back to GitHub comment and record reminder."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "verified_alice", assigned_at)
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="discord_123", github_user="verified_alice"))
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Fix memory leak",
+                "assignees": [{"login": "verified_alice"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = False
+        github_writer.create_issue_comment.return_value = True
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        github_writer.create_issue_comment.assert_called_once()
+        call_args = github_writer.create_issue_comment.call_args[0]
+        assert call_args[0] == "AOSSIE-Org"
+        assert call_args[1] == "Gitcord"
+        assert call_args[2] == 42
+        assert "@verified_alice you were assigned to this issue 7 days ago" in call_args[3]
+
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "verified_alice")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] is not None
+
+        expected_dedupe_key = (
+            f"issue_inactivity_checkin:Gitcord:42:verified_alice:{assigned_at.isoformat()}"
+        )
+        assert expected_dedupe_key in storage.notifications_sent
+
+        # Verify deduplication key prevents re-attempting DM or comment on next cycle even if reminder_sent_at was cleared
+        discord_writer.send_dm.reset_mock()
+        github_writer.create_issue_comment.reset_mock()
+        rec["reminder_sent_at"] = None
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+        discord_writer.send_dm.assert_not_called()
+        github_writer.create_issue_comment.assert_not_called()
+
+    def test_verified_contributor_fallback_comment_connect_timeout_does_not_record_reminder(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When fallback comment fails (e.g. ConnectTimeout), no reminder or dedupe key is recorded."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "verified_alice", assigned_at)
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="discord_123", github_user="verified_alice"))
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Fix memory leak",
+                "assignees": [{"login": "verified_alice"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = False
+        github_writer.create_issue_comment.return_value = False
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        github_writer.create_issue_comment.assert_called_once()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "verified_alice")
+        assert rec is None or rec.get("reminder_sent_at") is None
+        expected_dedupe_key = (
+            f"issue_inactivity_checkin:Gitcord:42:verified_alice:{assigned_at.isoformat()}"
+        )
+        assert expected_dedupe_key not in storage.notifications_sent
+
+    def test_verified_contributor_dm_failure_escalates_to_unassign(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """Verified contributor whose check-in fell back to comment is unassigned in Stage 2 after escalate_delta."""
+        github_reader, github_writer, discord_writer, storage, policy, config = setup_env
+        base_time = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        assigned_at = base_time
+
+        storage.track_issue_assignment("Gitcord", 42, "verified_alice", assigned_at)
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="discord_123", github_user="verified_alice"))
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Fix memory leak",
+                "assignees": [{"login": "verified_alice"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = False
+        github_writer.create_issue_comment.return_value = True
+        github_writer.unassign_issue.return_value = True
+
+        # 1. First run at Stage 1 check-in boundary (7 days after assignment): DM fails and comment fallback occurs
+        t_stage1 = assigned_at + timedelta(days=7)
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=t_stage1,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        github_writer.create_issue_comment.assert_called_once()
+        github_writer.unassign_issue.assert_not_called()
+
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "verified_alice")
+        assert rec is not None
+        assert rec["status"] == "reminded"
+        assert rec["reminder_sent_at"] == t_stage1.isoformat()
+
+        # 2. Advance clock to just before escalation boundary (6 days 23 hours after reminder): not unassigned yet
+        discord_writer.send_dm.reset_mock()
+        github_writer.create_issue_comment.reset_mock()
+        t_before_escalate = t_stage1 + timedelta(days=6, hours=23)
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=t_before_escalate,
+        )
+        github_writer.unassign_issue.assert_not_called()
+
+        # 3. Advance clock to at escalation boundary (7 days after reminder): auto-unassigned
+        t_escalate = t_stage1 + timedelta(days=7)
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=t_escalate,
+        )
+        github_writer.unassign_issue.assert_called_once()
+        rec = storage.get_issue_inactivity_record("Gitcord", 42, "verified_alice")
+        assert rec is not None
+        assert rec["status"] == "unassigned"
+
+    def test_verified_contributor_dm_failure_dry_run_github_mutations_disabled(
+        self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
+    ) -> None:
+        """When DM fails and GitHub mutations are disabled, audit event is recorded for fallback comment."""
+        github_reader, github_writer, discord_writer, storage, _, config = setup_env
+        policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=False, discord_write_allowed=True)
+        now = datetime.now(UTC)
+        assigned_at = now - timedelta(days=8)
+
+        storage.track_issue_assignment("Gitcord", 42, "verified_alice", assigned_at)
+        storage.verified_mappings.append(IdentityMapping(discord_user_id="discord_123", github_user="verified_alice"))
+
+        github_reader.list_open_issues.return_value = [
+            {
+                "repo": "Gitcord",
+                "number": 42,
+                "title": "Fix memory leak",
+                "assignees": [{"login": "verified_alice"}],
+                "created_at": assigned_at.isoformat(),
+            }
+        ]
+        github_reader.get_issue_comments.return_value = []
+        github_reader.list_pull_requests_for_author.return_value = []
+        discord_writer.send_dm.return_value = False
+
+        run_issue_inactivity_lifecycle(
+            github_reader=github_reader,
+            github_writer=github_writer,
+            discord_writer=discord_writer,
+            storage=storage,
+            policy=policy,
+            config=config,
+            github_org="AOSSIE-Org",
+            now=now,
+        )
+
+        discord_writer.send_dm.assert_called_once()
+        github_writer.create_issue_comment.assert_not_called()
+        assert len(storage.audit_events) == 1
+        assert storage.audit_events[0]["event_type"] == "issue_inactivity_checkin_dry_run"
+        assert storage.audit_events[0]["context"]["github_user"] == "verified_alice"
+        assert storage.audit_events[0]["context"]["discord_user_id"] == "discord_123"
+
     def test_unverified_contributor_stage_1_dry_run_records_audit_event_without_comment(
         self, setup_env: tuple[MagicMock, MagicMock, MagicMock, MockStorage, MutationPolicy, NotificationConfig]
     ) -> None:

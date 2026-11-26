@@ -896,13 +896,20 @@ class GitHubRestAdapter:
 
         Uses a single non-retrying POST: retries after an accepted-but-unread
         response would duplicate comments. Timeouts are treated as success so
-        callers keep their SQLite dedupe claim for uncertain outcomes.
+        callers keep their SQLite dedupe claim for uncertain outcomes, except
+        ConnectTimeout which indicates the request was not sent.
         """
         path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
         try:
             self._increment_sync_request_count()
             response = self._client.post(path, json={"body": body})
         except httpx.TimeoutException as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                self._logger.warning(
+                    "GitHub create comment connect timed out (not sent)",
+                    extra={"path": path, "error": str(exc)},
+                )
+                return False
             # GitHub may have accepted the comment; do not retry or report failure.
             self._logger.warning(
                 "GitHub create comment timed out (outcome uncertain; treating as success)",
