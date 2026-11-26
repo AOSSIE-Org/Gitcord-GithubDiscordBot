@@ -117,8 +117,8 @@ class DiscordApiAdapter:
         roles, _ = self._list_roles()
         return roles
 
-    def add_role(self, discord_user_id: str, role_name: str) -> None:
-        """Assign a role to a guild member. Calls Discord API unless request fails."""
+    def add_role(self, discord_user_id: str, role_name: str) -> bool:
+        """Assign a role to a guild member. Returns True on success, False on failure."""
         role_id = self._resolve_role_id(role_name)
         if role_id is None:
             roles, ok = self._list_roles()
@@ -131,7 +131,7 @@ class DiscordApiAdapter:
                     "guild_role_names": role_names[:30],
                 },
             )
-            return
+            return False
         path = f"/guilds/{self._guild_id}/members/{discord_user_id}/roles/{role_id}"
         try:
             response = self._client.request("PUT", path)
@@ -140,36 +140,37 @@ class DiscordApiAdapter:
                 "Discord add role failed",
                 extra={"user_id": discord_user_id, "role": role_name, "error": str(exc)},
             )
-            return
+            return False
         if response.status_code in (200, 204):
             self._logger.info(
                 "Discord role added",
                 extra={"user_id": discord_user_id, "role": role_name},
             )
-        else:
-            try:
-                body = response.text[:500] if response.text else ""
-            except Exception:
-                body = ""
-            self._logger.warning(
-                "Discord add role failed (check bot role is above target role and has Manage Roles)",
-                extra={
-                    "user_id": discord_user_id,
-                    "role": role_name,
-                    "status_code": response.status_code,
-                    "response": body,
-                },
-            )
+            return True
+        try:
+            body = response.text[:500] if response.text else ""
+        except Exception:
+            body = ""
+        self._logger.warning(
+            "Discord add role failed (check bot role is above target role and has Manage Roles)",
+            extra={
+                "user_id": discord_user_id,
+                "role": role_name,
+                "status_code": response.status_code,
+                "response": body,
+            },
+        )
+        return False
 
-    def remove_role(self, discord_user_id: str, role_name: str) -> None:
-        """Remove a role from a guild member. Calls Discord API unless request fails."""
+    def remove_role(self, discord_user_id: str, role_name: str) -> bool:
+        """Remove a role from a guild member. Returns True on success, False on failure."""
         role_id = self._resolve_role_id(role_name)
         if role_id is None:
             self._logger.warning(
                 "Discord role not found; cannot remove",
                 extra={"user_id": discord_user_id, "role": role_name},
             )
-            return
+            return False
         path = f"/guilds/{self._guild_id}/members/{discord_user_id}/roles/{role_id}"
         try:
             response = self._client.request("DELETE", path)
@@ -178,21 +179,22 @@ class DiscordApiAdapter:
                 "Discord remove role failed",
                 extra={"user_id": discord_user_id, "role": role_name, "error": str(exc)},
             )
-            return
+            return False
         if response.status_code in (200, 204):
             self._logger.info(
                 "Discord role removed",
                 extra={"user_id": discord_user_id, "role": role_name},
             )
-        else:
-            self._logger.warning(
-                "Discord remove role failed",
-                extra={
-                    "user_id": discord_user_id,
-                    "role": role_name,
-                    "status_code": response.status_code,
-                },
-            )
+            return True
+        self._logger.warning(
+            "Discord remove role failed",
+            extra={
+                "user_id": discord_user_id,
+                "role": role_name,
+                "status_code": response.status_code,
+            },
+        )
+        return False
 
     def send_message(self, channel_id: str, content: str) -> bool:
         """Post a read-only message to a channel. Content truncated to 2000 chars. Returns True on success."""
