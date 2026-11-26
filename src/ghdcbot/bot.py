@@ -284,7 +284,7 @@ class IssueAssignmentView(discord.ui.View):
         if self._is_completed:
             return
         self._is_completed = True
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer(ephemeral=True)
         self._disable()
         
         # Refetch issue to prevent TOCTOU race conditions
@@ -2282,7 +2282,7 @@ def run_bot(config_path: str) -> None:
             )
             return
 
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer(ephemeral=True)
         
         assignees = [a for a in (assignee_1, assignee_2, assignee_3) if a is not None]
         github_assignees = []
@@ -2351,7 +2351,7 @@ def run_bot(config_path: str) -> None:
             initial_github_assignees=github_assignees,
             requester_id=interaction.user.id,
         )
-        await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view)
+        await interaction.followup.send(embed=discord.Embed.from_dict(embed_dict), view=view, ephemeral=True)
 
     ISSUE_LABELS = [
         app_commands.Choice(name="Bug", value="bug"),
