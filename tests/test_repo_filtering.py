@@ -40,3 +40,21 @@ def test_repo_filter_empty_logs_warning(caplog) -> None:
 
     assert filtered == []
     assert any("All repositories filtered out" in record.message for record in caplog.records)
+
+
+def test_repo_filter_allow_mode_ignores_name_case() -> None:
+    repos = [{"name": "Gitcord-GithubDiscordBot"}, {"name": "EduAid"}]
+    repo_filter = RepoFilterConfig(mode="allow", names=["gitcord-githubdiscordbot"])
+
+    filtered = _apply_repo_filter(repos, repo_filter, logging.getLogger("test"))
+
+    assert [repo["name"] for repo in filtered] == ["Gitcord-GithubDiscordBot"]
+
+
+def test_repo_filter_deny_mode_ignores_name_case() -> None:
+    repos = [{"name": "Gitcord-GithubDiscordBot"}, {"name": "EduAid"}]
+    repo_filter = RepoFilterConfig(mode="deny", names=["eduaid"])
+
+    filtered = _apply_repo_filter(repos, repo_filter, logging.getLogger("test"))
+
+    assert [repo["name"] for repo in filtered] == ["Gitcord-GithubDiscordBot"]

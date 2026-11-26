@@ -3451,3 +3451,44 @@ def test_notification_message_title_sanitization() -> None:
     assert "@everyone" not in msg_reopened
     assert "\\[Click Here\\]" in msg_reopened
 
+
+def test_pr_opened_channel_notification_matches_repo_key_case_insensitively() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_pr_opened_channel_notification(
+        _pr_opened_event(repo="Gitcord-GithubDiscordBot"),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"gitcord-githubdiscordbot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    assert discord_writer.messages_sent[0][0] == "1465995983791063140"
+
+
+def test_issue_opened_channel_notification_matches_repo_key_case_insensitively() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "999", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+
+    result = send_issue_opened_channel_notification(
+        _issue_opened_event(),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"gitcord-githubdiscordbot": "1465995983791063140"},
+        "AOSSIE-Org",
+    )
+
+    assert result is True
+    assert discord_writer.messages_sent[0][0] == "1465995983791063140"
