@@ -424,3 +424,49 @@ async def test_assign_issue_cmd_defers_ephemerally_on_success_and_error() -> Non
     interaction_err.followup.send.assert_awaited_once()
     assert interaction_err.followup.send.call_args[1].get("ephemeral") is True
     assert "not linked their GitHub account" in str(interaction_err.followup.send.call_args[0][0])
+
+
+@pytest.mark.asyncio
+async def test_assign_issue_cmd_deduplicates_repeated_assignees() -> None:
+    """/assign-issue must deduplicate repeated Discord users while preserving order."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    config = _build_test_bot_config()
+    mock_github = MagicMock()
+    mock_github.get_issue.return_value = {
+        "title": "Open Issue",
+        "state": "open",
+        "number": 123,
+        "assignees": [],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "html_url": "https://github.com/test-org/allowed-repo/issues/123",
+    }
+    mock_storage = MagicMock()
+    mock_storage.list_verified_identity_mappings.return_value = [
+        SimpleNamespace(discord_user_id="456", github_user="alice"),
+        SimpleNamespace(discord_user_id="789", github_user="bob"),
+    ]
+
+    commands = _setup_commands_for_assign_test(config, mock_github, mock_storage)
+    cmd = commands["assign-issue"]
+
+    interaction = MagicMock()
+    interaction.user.id = 123
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    a1 = MagicMock(id=456)
+    a2 = MagicMock(id=456)  # duplicate Discord user
+    a3 = MagicMock(id=789)
+
+    await cmd.callback(interaction, repo="allowed-repo", issue_number=123, assignee_1=a1, assignee_2=a2, assignee_3=a3)
+
+    interaction.followup.send.assert_awaited_once()
+    send_kwargs = interaction.followup.send.call_args[1]
+    view = send_kwargs["view"]
+    embed = send_kwargs["embed"]
+    assert view.discord_ids == ["456", "789"]
+    assert view.initial_github_assignees == ["alice", "bob"]
+    proposed_field = next(f for f in embed.fields if f.name == "Proposed Assignment")
+    assert proposed_field.value == "alice, bob"

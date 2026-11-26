@@ -2284,7 +2284,16 @@ def run_bot(config_path: str) -> None:
 
         await interaction.response.defer(ephemeral=True)
         
-        assignees = [a for a in (assignee_1, assignee_2, assignee_3) if a is not None]
+        assignees = []
+        seen_discord_ids: set[str] = set()
+        for candidate in (assignee_1, assignee_2, assignee_3):
+            if candidate is None:
+                continue
+            candidate_id = str(candidate.id)
+            if candidate_id not in seen_discord_ids:
+                seen_discord_ids.add(candidate_id)
+                assignees.append(candidate)
+
         github_assignees = []
         for assignee in assignees:
             github_username = resolve_discord_to_github(storage, str(assignee.id))
