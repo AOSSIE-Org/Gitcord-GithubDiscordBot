@@ -335,6 +335,13 @@ def fetch_pr_health(
     bot_logins_lower = [x.strip().lower() for x in bot_logins if x]
 
     reviews = github_adapter.get_pull_request_reviews(owner, repo, pr_number)
+    if reviews is None or getattr(reviews, "incomplete", False):
+        logger.warning(
+            "Failed or incomplete reviews read for PR health; propagating unavailable health result",
+            extra={"repo": repo, "pr_number": pr_number},
+        )
+        return None
+
     human_reviews = [
         r for r in reviews
         if ((r.get("user") or {}).get("login") or "").strip().lower() not in bot_logins_lower
@@ -395,6 +402,15 @@ def fetch_pr_health(
                 )
                 raw_threads = None
         if isinstance(raw_threads, list):
+            if bool(
+                getattr(raw_threads, "incomplete", False)
+                or getattr(raw_threads, "truncated", False)
+            ):
+                logger.debug(
+                    "Incomplete review threads read for PR health; propagating unavailable health result",
+                    extra={"repo": repo, "pr_number": pr_number},
+                )
+                return None
             for t in raw_threads:
                 if isinstance(t, dict):
                     authors = t.get("authors") or []

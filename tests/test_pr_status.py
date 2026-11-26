@@ -309,6 +309,49 @@ class TestFetchPRHealth:
         assert health.ci_status == "failing"
         assert health.health_indicator == "blocked"
 
+    def test_failed_reviews_read_returns_none(self) -> None:
+        """When get_pull_request_reviews returns None (failed), fetch_pr_health returns None."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = None
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is None
+
+    def test_incomplete_reviews_read_returns_none(self) -> None:
+        """When get_pull_request_reviews returns an incomplete list, fetch_pr_health returns None."""
+        from ghdcbot.adapters.github.rest import ReviewList
+
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = ReviewList(
+            [{"state": "APPROVED"}], incomplete=True
+        )
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is None
+
+    def test_successful_empty_reviews_returns_awaiting_review(self) -> None:
+        """When get_pull_request_reviews returns [] (successful empty read), review_state is awaiting_review."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = []
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        adapter.get_pull_request_review_comments.return_value = []
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.review_state == "awaiting_review"
+        assert health.approved_count == 0
+        assert health.changes_requested_count == 0
+        assert health.health_indicator == "needs_attention"
+
     def test_coderabbit_comments_detected(self) -> None:
         adapter = MagicMock()
         adapter.get_pull_request.return_value = _make_pr_data()
@@ -511,6 +554,34 @@ class TestFetchPRHealth:
         adapter.get_pull_request_review_threads.assert_called_once_with("org", "my-repo", 7)
         adapter.get_pull_request_review_comments.assert_called_once_with("org", "my-repo", 7)
 
+    def test_review_threads_graphql_incomplete_or_truncated_returns_none_health(self) -> None:
+        """When get_pull_request_review_threads returns an incomplete or truncated list, health is unavailable (None)."""
+        from ghdcbot.adapters.github.rest import ReviewThreadList
+
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [{"state": "APPROVED"}]
+        adapter.get_pull_request_check_runs.return_value = [
+            {"status": "completed", "conclusion": "success"}
+        ]
+        # Incomplete threads list
+        adapter.get_pull_request_review_threads.return_value = ReviewThreadList(
+            [{"is_resolved": True, "is_outdated": False, "authors": ["coderabbitai"]}],
+            incomplete=True,
+        )
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is None
+
+        # Truncated threads list
+        adapter.get_pull_request_review_threads.return_value = ReviewThreadList(
+            [{"is_resolved": True, "is_outdated": False, "authors": ["coderabbitai"]}],
+            truncated=True,
+        )
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is None
+
     def test_review_threads_graphql_fallback_when_threads_raise(self) -> None:
         """When get_pull_request_review_threads raises an exception, falls back to REST comments."""
         adapter = MagicMock()
@@ -619,11 +690,13 @@ class TestReviewThreadsGraphQLAdapter:
             "is_resolved": False,
             "is_outdated": False,
             "authors": ["dev1", "coderabbitai[bot]"],
+            "comment_ids": [],
         }
         assert threads[1] == {
             "is_resolved": True,
             "is_outdated": False,
             "authors": ["coderabbitai"],
+            "comment_ids": [],
         }
         assert mock_client.post.call_count == 3
 
@@ -720,6 +793,7 @@ class TestReviewThreadsGraphQLAdapter:
                 "is_resolved": False,
                 "is_outdated": False,
                 "authors": ["coderabbitai[bot]"],
+                "comment_ids": [],
             }
         ]
 

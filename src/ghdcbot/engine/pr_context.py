@@ -338,7 +338,7 @@ def fetch_pr_context(
         return (None, [], "unknown", None)
     
     # Fetch reviews
-    reviews = github_adapter.get_pull_request_reviews(owner, repo, pr_number)
+    reviews = github_adapter.get_pull_request_reviews(owner, repo, pr_number) or []
     
     # Fetch CI status from check runs
     head_sha = pr.get("head", {}).get("sha")

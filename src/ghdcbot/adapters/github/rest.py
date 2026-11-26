@@ -22,6 +22,30 @@ class RateLimitStatus:
     reset_at: datetime | None
 
 
+class ReviewThreadList(list):
+    """List of review threads with pagination completeness metadata."""
+
+    def __init__(
+        self, iterable=(), *, truncated: bool = False, incomplete: bool = False
+    ) -> None:
+        super().__init__(iterable)
+        is_inc = bool(truncated or incomplete)
+        self.truncated = is_inc
+        self.incomplete = is_inc
+
+
+class ReviewList(list):
+    """List of pull request reviews with pagination completeness metadata."""
+
+    def __init__(
+        self, iterable=(), *, incomplete: bool = False, truncated: bool = False
+    ) -> None:
+        super().__init__(iterable)
+        is_inc = bool(incomplete or truncated)
+        self.incomplete = is_inc
+        self.truncated = is_inc
+
+
 _GITHUB_RETRY_MAX_ATTEMPTS = 4
 _GITHUB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _GITHUB_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
@@ -1013,15 +1037,34 @@ class GitHubRestAdapter:
             return response.json()
         return None
 
-    def get_pull_request_reviews(self, owner: str, repo: str, pr_number: int) -> list[dict]:
+    def get_pull_request_reviews(
+        self, owner: str, repo: str, pr_number: int
+    ) -> ReviewList | None:
         """Fetch reviews for a pull request.
 
-        Returns list of review dicts (empty list on error).
+        Returns list of review dicts, or None if the request failed or was incomplete.
         """
-        reviews = []
-        for page in self._paginate(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", params={"per_page": 100}):
-            reviews.extend(page)
-        return reviews
+        try:
+            reviews = ReviewList()
+            for page in self._paginate(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                params={"per_page": 100},
+                raise_on_error=True,
+            ):
+                reviews.extend(page)
+            return reviews
+        except GitHubPaginationError as exc:
+            self._logger.warning(
+                "Failed to fetch pull request reviews",
+                extra={"owner": owner, "repo": repo, "pr_number": pr_number, "error": str(exc)},
+            )
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                "Unexpected error fetching pull request reviews",
+                extra={"owner": owner, "repo": repo, "pr_number": pr_number, "error": str(exc)},
+            )
+            return None
 
     def get_pr_timeline_snapshot(self, repo: str, pr_number: int) -> dict | None:
         """Read the PR, its issue timeline and its commits for the PR channel timeline.
@@ -1124,6 +1167,7 @@ class GitHubRestAdapter:
                       endCursor
                     }
                     nodes {
+                      fullDatabaseId
                       author {
                         login
                       }
@@ -1145,6 +1189,7 @@ class GitHubRestAdapter:
                   endCursor
                 }
                 nodes {
+                  fullDatabaseId
                   author {
                     login
                   }
@@ -1163,10 +1208,11 @@ class GitHubRestAdapter:
             else:
                 graphql_url = f"{base}/graphql"
 
-            results: list[dict] = []
+            results = ReviewThreadList()
             threads_cursor = None
             has_next_threads = True
             threads_pages = 0
+            is_truncated = False
 
             while has_next_threads and threads_pages < _GRAPHQL_MAX_REVIEW_THREADS_PAGES:
                 threads_pages += 1
@@ -1196,9 +1242,14 @@ class GitHubRestAdapter:
                     return None
 
                 data = response.json()
-                if not isinstance(data, dict) or "data" not in data or not data["data"]:
+                if (
+                    not isinstance(data, dict)
+                    or "data" not in data
+                    or not data["data"]
+                    or bool(data.get("errors"))
+                ):
                     self._logger.debug(
-                        "GraphQL reviewThreads response missing data",
+                        "GraphQL reviewThreads response missing data or contains query errors",
                         extra={
                             "owner": owner,
                             "repo": repo,
@@ -1208,10 +1259,18 @@ class GitHubRestAdapter:
                     )
                     return None
 
-                repo_data = data["data"].get("repository") or {}
-                pr_data = repo_data.get("pullRequest") or {}
-                review_threads_data = pr_data.get("reviewThreads") or {}
-                raw_threads = review_threads_data.get("nodes") or []
+                repo_data = data["data"].get("repository")
+                if not repo_data or not isinstance(repo_data, dict):
+                    return None
+                pr_data = repo_data.get("pullRequest")
+                if not pr_data or not isinstance(pr_data, dict):
+                    return None
+                review_threads_data = pr_data.get("reviewThreads")
+                if review_threads_data is None or not isinstance(review_threads_data, dict):
+                    return None
+                raw_threads = review_threads_data.get("nodes")
+                if raw_threads is None or not isinstance(raw_threads, list):
+                    return None
 
                 for t in raw_threads:
                     if not isinstance(t, dict):
@@ -1223,12 +1282,29 @@ class GitHubRestAdapter:
                         for c in c_nodes
                         if isinstance(c, dict) and c.get("author")
                     ]
+                    comment_ids: list[int] = []
+                    for c in c_nodes:
+                        if isinstance(c, dict):
+                            raw_id = (
+                                c.get("fullDatabaseId")
+                                if c.get("fullDatabaseId") is not None
+                                else c.get("databaseId")
+                            )
+                            if raw_id is not None:
+                                try:
+                                    comment_ids.append(int(raw_id))
+                                except (ValueError, TypeError):
+                                    pass
 
                     thread_id = t.get("id")
                     comments_page_info = comments_data.get("pageInfo") or {}
                     has_next_comments = bool(comments_page_info.get("hasNextPage"))
                     comments_cursor = comments_page_info.get("endCursor")
                     comments_pages = 1
+
+                    if has_next_comments and (not thread_id or not comments_cursor):
+                        is_truncated = True
+                        has_next_comments = False
 
                     while (
                         has_next_comments
@@ -1251,38 +1327,75 @@ class GitHubRestAdapter:
                         if comm_resp.status_code != 200:
                             return None
                         comm_data = comm_resp.json()
-                        if not isinstance(comm_data, dict) or "data" not in comm_data or not comm_data["data"]:
+                        if (
+                            not isinstance(comm_data, dict)
+                            or "data" not in comm_data
+                            or not comm_data["data"]
+                            or bool(comm_data.get("errors"))
+                        ):
                             return None
-                        node_data = comm_data["data"].get("node") or {}
-                        more_comments_data = node_data.get("comments") or {}
-                        more_nodes = more_comments_data.get("nodes") or []
+                        node_data = comm_data["data"].get("node")
+                        if not node_data or not isinstance(node_data, dict):
+                            return None
+                        more_comments_data = node_data.get("comments")
+                        if more_comments_data is None or not isinstance(more_comments_data, dict):
+                            return None
+                        more_nodes = more_comments_data.get("nodes")
+                        if more_nodes is None or not isinstance(more_nodes, list):
+                            return None
                         for c in more_nodes:
-                            if isinstance(c, dict) and c.get("author"):
-                                authors.append(
-                                    ((c.get("author") or {}).get("login") or "").strip().lower()
+                            if isinstance(c, dict):
+                                if c.get("author"):
+                                    authors.append(
+                                        ((c.get("author") or {}).get("login") or "").strip().lower()
+                                    )
+                                raw_id = (
+                                    c.get("fullDatabaseId")
+                                    if c.get("fullDatabaseId") is not None
+                                    else c.get("databaseId")
                                 )
+                                if raw_id is not None:
+                                    try:
+                                        comment_ids.append(int(raw_id))
+                                    except (ValueError, TypeError):
+                                        pass
                         more_page_info = more_comments_data.get("pageInfo") or {}
                         has_next_comments = bool(more_page_info.get("hasNextPage"))
                         next_comm_cursor = more_page_info.get("endCursor")
-                        if not next_comm_cursor or next_comm_cursor == comments_cursor:
+                        if has_next_comments and (
+                            not next_comm_cursor or next_comm_cursor == comments_cursor
+                        ):
+                            is_truncated = True
                             break
                         comments_cursor = next_comm_cursor
+
+                    if has_next_comments and comments_pages >= _GRAPHQL_MAX_THREAD_COMMENTS_PAGES:
+                        is_truncated = True
 
                     results.append(
                         {
                             "is_resolved": bool(t.get("isResolved")),
                             "is_outdated": bool(t.get("isOutdated")),
                             "authors": authors,
+                            "comment_ids": comment_ids,
                         }
                     )
 
                 page_info = review_threads_data.get("pageInfo") or {}
                 has_next_threads = bool(page_info.get("hasNextPage"))
                 next_threads_cursor = page_info.get("endCursor")
-                if not next_threads_cursor or next_threads_cursor == threads_cursor:
+                if has_next_threads and (
+                    not next_threads_cursor or next_threads_cursor == threads_cursor
+                ):
+                    is_truncated = True
                     break
                 threads_cursor = next_threads_cursor
 
+            if has_next_threads and threads_pages >= _GRAPHQL_MAX_REVIEW_THREADS_PAGES:
+                is_truncated = True
+
+            results.truncated = is_truncated
+            results.incomplete = is_truncated
             return results
         except Exception as exc:
             self._logger.debug(
@@ -2152,6 +2265,7 @@ class GitHubRestAdapter:
                     "html_url": pr.get("html_url"),
                     "created_at": pr.get("created_at"),
                     "head_sha": (pr.get("head") or {}).get("sha"),
+                    "draft": bool(pr.get("draft", False)),
                 }
 
     def _paginate(
@@ -2181,7 +2295,12 @@ class GitHubRestAdapter:
                 )
                 return
             data = response.json()
-            if not isinstance(data, list) or not data:
+            if not isinstance(data, list):
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request returned non-list data: {path}")
+                self._mark_ingestion_incomplete(path)
+                return
+            if not data:
                 return
             yield data
             if not _has_next_page(response.headers.get("Link")):
@@ -2246,7 +2365,12 @@ class GitHubRestAdapter:
                 )
                 return
             data = response.json()
-            if not isinstance(data, list) or not data:
+            if not isinstance(data, list):
+                if raise_on_error:
+                    raise GitHubPaginationError(f"GitHub request returned non-list data: {path}")
+                self._repo_listing_incomplete = True
+                return
+            if not data:
                 return
             yield data
             if not _has_next_page(response.headers.get("Link")):
