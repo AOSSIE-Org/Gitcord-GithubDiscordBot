@@ -47,3 +47,4 @@ gitcord-handover-*.tar.gz
 gitcord-handover-*.tar.gz.gpg
 **/gitcord-handover-*.tar.gz.gpg
 *.pem
+.coverage
