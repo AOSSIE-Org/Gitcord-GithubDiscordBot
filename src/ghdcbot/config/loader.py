@@ -187,7 +187,7 @@ def _merge_remote_into_bootstrap(bootstrap: dict[str, Any]) -> dict[str, Any]:
             fetched.source,
             f" sha={fetched.sha}" if fetched.sha else "",
         )
-        return apply_bootstrap_overlays(fetched.data, bootstrap)
+        remote_data = fetched.data
     except ConfigError as fetch_exc:
         if not data_dir:
             raise
@@ -206,7 +206,9 @@ def _merge_remote_into_bootstrap(bootstrap: dict[str, Any]) -> dict[str, Any]:
                 "data_dir": data_dir,
             },
         )
-        return apply_bootstrap_overlays(remote_data, bootstrap)
+
+    remote_expanded = _expand_env_vars(remote_data)
+    return apply_bootstrap_overlays(remote_expanded, bootstrap)
 
 
 def load_config(path: str) -> BotConfig:
@@ -220,8 +222,7 @@ def load_config(path: str) -> BotConfig:
     raw = _merge_remote_into_bootstrap(bootstrap)
 
     try:
-        expanded = _expand_env_vars(raw)
-        config = BotConfig.model_validate(expanded)
+        config = BotConfig.model_validate(raw)
         global _ACTIVE_CONFIG
         _ACTIVE_CONFIG = config
         return config
