@@ -108,6 +108,27 @@ def format_idle_duration(last_commit_time: datetime | None, now: datetime) -> st
         return f"Idle for {hours} hour{'s' if hours != 1 else ''}"
 
 
+_VERDICT_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+
+
+def current_review_states(reviews: list[dict]) -> list[str]:
+    """Return each reviewer's current verdict, as GitHub counts it.
+
+    Only a reviewer's latest APPROVED, CHANGES_REQUESTED or DISMISSED review
+    counts; COMMENTED reviews leave it unchanged. ``reviews`` must be in the
+    order the GitHub API returns them (oldest first). Reviews without a user
+    login are counted individually.
+    """
+    latest: dict[str, str] = {}
+    for index, review in enumerate(reviews):
+        state = (review.get("state") or "").upper()
+        if state not in _VERDICT_STATES:
+            continue
+        login = ((review.get("user") or {}).get("login") or "").strip().lower()
+        latest[login or f"#{index}"] = state
+    return list(latest.values())
+
+
 def determine_mentor_signal(
     pr: dict,
     reviews: list[dict],
@@ -139,10 +160,9 @@ def determine_mentor_signal(
         return "Blocked by CI"
     
     # Check review state
-    approved_count = sum(1 for r in reviews if r.get("state", "").upper() == "APPROVED")
-    changes_requested_count = sum(
-        1 for r in reviews if r.get("state", "").upper() == "CHANGES_REQUESTED"
-    )
+    states = current_review_states(reviews)
+    approved_count = states.count("APPROVED")
+    changes_requested_count = states.count("CHANGES_REQUESTED")
     
     if changes_requested_count > 0:
         return "Waiting on contributor"
@@ -218,10 +238,9 @@ def build_pr_embed(
     ci_display = ci_status.title() if ci_status != "unknown" else "Unknown"
     
     # Review state
-    approved_count = sum(1 for r in reviews if r.get("state", "").upper() == "APPROVED")
-    changes_requested_count = sum(
-        1 for r in reviews if r.get("state", "").upper() == "CHANGES_REQUESTED"
-    )
+    states = current_review_states(reviews)
+    approved_count = states.count("APPROVED")
+    changes_requested_count = states.count("CHANGES_REQUESTED")
     review_state = f"{approved_count} approval{'s' if approved_count != 1 else ''}"
     if changes_requested_count > 0:
         review_state += f", {changes_requested_count} change{'s' if changes_requested_count != 1 else ''} requested"

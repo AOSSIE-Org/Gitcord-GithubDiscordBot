@@ -509,21 +509,31 @@ class GitHubRestAdapter:
         return None
 
     def has_write_access(self, owner: str | None, repo: str, username: str) -> bool | None:
-        """Check if user has write/maintainer access to repository or org."""
+        """Check if user has write/maintainer access to repository.
+
+        Returns True for admin/maintain/write, False for confirmed non-write
+        (read/triage/none, 404, or empty inputs), and None when inconclusive
+        (API errors or unexpected failures).
+        """
         user = (username or "").strip()
-        if not user:
+        repo_name = (repo or "").strip()
+        org = (owner or self._org or "").strip()
+        if not user or not repo_name or not org:
             return False
-        org = owner or self._org
-        perm = self.check_user_permission(org, repo, user)
+        try:
+            perm = self.check_user_permission(org, repo_name, user)
+        except Exception as exc:  # noqa: BLE001 - treat all API transport/lookup errors as inconclusive
+            self._logger.warning(
+                "Failed to check repository write access",
+                extra={"owner": org, "repo": repo_name, "username": user, "error": str(exc)},
+            )
+            return None
+
         if perm in {"admin", "maintain", "write"}:
             return True
-        # Check org membership
-        org_resp = self._request("GET", f"/orgs/{org}/members/{user}", params=None, allow_404=True)
-        if org_resp is not None and org_resp.status_code == 204:
-            return True
-        if perm is None or org_resp is None or org_resp.status_code != 404:
-            return None
-        return False
+        if perm in {"triage", "read", "none"}:
+            return False
+        return None
 
 
     def create_issue(
@@ -743,20 +753,100 @@ class GitHubRestAdapter:
             )
 
         if response.status_code in {200, 201}:
-            self._logger.info(
-                "Issue unassigned successfully",
-                extra={"owner": owner, "repo": repo, "issue_number": issue_number, "assignee": assignee},
-            )
-            return True
+            try:
+                response_data = response.json()
+                if not isinstance(response_data, dict) or "assignees" not in response_data:
+                    self._logger.warning(
+                        "Issue unassignment response missing 'assignees' field",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "assignee": assignee,
+                        },
+                    )
+                    return False
+
+                actual_assignees = response_data["assignees"]
+                if not isinstance(actual_assignees, list):
+                    self._logger.warning(
+                        "Issue unassignment response 'assignees' field is not a list",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "assignee": assignee,
+                        },
+                    )
+                    return False
+
+                assignee_logins = []
+                for a in actual_assignees:
+                    if not isinstance(a, dict) or not isinstance(a.get("login"), str) or not a["login"]:
+                        self._logger.warning(
+                            "Issue unassignment response contains invalid assignee entry",
+                            extra={
+                                "owner": owner,
+                                "repo": repo,
+                                "issue_number": issue_number,
+                                "assignee": assignee,
+                            },
+                        )
+                        return False
+                    assignee_logins.append(a["login"])
+
+                assignee_logins_lower = [login.lower() for login in assignee_logins]
+                if assignee.lower() in assignee_logins_lower:
+                    self._logger.warning(
+                        "Assignee removal was silently ignored by GitHub",
+                        extra={
+                            "owner": owner,
+                            "repo": repo,
+                            "issue_number": issue_number,
+                            "requested_unassignee": assignee,
+                            "actual_assignees_from_github": assignee_logins,
+                        },
+                    )
+                    return False
+
+                self._logger.info(
+                    "Issue unassigned successfully",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "unassigned_user": assignee,
+                        "remaining_assignees_from_github": assignee_logins,
+                    },
+                )
+                return True
+            except (ValueError, TypeError, AttributeError) as exc:
+                self._logger.warning(
+                    "Issue unassignment response could not be verified",
+                    extra={
+                        "owner": owner,
+                        "repo": repo,
+                        "issue_number": issue_number,
+                        "assignee": assignee,
+                        "error": str(exc),
+                    },
+                )
+                return False
         else:
+            error_body = getattr(response, "text", "") or ""
+            if isinstance(error_body, str):
+                error_body = error_body[:500]
+            else:
+                error_body = ""
             self._logger.warning(
-                "Issue unassignment failed",
+                "Issue unassignment failed (GitHub API non-2xx)",
                 extra={
                     "owner": owner,
                     "repo": repo,
                     "issue_number": issue_number,
                     "assignee": assignee,
                     "status_code": response.status_code,
+                    "error_response": error_body,
                 },
             )
             return False
@@ -806,13 +896,20 @@ class GitHubRestAdapter:
 
         Uses a single non-retrying POST: retries after an accepted-but-unread
         response would duplicate comments. Timeouts are treated as success so
-        callers keep their SQLite dedupe claim for uncertain outcomes.
+        callers keep their SQLite dedupe claim for uncertain outcomes, except
+        ConnectTimeout which indicates the request was not sent.
         """
         path = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
         try:
             self._increment_sync_request_count()
             response = self._client.post(path, json={"body": body})
         except httpx.TimeoutException as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                self._logger.warning(
+                    "GitHub create comment connect timed out (not sent)",
+                    extra={"path": path, "error": str(exc)},
+                )
+                return False
             # GitHub may have accepted the comment; do not retry or report failure.
             self._logger.warning(
                 "GitHub create comment timed out (outcome uncertain; treating as success)",
@@ -1570,38 +1667,45 @@ class GitHubRestAdapter:
                         timeline_events, index, merged_at
                     ):
                         continue
-                    closed_by = ((event.get("actor") or {}).get("login") or "").strip() or author
+                    payload = {
+                        "pr_number": pr_number,
+                        "pr_title": pr.get("title"),
+                        "title": pr.get("title"),
+                        "pr_author": author,
+                        "repository": repo,
+                        "html_url": pr.get("html_url"),
+                        "closed_at": event.get("created_at"),
+                    }
+                    # Only a known closer: a missing actor must not look like the author closing it.
+                    closed_by = ((event.get("actor") or {}).get("login") or "").strip()
+                    if closed_by:
+                        payload["closed_by"] = closed_by
                     yield ContributionEvent(
                         github_user=author,
                         event_type="pr_closed",
                         repo=repo,
                         created_at=created_at,
-                        payload={
-                            "pr_number": pr_number,
-                            "pr_title": pr.get("title"),
-                            "title": pr.get("title"),
-                            "pr_author": author,
-                            "closed_by": closed_by,
-                            "repository": repo,
-                            "html_url": pr.get("html_url"),
-                            "closed_at": event.get("created_at"),
-                        },
+                        payload=payload,
                     )
                 elif event_type == "reopened":
+                    payload = {
+                        "pr_number": pr_number,
+                        "title": pr.get("title"),
+                        "pr_title": pr.get("title"),
+                        "pr_author": author,
+                        "repository": repo,
+                        "html_url": pr.get("html_url"),
+                        "reopened_at": event.get("created_at"),
+                    }
+                    reopened_by = ((event.get("actor") or {}).get("login") or "").strip()
+                    if reopened_by:
+                        payload["reopened_by"] = reopened_by
                     yield ContributionEvent(
                         github_user=author,
                         event_type="pr_reopened",
                         repo=repo,
                         created_at=created_at,
-                        payload={
-                            "pr_number": pr_number,
-                            "title": pr.get("title"),
-                            "pr_title": pr.get("title"),
-                            "pr_author": author,
-                            "repository": repo,
-                            "html_url": pr.get("html_url"),
-                            "reopened_at": event.get("created_at"),
-                        },
+                        payload=payload,
                     )
         except Exception as e:
             self._logger.debug(
@@ -1981,10 +2085,14 @@ class GitHubRestAdapter:
                 )
                 continue
 
+            actor = event.get("actor") if isinstance(event.get("actor"), dict) else None
+            reopened_by = (actor.get("login") if actor else None) or ""
             for resolved_assignee in assignees_to_notify:
                 payload = _issue_payload(issue)
                 payload["reopened_at"] = event.get("created_at")
                 payload["assignee"] = resolved_assignee
+                if reopened_by:
+                    payload["reopened_by"] = reopened_by
                 yield ContributionEvent(
                     github_user=resolved_assignee,
                     event_type="issue_reopened",
