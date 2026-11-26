@@ -2392,9 +2392,9 @@ def run_bot(config_path: str) -> None:
         
         # 1. Verify user
         from ghdcbot.engine.issue_creation import (
-            validate_issue_params,
             build_issue_created_embed,
             format_issue_creation_audit_context,
+            validate_issue_params,
         )
         
         github_username = resolve_discord_to_github(storage, discord_user_id)
@@ -2464,9 +2464,14 @@ def run_bot(config_path: str) -> None:
             ctx = format_issue_creation_audit_context(
                 config.github.org, repo, issue_data.get("number", 0), title, github_username, discord_user_id
             )
-            ctx["timestamp"] = datetime.now(UTC).isoformat()
             try:
-                append_audit(ctx)
+                append_audit({
+                    "actor_type": "discord_user",
+                    "actor_id": discord_user_id,
+                    "event_type": "issue_created",
+                    "context": ctx,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                })
             except Exception as e:
                 logger.error("Failed to append audit event for issue creation", exc_info=e)
             
