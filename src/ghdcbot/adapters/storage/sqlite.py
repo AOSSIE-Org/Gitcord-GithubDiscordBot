@@ -293,35 +293,63 @@ class SqliteStorage:
                 (start_utc.isoformat(), end_utc.isoformat()),
             ).fetchall()
 
-        summaries: dict[str, dict[str, int]] = {}
-        for row in rows:
-            user = row["github_user"]
-            event_type = row["event_type"]
-            bucket = summaries.setdefault(
-                user,
-                {
-                    "issues_opened": 0,
-                    "prs_opened": 0,
-                    "prs_merged": 0,
-                    "prs_reviewed": 0,
-                    "comments": 0,
-                    "total_score": 0,
-                },
-            )
-            if event_type == "issue_opened":
-                bucket["issues_opened"] += 1
-            elif event_type == "pr_opened":
-                bucket["prs_opened"] += 1
-            elif event_type == "pr_merged":
-                bucket["prs_merged"] += 1
-            elif event_type == "pr_reviewed":
-                bucket["prs_reviewed"] += 1
-            elif event_type == "comment":
-                bucket["comments"] += 1
+            display_users: dict[str, str] = {}
+            summaries: dict[str, dict[str, int]] = {}
+            for row in rows:
+                raw_user = (row["github_user"] or "").strip()
+                user_key = raw_user.lower()
+                if not user_key:
+                    continue
+                if user_key not in display_users or (
+                    raw_user != user_key and display_users[user_key] == user_key
+                ):
+                    display_users[user_key] = raw_user
+
+                event_type = row["event_type"]
+                bucket = summaries.setdefault(
+                    user_key,
+                    {
+                        "issues_opened": 0,
+                        "prs_opened": 0,
+                        "prs_merged": 0,
+                        "prs_reviewed": 0,
+                        "comments": 0,
+                        "total_score": 0,
+                    },
+                )
+                if event_type == "issue_opened":
+                    bucket["issues_opened"] += 1
+                elif event_type == "pr_opened":
+                    bucket["prs_opened"] += 1
+                elif event_type == "pr_merged":
+                    bucket["prs_merged"] += 1
+                elif event_type == "pr_reviewed":
+                    bucket["prs_reviewed"] += 1
+                elif event_type == "comment":
+                    bucket["comments"] += 1
+
+            if display_users:
+                placeholders = ",".join("?" for _ in display_users)
+                try:
+                    id_rows = conn.execute(
+                        f"""
+                        SELECT github_user, github_user_normalized
+                        FROM identity_links
+                        WHERE github_user_normalized IN ({placeholders}) AND verified = 1
+                        """,
+                        list(display_users.keys()),
+                    ).fetchall()
+                    for id_row in id_rows:
+                        canon = (id_row["github_user"] or "").strip()
+                        norm = (id_row["github_user_normalized"] or "").strip().lower()
+                        if canon and norm in display_users:
+                            display_users[norm] = canon
+                except (sqlite3.OperationalError, sqlite3.DatabaseError):
+                    pass
 
         return [
             ContributionSummary(
-                github_user=user,
+                github_user=display_users.get(user_key, user_key),
                 issues_opened=counts["issues_opened"],
                 prs_opened=counts["prs_opened"],
                 prs_merged=counts["prs_merged"],
@@ -331,7 +359,7 @@ class SqliteStorage:
                 period_start=start_utc,
                 period_end=end_utc,
             )
-            for user, counts in sorted(summaries.items(), key=lambda item: item[0])
+            for user_key, counts in sorted(summaries.items(), key=lambda item: item[0])
         ]
 
     def upsert_scores(self, scores: Sequence[Score]) -> None:
