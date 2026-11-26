@@ -171,3 +171,123 @@ def test_list_contribution_summaries_rejects_deprecated_scoring_args(tmp_path) -
         storage.list_contribution_summaries(
             period_start, period_end, difficulty_weights={"easy": 5}
         )
+
+
+def test_list_contribution_summaries_case_insensitive_aggregation(tmp_path) -> None:
+    """Events with different GitHub login casing are merged into a single summary."""
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    events = [
+        ContributionEvent(
+            github_user="OctoCat",
+            event_type="issue_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=10),
+            payload={"issue_number": 1},
+        ),
+        ContributionEvent(
+            github_user="octocat",
+            event_type="pr_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=8),
+            payload={"pr_number": 2},
+        ),
+        ContributionEvent(
+            github_user="OCTOCAT",
+            event_type="comment",
+            repo="repo",
+            created_at=period_end - timedelta(days=6),
+            payload={"comment_id": 3},
+        ),
+        ContributionEvent(
+            github_user="octoCat",
+            event_type="pr_merged",
+            repo="repo",
+            created_at=period_end - timedelta(days=4),
+            payload={"pr_number": 2},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.github_user.lower() == "octocat"
+    assert summary.issues_opened == 1
+    assert summary.prs_opened == 1
+    assert summary.comments == 1
+    assert summary.prs_merged == 1
+
+
+def test_list_contribution_summaries_canonical_casing_from_identity_links(tmp_path) -> None:
+    """When a linked identity exists, the canonical username casing is used in the summary."""
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    # Link identity with canonical casing "OctoCat"
+    storage.create_identity_claim(
+        discord_user_id="123456",
+        github_user="OctoCat",
+        verification_code="code123",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    storage.mark_identity_verified("123456", "OctoCat")
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    # Record event with lowercase "octocat"
+    events = [
+        ContributionEvent(
+            github_user="octocat",
+            event_type="issue_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"issue_number": 99},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+    assert len(summaries) == 1
+    assert summaries[0].github_user == "OctoCat"
+    assert summaries[0].issues_opened == 1
+
+
+def test_list_contribution_summaries_unverified_claim_ignored(tmp_path) -> None:
+    """An unverified or pending identity claim does not override the contribution's casing."""
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+
+    # Create unverified/pending claim with lowercase "octocat"
+    storage.create_identity_claim(
+        discord_user_id="123456",
+        github_user="octocat",
+        verification_code="code123",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    # Intentionally do not call mark_identity_verified
+
+    period_end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    period_start = period_end - timedelta(days=30)
+
+    # Record event with mixed-case "OctoCat"
+    events = [
+        ContributionEvent(
+            github_user="OctoCat",
+            event_type="issue_opened",
+            repo="repo",
+            created_at=period_end - timedelta(days=5),
+            payload={"issue_number": 100},
+        ),
+    ]
+    storage.record_contributions(events)
+
+    summaries = storage.list_contribution_summaries(period_start, period_end)
+    assert len(summaries) == 1
+    assert summaries[0].github_user == "OctoCat"
+    assert summaries[0].issues_opened == 1
