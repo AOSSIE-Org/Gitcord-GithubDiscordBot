@@ -7,6 +7,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from ghdcbot.engine.notifications import _sanitize_discord_title
+
 logger = logging.getLogger(__name__)
 
 
@@ -274,7 +276,7 @@ def build_pr_embed(
             },
             {
                 "name": "Title",
-                "value": pr.get("title", "Untitled")[:256],  # Discord limit
+                "value": _sanitize_discord_title(pr.get("title") or "Untitled"),
                 "inline": False,
             },
             {

@@ -398,3 +398,57 @@ def test_build_pr_embed_long_title() -> None:
     
     title_field = next(f for f in embed["fields"] if f["name"] == "Title")
     assert len(title_field["value"]) <= 256  # Discord limit
+
+
+def test_build_pr_embed_escapes_masked_link_in_title() -> None:
+    """A PR title must not render as a clickable masked link in the preview embed."""
+    pr = {
+        "title": "[Re-verify](https://evil.example) @everyone",
+        "state": "open",
+        "draft": False,
+        "mergeable": True,
+        "user": {"login": "testuser"},
+        "assignees": [],
+        "requested_reviewers": [],
+        "html_url": "https://github.com/owner/repo/pull/123",
+    }
+
+    embed = build_pr_embed(
+        pr=pr,
+        owner="owner",
+        repo="repo",
+        reviews=[],
+        ci_status="unknown",
+        last_commit_time=None,
+    )
+
+    value = next(f for f in embed["fields"] if f["name"] == "Title")["value"]
+    assert r"\[Re-verify\]\(https://evil.example\)" in value
+    assert "[Re-verify](" not in value
+    assert "@everyone" not in value
+
+
+def test_build_pr_embed_title_truncated_to_100() -> None:
+    """Sanitizing the title caps plain titles at 100 chars."""
+    pr = {
+        "title": "A" * 300,
+        "state": "open",
+        "draft": False,
+        "mergeable": True,
+        "user": {"login": "testuser"},
+        "assignees": [],
+        "requested_reviewers": [],
+        "html_url": "https://github.com/owner/repo/pull/123",
+    }
+
+    embed = build_pr_embed(
+        pr=pr,
+        owner="owner",
+        repo="repo",
+        reviews=[],
+        ci_status="unknown",
+        last_commit_time=None,
+    )
+
+    value = next(f for f in embed["fields"] if f["name"] == "Title")["value"]
+    assert len(value) == 100
