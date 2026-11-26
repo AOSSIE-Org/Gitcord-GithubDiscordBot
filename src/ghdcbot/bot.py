@@ -1720,7 +1720,15 @@ def run_bot(config_path: str) -> None:
             return
         
         owner, repo, pr_number = parsed
-        
+
+        # Only preview PRs in the configured org and permitted repos. Silent
+        # return: no reply, so a prober learns nothing about which repos exist.
+        if owner.lower() != (config.github.org or "").lower():
+            return
+        repo_filter = getattr(getattr(config, "github", None), "repos", None)
+        if not is_repo_allowed(repo_filter, repo):
+            return
+
         # Fetch and send PR preview
         try:
             pr, reviews, ci_status, last_commit_time = await asyncio.to_thread(
