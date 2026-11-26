@@ -215,7 +215,8 @@ def load_config(path: str) -> BotConfig:
     if not config_path.exists() or not config_path.is_file():
         raise ConfigError(f"Config file does not exist: {path}")
 
-    bootstrap = _load_yaml_mapping(config_path)
+    bootstrap_raw = _load_yaml_mapping(config_path)
+    bootstrap = _expand_env_vars(bootstrap_raw)
     raw = _merge_remote_into_bootstrap(bootstrap)
 
     try:

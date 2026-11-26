@@ -284,3 +284,237 @@ def test_load_config_local_only_still_works(
     config = load_config(str(path))
     assert config.github.org == "example-org"
     assert config.remote_config is None
+
+
+def test_bootstrap_data_dir_env_expanded_before_cache_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bootstrap runtime.data_dir with env var is expanded before creating cache dir."""
+    monkeypatch.chdir(tmp_path)
+    target_data_dir = tmp_path / "actual_expanded_data"
+    env_var_name = "TEST_BOOTSTRAP_DATA_DIR_1"
+    monkeypatch.setenv(env_var_name, str(target_data_dir))
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("DISCORD_TOKEN", "discord_test")
+
+    bootstrap = {
+        "runtime": {"data_dir": f"${{{env_var_name}}}"},
+        "remote_config": {
+            "enabled": True,
+            "owner": "AOSSIE-Org",
+            "repo": ".github",
+            "path": "gitcord.yaml",
+        },
+        "github": {"token": "${GITHUB_TOKEN}"},
+        "discord": {"token": "${DISCORD_TOKEN}"},
+    }
+    bootstrap_path = tmp_path / "bootstrap.yaml"
+    bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ghdcbot.config.loader.fetch_remote_config_yaml",
+        lambda **kwargs: MagicMock(
+            data=_minimal_remote_dict(),
+            sha="test_sha",
+            source="AOSSIE-Org/.github/gitcord.yaml",
+        ),
+    )
+
+    literal_dir = Path(f"${{{env_var_name}}}")
+    assert not literal_dir.exists()
+
+    config = load_config(str(bootstrap_path))
+
+    # Assert literal ${VAR} directory was NOT created
+    assert not literal_dir.exists()
+    # Assert cache was written into the expanded directory
+    assert (target_data_dir / "remote_config_cache.yaml").is_file()
+    assert (target_data_dir / "remote_config_cache.meta.yaml").is_file()
+    assert config.runtime.data_dir == str(target_data_dir)
+
+
+def test_bootstrap_remote_config_owner_and_repo_expanded_before_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bootstrap remote_config.owner and repo env vars are expanded before fetching."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("CONFIG_OWNER_VAR", "ExpandedOrg")
+    monkeypatch.setenv("CONFIG_REPO_VAR", "expanded-repo")
+    monkeypatch.setenv("CONFIG_PATH_VAR", "custom-gitcord.yaml")
+    monkeypatch.setenv("CONFIG_REF_VAR", "develop")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("DISCORD_TOKEN", "discord_test")
+
+    bootstrap = {
+        "runtime": {"data_dir": str(data_dir)},
+        "remote_config": {
+            "enabled": True,
+            "owner": "${CONFIG_OWNER_VAR}",
+            "repo": "${CONFIG_REPO_VAR}",
+            "path": "${CONFIG_PATH_VAR}",
+            "ref": "${CONFIG_REF_VAR}",
+        },
+        "github": {"token": "${GITHUB_TOKEN}"},
+        "discord": {"token": "${DISCORD_TOKEN}"},
+    }
+    bootstrap_path = tmp_path / "bootstrap.yaml"
+    bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
+
+    captured_args: dict[str, Any] = {}
+
+    def _mock_fetch(**kwargs: Any) -> MagicMock:
+        captured_args.update(kwargs)
+        return MagicMock(
+            data=_minimal_remote_dict(),
+            sha="owner_repo_sha",
+            source="ExpandedOrg/expanded-repo/custom-gitcord.yaml@develop",
+        )
+
+    monkeypatch.setattr("ghdcbot.config.loader.fetch_remote_config_yaml", _mock_fetch)
+
+    config = load_config(str(bootstrap_path))
+
+    # Verify fetch_remote_config_yaml received the expanded values
+    assert captured_args["owner"] == "ExpandedOrg"
+    assert captured_args["repo"] == "expanded-repo"
+    assert captured_args["path"] == "custom-gitcord.yaml"
+    assert captured_args["ref"] == "develop"
+    assert config.remote_config is not None
+    assert config.remote_config.owner == "ExpandedOrg"
+    assert config.remote_config.repo == "expanded-repo"
+    assert config.remote_config.path == "custom-gitcord.yaml"
+    assert config.remote_config.ref == "develop"
+
+
+def test_remote_config_env_vars_expanded_after_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env vars in remote config are still expanded after merging into bootstrap."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("REMOTE_CHANNEL_ID", "987654321098765432")
+    monkeypatch.setenv("REMOTE_ORG", "ExpandedRemoteOrg")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("DISCORD_TOKEN", "discord_test")
+
+    bootstrap = {
+        "runtime": {"data_dir": str(data_dir)},
+        "remote_config": {
+            "enabled": True,
+            "owner": "AOSSIE-Org",
+            "repo": ".github",
+            "path": "gitcord.yaml",
+        },
+        "github": {"token": "${GITHUB_TOKEN}"},
+        "discord": {"token": "${DISCORD_TOKEN}"},
+    }
+    bootstrap_path = tmp_path / "bootstrap.yaml"
+    bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
+
+    remote_dict = _minimal_remote_dict()
+    remote_dict["github"]["org"] = "${REMOTE_ORG}"
+    remote_dict["discord"]["activity_channel_id"] = "${REMOTE_CHANNEL_ID}"
+
+    monkeypatch.setattr(
+        "ghdcbot.config.loader.fetch_remote_config_yaml",
+        lambda **kwargs: MagicMock(
+            data=remote_dict,
+            sha="remote_env_sha",
+            source="AOSSIE-Org/.github/gitcord.yaml",
+        ),
+    )
+
+    config = load_config(str(bootstrap_path))
+    assert config.github.org == "ExpandedRemoteOrg"
+    assert config.discord.activity_channel_id == "987654321098765432"
+
+
+def test_load_config_without_env_vars_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configurations without environment variables continue working as expected."""
+    data_dir = tmp_path / "plain_data"
+    data_dir.mkdir()
+
+    bootstrap = {
+        "runtime": {"data_dir": str(data_dir)},
+        "remote_config": {
+            "enabled": True,
+            "owner": "PlainOwner",
+            "repo": "plain-repo",
+            "path": "gitcord.yaml",
+        },
+        "github": {"token": "literal_github_token"},
+        "discord": {"token": "literal_discord_token"},
+    }
+    bootstrap_path = tmp_path / "bootstrap.yaml"
+    bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ghdcbot.config.loader.fetch_remote_config_yaml",
+        lambda **kwargs: MagicMock(
+            data=_minimal_remote_dict(),
+            sha="plain_sha",
+            source="PlainOwner/plain-repo/gitcord.yaml",
+        ),
+    )
+
+    config = load_config(str(bootstrap_path))
+    assert config.github.token == "literal_github_token"
+    assert config.discord.token == "literal_discord_token"
+    assert config.runtime.data_dir == str(data_dir)
+    assert config.remote_config is not None
+    assert config.remote_config.owner == "PlainOwner"
+    assert (data_dir / "remote_config_cache.yaml").is_file()
+
+
+def test_load_config_cache_fallback_with_expanded_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache fallback succeeds when data_dir is provided via environment variable."""
+    monkeypatch.chdir(tmp_path)
+    target_data_dir = tmp_path / "cached_data"
+    target_data_dir.mkdir()
+    monkeypatch.setenv("ENV_CACHE_DATA_DIR", str(target_data_dir))
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("DISCORD_TOKEN", "discord_test")
+
+    cache = _minimal_remote_dict()
+    (target_data_dir / "remote_config_cache.yaml").write_text(
+        yaml.safe_dump(cache), encoding="utf-8"
+    )
+    (target_data_dir / "remote_config_cache.meta.yaml").write_text(
+        yaml.safe_dump({"source": "cached_remote", "sha": "cached_sha"}),
+        encoding="utf-8",
+    )
+
+    bootstrap = {
+        "runtime": {"data_dir": "${ENV_CACHE_DATA_DIR}"},
+        "remote_config": {
+            "enabled": True,
+            "owner": "AOSSIE-Org",
+            "repo": ".github",
+            "path": "gitcord.yaml",
+        },
+        "github": {"token": "${GITHUB_TOKEN}"},
+        "discord": {"token": "${DISCORD_TOKEN}"},
+    }
+    bootstrap_path = tmp_path / "bootstrap.yaml"
+    bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
+
+    def _network_failure(**kwargs: Any) -> None:
+        raise ConfigError("network timeout")
+
+    monkeypatch.setattr(
+        "ghdcbot.config.loader.fetch_remote_config_yaml", _network_failure
+    )
+
+    literal_dir = Path("${ENV_CACHE_DATA_DIR}")
+    assert not literal_dir.exists()
+
+    config = load_config(str(bootstrap_path))
+    assert not literal_dir.exists()
+    assert config.github.org == "AOSSIE-Org"
+    assert config.runtime.data_dir == str(target_data_dir)
+    assert config.github.token == "ghp_test"
