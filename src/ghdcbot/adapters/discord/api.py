@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,9 @@ import httpx
 _MAX_RATE_LIMIT_RETRIES = 3
 _DEFAULT_RETRY_AFTER_SECONDS = 1.0
 _MAX_RETRY_AFTER_SECONDS = 10.0
+# 5xx responses carry no retry_after, so wait 1s, 2s, 4s (capped at the value
+# above) before each retry, with the same retry limit as for 429.
+_SERVER_ERROR_BACKOFF_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -433,6 +437,23 @@ class DiscordApiAdapter:
                 )
                 return None
 
+            if response.status_code >= 500:
+                if retries >= _MAX_RATE_LIMIT_RETRIES:
+                    break
+                delay = min(_SERVER_ERROR_BACKOFF_SECONDS * 2**retries, _MAX_RETRY_AFTER_SECONDS)
+                retries += 1
+                self._logger.warning(
+                    "Discord server error; retrying",
+                    extra={
+                        "path": path,
+                        "status_code": response.status_code,
+                        "retry_after": delay,
+                        "attempt": retries,
+                    },
+                )
+                time.sleep(delay)
+                continue
+
             if response.status_code != 429:
                 break
 
@@ -493,7 +514,7 @@ def _retry_after_seconds(body: object) -> float:
         seconds = float(value)
     except (TypeError, ValueError):
         return _DEFAULT_RETRY_AFTER_SECONDS
-    if seconds < 0:
+    if math.isnan(seconds) or seconds < 0:
         return _DEFAULT_RETRY_AFTER_SECONDS
     return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 

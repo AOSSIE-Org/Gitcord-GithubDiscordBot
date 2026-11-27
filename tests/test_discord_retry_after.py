@@ -77,3 +77,32 @@ def test_list_members_keeps_pages_when_a_429_is_retried(monkeypatch) -> None:
     assert ok is True
     assert members == page1
     assert sleeps == [0.2]
+
+
+def test_request_uses_default_wait_when_retry_after_is_nan(monkeypatch) -> None:
+    adapter, sleeps = _adapter(
+        monkeypatch, [_response(429, {"retry_after": "NaN"}), _response(200, [])]
+    )
+
+    response = adapter._request("GET", "/x")
+
+    assert response is not None and response.status_code == 200
+    assert sleeps == [1.0]
+
+
+def test_request_retries_a_5xx_then_succeeds(monkeypatch) -> None:
+    adapter, sleeps = _adapter(monkeypatch, [_response(503), _response(200, [])])
+
+    response = adapter._request("GET", "/x")
+
+    assert response is not None and response.status_code == 200
+    assert sleeps == [1.0]
+
+
+def test_request_backs_off_on_repeated_5xx_and_returns_the_last_response(monkeypatch) -> None:
+    adapter, sleeps = _adapter(monkeypatch, [_response(502) for _ in range(4)])
+
+    response = adapter._request("GET", "/x")
+
+    assert response is not None and response.status_code == 502
+    assert sleeps == [1.0, 2.0, 4.0]
