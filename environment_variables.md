@@ -19,7 +19,7 @@ Missing required environment variable: GITHUB_TOKEN
 
 (or `DISCORD_TOKEN`).
 
-**Note:** Empty values (`GITHUB_TOKEN=`) are rejected at startup. Run `ghdcbot --config config/config.yaml validate` to confirm both tokens work against the live APIs before starting the bot.
+**Note:** Empty values (`GITHUB_TOKEN=`) are rejected at startup. Run a dry-run `ghdcbot --config config/config.yaml run-once` to confirm both tokens work against the live APIs before starting the bot — it reads from GitHub and Discord without mutating anything.
 
 When `remote_config.enabled: true`, the same `GITHUB_TOKEN` (or GitHub App installation credentials) is also used to fetch `gitcord.yaml` from the org `.github` repo at startup.
 
@@ -28,16 +28,23 @@ When `remote_config.enabled: true`, the same `GITHUB_TOKEN` (or GitHub App insta
 ## Preflight validation
 
 ```bash
-ghdcbot --config config/config.yaml validate
+ghdcbot --config config/config.yaml preflight-sync
+ghdcbot --config config/config.yaml run-once
 ```
 
-Checks (read-only, no bot startup):
+Read-only; the bot does not start.
 
-- Config file and YAML schema
-- `GITHUB_TOKEN` and `DISCORD_TOKEN` configured (expanded from `.env`)
-- GitHub `GET /user` and org/repository access
+`preflight-sync` checks:
+
+- Config file and YAML schema load
+- `runtime.mode: "dry-run"`, `discord.permissions.write: false`, `github.permissions.write: false`
+
+A dry-run `run-once` then exercises the live paths:
+
+- `GITHUB_TOKEN` and `DISCORD_TOKEN` resolve from `.env`
+- GitHub organization and repository visibility
 - Discord bot token and guild reachability
-- Discord role names from config (when `runtime.enable_discord_role_updates: true`)
+- Audit report written to `<data_dir>/reports/audit.{json,md}`
 
 See [INSTALLATION.md](INSTALLATION.md#63-validate-setup-recommended) for Docker usage and sample output.
 

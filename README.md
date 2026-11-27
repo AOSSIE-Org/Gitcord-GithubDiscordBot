@@ -117,8 +117,9 @@ Load config -> Ingest -> Score -> Plan -> Audit -> (Optional) Apply
 
 1. **Preflight check**
    - Configure tokens and org
-   - Run `ghdcbot --config config/config.yaml validate`
-   - Fix any ✗ failures before continuing
+   - Run `ghdcbot --config config/config.yaml preflight-sync` to confirm the sync-safe posture
+   - Run a dry-run `ghdcbot --config config/config.yaml run-once` to exercise GitHub and Discord auth
+   - Fix any reported failures before continuing
 
 2. **Dry‑run review**
    - Run `run-once` in dry‑run mode
@@ -174,7 +175,8 @@ This works with Oracle Cloud Free Tier, a small VM from another provider, or you
 3. Validate the configuration, then start the bot and scheduled sync:
 
    ```bash
-   docker compose run --rm bot --config /app/config/config.yaml validate
+   docker compose run --rm bot --config /app/config/config.yaml preflight-sync
+   docker compose run --rm bot --config /app/config/config.yaml run-once
    docker compose --profile scheduler up -d --build
    docker compose ps
    docker compose logs -f bot sync-scheduler
