@@ -1182,6 +1182,46 @@ class SqliteStorage:
             "updated_at": row[9],
         }
 
+    def get_issue_author(self, repo: str, issue_number: int) -> str | None:
+        """Return cached GitHub author login for an issue from local storage, or None."""
+        target = int(issue_number)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT author_github
+                FROM issue_channel_announcements
+                WHERE repo = ? AND issue_number = ?
+                """,
+                (repo, target),
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0]).strip() or None
+
+            rows = conn.execute(
+                """
+                SELECT github_user, payload_json
+                FROM contributions
+                WHERE repo = ? AND event_type = 'issue_opened'
+                ORDER BY id DESC
+                """,
+                (repo,),
+            ).fetchall()
+        for contrib_row in rows:
+            try:
+                payload = json.loads(contrib_row[1])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            raw_num = payload.get("issue_number")
+            try:
+                if raw_num is not None and int(raw_num) == target:
+                    author = str(contrib_row[0] or "").strip()
+                    return author or None
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def update_issue_channel_announcement(
         self,
         repo: str,
