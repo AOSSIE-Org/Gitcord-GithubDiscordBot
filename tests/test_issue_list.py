@@ -604,6 +604,60 @@ def test_issue_cmd_with_explicit_repo() -> None:
 
 
 
+def test_format_single_issue_entry_escapes_masked_link_in_title():
+    issue = {
+        "number": 5,
+        "title": "[Re-verify](https://evil.example) @everyone",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in lines[0]
+    assert "[Re-verify](" not in lines[0]
+    assert "@everyone" not in lines[0]
+    # The trusted issue link is untouched.
+    assert lines[0].startswith("• [#5](<https://github.com/org/repo/issues/5>) — **")
+
+
+def test_format_single_issue_entry_escapes_masked_link_in_label():
+    issue = {
+        "number": 5,
+        "title": "Plain title",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [{"name": "[x](https://evil.example)"}, {"name": "good_first_issue"}],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert r"\[x\]\(https:" "\u200b" r"//evil.example\)" in lines[1]
+    assert "[x](" not in lines[1]
+    # Underscores are escaped so the label cannot italicise; Discord renders it as written.
+    assert "good\\_first\\_issue" in lines[1]
+
+
+def test_format_single_issue_entry_does_not_truncate_long_title_or_label():
+    title = "[Re-verify](https://evil.example) " + "word " * 40 + "END"
+    label = "[x](https://evil.example) " + "l" * 120 + "END"
+    assert len(title) > 100 and len(label) > 100
+    issue = {
+        "number": 5,
+        "title": title,
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [{"name": label}],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert lines[0].endswith("END**")
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\) " + "word " * 40 + "END" in lines[0]
+    assert "[Re-verify](" not in lines[0]
+    assert lines[1].endswith("l" * 120 + "END")
+    assert r"\[x\]\(https:" "\u200b" r"//evil.example\) " in lines[1]
 def test_normalize_issue_labels():
     assert normalize_issue_labels(None) is None
     assert normalize_issue_labels("   ") is None
@@ -778,3 +832,34 @@ def test_issue_cmd_passes_label_and_unassigned_filters() -> None:
     assert sent_text == (
         "No open issues found in **Devr.AI** with label **good first issue,bug** and no assignee."
     )
+
+
+def test_format_single_issue_entry_replaces_backticks_in_title():
+    issue = {
+        "number": 5,
+        "title": "Fix `f(x)` parsing",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    # No code span is opened, so the escapes below render as plain parentheses.
+    assert "`" not in lines[0]
+    assert r"Fix 'f\(x\)' parsing" in lines[0]
+
+
+def test_format_single_issue_entry_replaces_backticks_in_label():
+    issue = {
+        "number": 5,
+        "title": "Plain title",
+        "html_url": "https://github.com/org/repo/issues/5",
+        "state": "open",
+        "user": {"login": "octocat"},
+        "comments": 0,
+        "labels": [{"name": "fix `f(x)`"}],
+    }
+    lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
+    assert r"🏷️ fix 'f\(x\)'" in lines[1]
+    assert "fix `" not in lines[1]

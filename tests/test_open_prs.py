@@ -353,3 +353,56 @@ def test_format_open_prs_messages_empty_list_unchanged() -> None:
     assert len(chunks) == 1
     assert chunks[0] == expected_report
     assert "No open PRs found in configured repos." in chunks[0]
+
+
+def test_format_open_prs_report_escapes_masked_link_in_title() -> None:
+    prs = [
+        _pr(
+            repo="r",
+            number=1,
+            author="alice",
+            title="[Re-verify](https://evil.example) @everyone",
+            created_at="2026-01-01T00:00:00Z",
+        )
+    ]
+    report = format_open_prs_report(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in report
+    assert "[Re-verify](" not in report
+    assert "@everyone" not in report
+    # The trusted PR URL line is untouched.
+    assert "   https://github.com/o/r/pull/1" in report
+
+
+def test_format_open_prs_report_truncates_before_escaping() -> None:
+    prs = [
+        _pr(
+            repo="r",
+            number=1,
+            author="alice",
+            title="a" * 70 + "[x](https://evil.example)",
+            created_at="2026-01-01T00:00:00Z",
+        )
+    ]
+    report = format_open_prs_report(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
+    assert "a" * 70 + r"\[x\]" in report
+    assert "](https://evil.example" not in report
+
+
+def test_format_open_prs_report_neutralizes_bare_url_in_title() -> None:
+    prs = [
+        _pr(
+            repo="r",
+            number=1,
+            author="alice",
+            title="Verify at https://evil.example now",
+            created_at="2026-01-01T00:00:00Z",
+        )
+    ]
+    report = format_open_prs_report(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
+    title_line = next(ln for ln in report.splitlines() if "Verify at" in ln)
+    # The title stays readable but Discord can no longer auto-link it.
+    assert "https://" not in title_line
+    assert "evil.example" in title_line
+    assert "Verify at https:\u200b//evil.example now" in title_line
+    # The trusted PR URL line is untouched.
+    assert "   https://github.com/o/r/pull/1" in report

@@ -457,7 +457,7 @@ def _digest_line_for_title(title: str) -> str:
 
 def test_digest_escapes_masked_link_in_pr_title() -> None:
     line = _digest_line_for_title("[Verify your account](https://evil.example)")
-    assert r"\[Verify your account\]\(https://evil.example\)" in line
+    assert r"\[Verify your account\]\(https:" "\u200b" r"//evil.example\)" in line
     assert "[Verify your account](" not in line
     # The digest's own trusted link is untouched.
     assert line.startswith("• [RepoA #999](https://github.com/Org/RepoA/pull/999) ")

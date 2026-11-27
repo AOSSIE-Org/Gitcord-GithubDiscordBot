@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
+from ghdcbot.engine.notifications import _sanitize_discord_title
+
 
 def list_open_prs_for_author(
     open_prs: Iterable[dict],
@@ -43,7 +45,7 @@ def format_open_prs_report(
             title = f"{title[:77]}..."
         opened = _format_opened_at(pr.get("created_at"))
         url = pr.get("html_url") or f"https://github.com/{org}/{repo}/pull/{number}"
-        lines.append(f"{index}. **{repo}**#{number} — {title}")
+        lines.append(f"{index}. **{repo}**#{number} — {_sanitize_discord_title(title)}")
         lines.append(f"   opened {opened}")
         lines.append(f"   {url}")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
@@ -1112,7 +1113,8 @@ def _build_issue_channel_message(
     ]
     if label_names:
         safe_labels = [
-            _sanitize_discord_title(label).replace("`", "\\`")
+            # Inside a code span backslashes show literally; a backtick would end it.
+            _sanitize_discord_title(label.replace("`", "'"), escape_markdown=False)
             for label in label_names
         ]
         desc_lines.append(
@@ -1432,24 +1434,43 @@ def _suppress_discord_embed(url: str) -> str:
     return f"<{text}>"
 
 
-def _sanitize_discord_title(title: str) -> str:
-    """Escape markdown link delimiters and neutralize mention tokens in titles.
+_URL_SCHEME_RE = re.compile(r"(https?|ftp):(?=//)", re.IGNORECASE)
 
-    Used for PR and issue channel titles. Neutralizes ``@everyone`` / ``@here`` and
-    structured Discord mentions (``<@…>``, ``<@!…>``, ``<@&…>``, ``<#…>``) so
-    attacker-controlled titles cannot ping users/roles/channels. Trusted author /
-    assignee ``<@id>`` lines are built separately and are not passed through here.
+
+def _sanitize_discord_title(
+    title: str, max_len: int | None = 100, *, escape_markdown: bool = True
+) -> str:
+    """Make an attacker-controlled title render as plain text in Discord.
+
+    Used for PR and issue titles. In order:
+
+    * Truncate to ``max_len`` characters (default 100) *before* escaping so a cut
+      can never split an escape sequence; pass ``max_len=None`` to keep it all.
+    * Backslash-escape markdown (``\\ * _ ~ ` |``) and the link delimiters
+      ``[ ] ( )``, so a title cannot format text, hide it in a spoiler or build a
+      masked link.
+    * Neutralize ``@everyone`` / ``@here`` and structured Discord mentions
+      (``<@…>``, ``<@!…>``, ``<@&…>``, ``<#…>``). Trusted author / assignee
+      ``<@id>`` lines are built separately and are not passed through here.
+    * Break bare ``http://``, ``https://`` and ``ftp://`` URLs with a zero-width
+      space after the colon so Discord does not auto-link them. This runs last so
+      the zero-width space is never itself escaped.
+
+    Pass ``escape_markdown=False`` where the result is shown literally and
+    backslashes would be visible (inside a code span). Mentions and URLs are
+    still neutralized.
     """
-    text = (title or "Untitled")[:100]
-    text = text.replace("\\", "\\\\")
-    for ch in ("[", "]", "(", ")"):
-        text = text.replace(ch, f"\\{ch}")
+    text = (title or "Untitled")[:max_len]
+    if escape_markdown:
+        # Backslash first, so the escapes added after it are not doubled.
+        for ch in ("\\", "*", "_", "~", "`", "|", "[", "]", "(", ")"):
+            text = text.replace(ch, f"\\{ch}")
     for mention in ("@everyone", "@here"):
         text = text.replace(mention, mention[0] + "\u200b" + mention[1:])
     # Break <@…> / <@!…> / <@&…> / <#…> openers without touching later trusted mentions.
     for opener in ("<@", "<#"):
         text = text.replace(opener, opener[0] + "\u200b" + opener[1:])
-    return text
+    return _URL_SCHEME_RE.sub(lambda m: m.group(0) + "\u200b", text)
 
 
 def _build_pr_opened_channel_message(

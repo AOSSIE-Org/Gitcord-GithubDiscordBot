@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ghdcbot.config.access import cfg_get
+from ghdcbot.engine.notifications import _sanitize_discord_title
 from ghdcbot.engine.pr_context import current_review_states
 
 logger = logging.getLogger(__name__)
@@ -554,7 +555,7 @@ def format_single_pr_status(status: PRHealthStatus, org: str) -> str:
     lines: list[str] = []
 
     # Header
-    lines.append(f"**{status.repo}#{status.number}** — {_truncate(status.title, 80)}")
+    lines.append(f"**{status.repo}#{status.number}** — {_sanitize_discord_title(_truncate(status.title, 80))}")
     lines.append(f"👤 **Author:** {status.author}")
     lines.append("")
 
@@ -697,7 +698,7 @@ def format_all_pr_status(
             detail_parts.append("Draft")
 
         detail = " · ".join(detail_parts)
-        title = _truncate(s.title, 50)
+        title = _sanitize_discord_title(_truncate(s.title, 50))
         pr_lines.append(
             f"{health_emoji} **{s.repo}#{s.number}** — \"{title}\" ({detail})"
         )

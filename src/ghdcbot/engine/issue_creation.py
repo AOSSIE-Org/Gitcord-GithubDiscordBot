@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ghdcbot.engine.notifications import _sanitize_discord_title
+
 
 def validate_issue_params(title: str, repo: str, org: str) -> tuple[bool, str]:
     """Validate parameters before creating an issue.
@@ -117,7 +119,7 @@ def build_issue_created_embed(
             },
             {
                 "name": "Issue",
-                "value": f"[#{issue_number}: {issue_title[:100]}]({issue_url})",
+                "value": f"[#{issue_number}: {_sanitize_discord_title(issue_title)}]({issue_url})",
                 "inline": False,
             },
             {

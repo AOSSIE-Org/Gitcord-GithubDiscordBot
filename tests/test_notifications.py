@@ -3451,3 +3451,90 @@ def test_notification_message_title_sanitization() -> None:
     assert "@everyone" not in msg_reopened
     assert "\\[Click Here\\]" in msg_reopened
 
+
+def test_sanitize_discord_title_neutralizes_bare_urls() -> None:
+    clean = _sanitize_discord_title("Verify at https://evil.example/login")
+    assert "https://" not in clean
+    assert clean == "Verify at https:\u200b//evil.example/login"
+    # http and ftp, in any case, and more than one per title.
+    clean = _sanitize_discord_title("HTTP://a.example Ftp://b.example http://c.example")
+    assert "://" not in clean
+    assert clean.count("\u200b") == 3
+    # The zero-width space is added last, so it is never escaped itself.
+    assert "\\\u200b" not in clean
+
+
+def test_sanitize_discord_title_neutralizes_url_inside_escaped_link() -> None:
+    clean = _sanitize_discord_title("[click](https://evil.example)")
+    assert clean == "\\[click\\]\\(https:\u200b//evil.example\\)"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("~~Fix~~", "\\~\\~Fix\\~\\~"),
+        ("*x*", "\\*x\\*"),
+        ("**bold**", "\\*\\*bold\\*\\*"),
+        ("_x_", "\\_x\\_"),
+        ("`code`", "\\`code\\`"),
+        ("||spoiler||", "\\|\\|spoiler\\|\\|"),
+        ("a\\b", "a\\\\b"),
+    ],
+)
+def test_sanitize_discord_title_escapes_markdown_delimiters(raw: str, expected: str) -> None:
+    assert _sanitize_discord_title(raw) == expected
+
+
+def test_sanitize_discord_title_snake_case_word_stays_readable() -> None:
+    # An escaped underscore renders as a plain "_" in Discord; the word is not italicised.
+    assert (
+        _sanitize_discord_title("fix parse_discord_title bug")
+        == "fix parse\\_discord\\_title bug"
+    )
+
+
+def test_sanitize_discord_title_without_markdown_escaping_keeps_text_literal() -> None:
+    clean = _sanitize_discord_title(
+        "good_first_issue [x] @everyone https://evil.example", escape_markdown=False
+    )
+    assert "\\" not in clean
+    assert "good_first_issue [x]" in clean
+    # Mentions and URLs are still neutralized.
+    assert "@\u200beveryone" in clean
+    assert "https://" not in clean
+    assert "evil.example" in clean
+
+
+def test_issue_opened_channel_notification_labels_are_literal_in_code_span() -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "999", "github_user": "alice"}
+    ]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_opened=True)
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE,
+        github_write_allowed=True,
+        discord_write_allowed=True,
+    )
+
+    send_issue_opened_channel_notification(
+        _issue_opened_event(labels=["good_first_issue", "fix `x`", "see https://evil.example"]),
+        storage,
+        discord_writer,
+        policy,
+        config,
+        {"Gitcord-GithubDiscordBot": "chan"},
+        "AOSSIE-Org",
+    )
+
+    desc = discord_writer.message_embeds[0][0]["description"]
+    labels_line = desc.split("Labels:", 1)[1]
+    # Code spans show backslashes literally, so labels are not escaped; a backtick
+    # would end the span early, so it becomes an apostrophe.
+    assert "`good_first_issue`" in labels_line
+    assert "`fix 'x'`" in labels_line
+    assert "\\" not in labels_line
+    assert "https://" not in labels_line
+    assert "evil.example" in labels_line
+
