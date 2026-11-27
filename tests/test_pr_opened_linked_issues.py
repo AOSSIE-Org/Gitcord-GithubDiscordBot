@@ -378,3 +378,150 @@ def test_pr_opened_linked_issue_github_reader_error_graceful_fallback() -> None:
         in desc
     )
     assert "opened by" not in desc
+
+
+def test_pr_opened_linked_issue_ignores_out_of_range_sqlite_ints(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    storage.record_contributions(
+        [
+            ContributionEvent(
+                github_user="bob",
+                event_type="issue_opened",
+                repo="Gitcord-GithubDiscordBot",
+                created_at=datetime(2026, 11, 20, 10, 0, tzinfo=UTC),
+                payload={"issue_number": 15, "title": "Bug"},
+            )
+        ]
+    )
+    writer = _FakeDiscordWriter()
+    config = NotificationConfig(
+        enabled=True, pr_opened=True, pr_opened_show_linked_issues=True
+    )
+
+    # Out-of-range (> int64 max), non-positive, and bool entries are skipped; valid #15 still renders.
+    sent = send_pr_opened_channel_notification(
+        _pr_event([1 << 63, 0, -5, True, 15]),  # type: ignore[list-item]
+        storage,  # type: ignore[arg-type]
+        writer,  # type: ignore[arg-type]
+        _active_policy(),
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    assert sent is True
+    desc = writer.sent[0][2][0]["description"]  # type: ignore[index]
+    assert (
+        "Solves Issue [#15](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/issues/15) "
+        "(opened by @bob)"
+    ) in desc
+
+    # When no valid references remain, normal announcement is preserved without crashing.
+    writer.sent.clear()
+    storage2 = SqliteStorage(str(tmp_path / "db2"))
+    storage2.init_schema()
+    sent2 = send_pr_opened_channel_notification(
+        _pr_event([1 << 63, 0, -1]),
+        storage2,  # type: ignore[arg-type]
+        writer,  # type: ignore[arg-type]
+        _active_policy(),
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+    )
+    assert sent2 is True
+    desc2 = writer.sent[0][2][0]["description"]  # type: ignore[index]
+    assert "Solves" not in desc2
+    assert "Created by @alice" in desc2
+
+
+def test_sqlite_record_contributions_dedupes_pr_opened_with_changed_payload(tmp_path) -> None:
+    storage = SqliteStorage(str(tmp_path))
+    storage.init_schema()
+    ts = datetime(2026, 11, 25, 10, 0, tzinfo=UTC)
+
+    first = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="repo-a",
+        created_at=ts,
+        payload={"pr_number": 42, "title": "Fix bug"},
+    )
+    second_with_linked = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="repo-a",
+        created_at=ts,
+        payload={
+            "pr_number": 42,
+            "title": "Fix bug",
+            "linked_issue_numbers": [15],
+        },
+    )
+    new_pr = ContributionEvent(
+        github_user="alice",
+        event_type="pr_opened",
+        repo="repo-a",
+        created_at=ts,
+        payload={
+            "pr_number": 43,
+            "title": "Another fix",
+            "linked_issue_numbers": [16],
+        },
+    )
+
+    assert storage.record_contributions([first]) == 1
+    assert storage.record_contributions([second_with_linked]) == 0
+    assert storage.record_contributions([new_pr]) == 1
+
+    stored = list(storage.list_contributions(datetime(2026, 11, 24, 0, 0, tzinfo=UTC)))
+    assert len(stored) == 2
+    by_pr = {e.payload["pr_number"]: e.payload for e in stored}
+    assert by_pr[43]["linked_issue_numbers"] == [16]
+
+
+def test_pr_opened_linked_issue_normalizes_unknown_author() -> None:
+    storage = _FakeStorage()
+    storage.issue_authors[("Gitcord-GithubDiscordBot", 5)] = "unknown"
+    writer = _FakeDiscordWriter()
+    config = NotificationConfig(
+        enabled=True, pr_opened=True, pr_opened_show_linked_issues=True
+    )
+    github_reader = MagicMock()
+    github_reader.get_issue.return_value = {"number": 5, "user": {"login": "bob"}}
+
+    # "unknown" from storage triggers fallback and resolves real author.
+    assert send_pr_opened_channel_notification(
+        _pr_event([5]),
+        storage,  # type: ignore[arg-type]
+        writer,  # type: ignore[arg-type]
+        _active_policy(),
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+        github_reader=github_reader,
+    )
+    desc = writer.sent[0][2][0]["description"]  # type: ignore[index]
+    assert "(opened by @bob)" in desc
+
+    # When fallback also cannot resolve an author, render only the issue link (no @unknown).
+    writer.sent.clear()
+    storage.notifications_sent.clear()
+    github_reader.get_issue.return_value = None
+    assert send_pr_opened_channel_notification(
+        _pr_event([5]),
+        storage,  # type: ignore[arg-type]
+        writer,  # type: ignore[arg-type]
+        _active_policy(),
+        config,
+        {"Gitcord-GithubDiscordBot": "chan-1"},
+        "AOSSIE-Org",
+        github_reader=github_reader,
+    )
+    desc2 = writer.sent[0][2][0]["description"]  # type: ignore[index]
+    assert (
+        "Solves Issue [#5](https://github.com/AOSSIE-Org/Gitcord-GithubDiscordBot/issues/5)"
+        in desc2
+    )
+    assert "@unknown" not in desc2
+    assert "opened by" not in desc2

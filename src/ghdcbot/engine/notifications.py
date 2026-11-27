@@ -1487,6 +1487,16 @@ def _lookup_issue_author_fallback(
     return login or None
 
 
+_SQLITE_MAX_INT64 = (1 << 63) - 1
+
+
+def _normalize_issue_author(author: str | None) -> str | None:
+    cleaned = (author or "").strip()
+    if not cleaned or cleaned.lower() == "unknown" or cleaned == "<deleted>":
+        return None
+    return cleaned
+
+
 def _build_linked_issues_line(
     event: ContributionEvent,
     storage: Storage | None,
@@ -1503,11 +1513,13 @@ def _build_linked_issues_line(
     unique_issues: list[int] = []
     seen: set[int] = set()
     for raw in raw_issues:
+        if isinstance(raw, bool):
+            continue
         try:
             num = int(raw)
         except (TypeError, ValueError):
             continue
-        if num > 0 and num not in seen:
+        if 1 <= num <= _SQLITE_MAX_INT64 and num not in seen:
             seen.add(num)
             unique_issues.append(num)
             if len(unique_issues) >= max_issues:
@@ -1521,16 +1533,16 @@ def _build_linked_issues_line(
     for num in unique_issues:
         issue_url = f"https://github.com/{github_org}/{event.repo}/issues/{num}"
         issue_link = f"[#{num}]({issue_url})"
-        issue_author = get_issue_author(event.repo, num) if callable(get_issue_author) else None
+        issue_author = _normalize_issue_author(
+            get_issue_author(event.repo, num) if callable(get_issue_author) else None
+        )
         if not issue_author:
-            issue_author = _lookup_issue_author_fallback(
-                github_reader, github_org, event.repo, num
+            issue_author = _normalize_issue_author(
+                _lookup_issue_author_fallback(
+                    github_reader, github_org, event.repo, num
+                )
             )
-        if (
-            issue_author
-            and issue_author != "<deleted>"
-            and not _is_github_bot_login(issue_author)
-        ):
+        if issue_author and not _is_github_bot_login(issue_author):
             issue_discord_id = (
                 _resolve_github_to_discord(storage, issue_author)
                 if storage is not None
