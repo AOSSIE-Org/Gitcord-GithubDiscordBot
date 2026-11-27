@@ -383,7 +383,7 @@ nohup ghdcbot --config config/config.yaml bot > bot.log 2>&1 &
 
 ### 7.3 Smoke-test slash commands
 
-**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/pr`, `/create-issue` (requires verified link and `github.permissions.write: true`), `/unlink`, `/connect-social`, `/disconnect-social`
+**Contributors:** `/link`, `/verify-link`, `/profile` (optional Discord member), `/summary` (optional Discord member for another verified contributor), `/open-prs`, `/pr`, `/create-issue` (requires verified link and `github.permissions.write: true`; optionally gateable via `discord.command_permissions.create-issue`), `/unlink`, `/connect-social`, `/disconnect-social`
 
 **Mentors** (need `Mentor` role or `discord.command_permissions`): `/sync`, `/pr-channel set|remove|list` (connect a repo to a channel/thread for PR and issue posts; uses the `sync` rule unless `pr-channel` is set — see [docs/DOCKER.md](docs/DOCKER.md#connect-repos-to-channels-from-discord-pr-channel))
 

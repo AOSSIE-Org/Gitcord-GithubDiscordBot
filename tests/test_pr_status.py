@@ -385,6 +385,23 @@ class TestFetchPRHealth:
         assert health.changes_requested_count == 1
         assert health.health_indicator == "blocked"
 
+    def test_approval_after_requested_changes(self) -> None:
+        """Only each reviewer's latest verdict counts, as on GitHub."""
+        adapter = MagicMock()
+        adapter.get_pull_request.return_value = _make_pr_data()
+        adapter.get_pull_request_reviews.return_value = [
+            {"user": {"login": "mentor"}, "state": "CHANGES_REQUESTED"},
+            {"user": {"login": "mentor"}, "state": "APPROVED"},
+        ]
+        adapter.get_pull_request_check_runs.return_value = []
+        adapter.get_pull_request_review_comments.return_value = []
+
+        health = fetch_pr_health(adapter, "org", "my-repo", 7)
+        assert health is not None
+        assert health.review_state == "approved"
+        assert health.approved_count == 1
+        assert health.changes_requested_count == 0
+
     def test_no_head_sha(self) -> None:
         """PR without head SHA: CI stays unknown."""
         adapter = MagicMock()

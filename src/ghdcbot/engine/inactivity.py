@@ -942,6 +942,100 @@ def run_issue_inactivity_lifecycle(
                                     payload={"issue_number": issue_number, "days": inactivity_days},
                                 )
                                 mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
+                        else:
+                            # Discord DM delivery failed for verified contributor (e.g. DMs disabled or bot blocked).
+                            # Fall back to posting a check-in comment on GitHub issue to prevent livelock and auto-unassign immunity.
+                            logger.info(
+                                "Discord DM delivery failed for verified contributor %s; falling back to GitHub issue comment",
+                                assignee,
+                                extra={"repo": repo, "issue": issue_number, "assignee": assignee, "discord_user_id": discord_user_id},
+                            )
+                            if policy.allow_github_mutations:
+                                comment_fn = getattr(github_writer, "create_issue_comment", None)
+                                posted = False
+                                if callable(comment_fn):
+                                    try:
+                                        posted = bool(
+                                            comment_fn(
+                                                github_org,
+                                                repo,
+                                                issue_number,
+                                                build_checkin_comment(assignee, inactivity_label),
+                                            )
+                                        )
+                                    except Exception as exc:  # noqa: BLE001
+                                        logger.warning(
+                                            "Failed to post check-in warning comment as fallback for verified contributor",
+                                            extra={"repo": repo, "issue": issue_number, "assignee": assignee, "error": str(exc)},
+                                        )
+                                if posted:
+                                    rem_fn = getattr(storage, "record_issue_inactivity_reminder", None)
+                                    if callable(rem_fn):
+                                        rem_fn(repo, issue_number, assignee, current_time)
+
+                                    mark_sent = getattr(storage, "mark_notification_sent", None)
+                                    if callable(mark_sent):
+                                        event = ContributionEvent(
+                                            github_user=assignee,
+                                            event_type="issue_inactivity_checkin",
+                                            repo=repo,
+                                            created_at=current_time,
+                                            payload={"issue_number": issue_number, "days": inactivity_days},
+                                        )
+                                        mark_sent(dedupe_key, event, discord_user_id, None, assignee)
+
+                                    logger.info(
+                                        "Posted %s inactivity check-in comment as fallback for verified contributor",
+                                        inactivity_label,
+                                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                                    )
+                            elif not policy.allow_github_mutations:
+                                dry_run_dedupe_key = (
+                                    f"issue_inactivity_checkin_dry_run:{repo}:{issue_number}:{assignee}:{last_act.isoformat()}"
+                                )
+                                was_sent = getattr(storage, "was_notification_sent", None)
+                                already_logged = False
+                                if callable(was_sent):
+                                    already_logged = bool(was_sent(dry_run_dedupe_key))
+                                else:
+                                    audit_events = getattr(storage, "audit_events", None)
+                                    if isinstance(audit_events, list):
+                                        already_logged = _audit_logged(
+                                            audit_events,
+                                            "issue_inactivity_checkin_dry_run",
+                                            repo,
+                                            issue_number,
+                                            assignee,
+                                        )
+                                if not already_logged:
+                                    logger.info(
+                                        "[DRY-RUN / AUDIT] Would post %s inactivity check-in comment as fallback for verified contributor",
+                                        inactivity_label,
+                                        extra={"repo": repo, "issue": issue_number, "assignee": assignee},
+                                    )
+
+                                    audit_fn = getattr(storage, "append_audit_event", None)
+                                    if callable(audit_fn):
+                                        audit_fn(_inactivity_audit_event(
+                                            "issue_inactivity_checkin_dry_run",
+                                            repo=repo,
+                                            issue_number=issue_number,
+                                            assignee=assignee,
+                                            discord_user_id=discord_user_id,
+                                            when=current_time,
+                                            days=inactivity_days,
+                                        ))
+
+                                    mark_sent = getattr(storage, "mark_notification_sent", None)
+                                    if callable(mark_sent):
+                                        event = ContributionEvent(
+                                            github_user=assignee,
+                                            event_type="issue_inactivity_checkin_dry_run",
+                                            repo=repo,
+                                            created_at=current_time,
+                                            payload={"issue_number": issue_number, "days": inactivity_days},
+                                        )
+                                        mark_sent(dry_run_dedupe_key, event, discord_user_id or "", None, assignee)
                     else:
                         # Unverified contributor: cannot send Discord DM; warn via GitHub comment
                         if policy.allow_github_mutations:

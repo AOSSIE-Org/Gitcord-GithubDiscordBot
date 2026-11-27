@@ -35,7 +35,7 @@ discord:
     write: true
   # Public invite used in GitHub PR comments for unverified authors.
   invite_url: "https://discord.gg/hjUhu33uAn"
-  # TESTING: set false in production — when true, any server member may use /assign-issue, /issue-requests, /sync.
+  # TESTING: set false in production — when true, any server member may use /assign-issue, /issue-requests, /sync, /create-issue.
   unrestricted_slash_commands: false
   # Per-command slash access (role_ids stable; role_names optional). Admins may use these when enabled below.
   command_permissions:
