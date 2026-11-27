@@ -227,6 +227,48 @@ def test_format_audit_markdown_groups_by_event_type(tmp_path: Path) -> None:
     assert "alice" in md_output
 
 
+def test_format_audit_markdown_escapes_pipes_in_context_values() -> None:
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "issue_created",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {
+                "github_user": "alice",
+                "issue_number": 42,
+                "title": "Docs: see A | B | C",
+            },
+        },
+    ]
+
+    md_output = format_audit_markdown(events)
+
+    row = next(line for line in md_output.splitlines() if "issue_number=42" in line)
+    assert "title=Docs: see A \\| B \\| C" in row
+    # Four cells means five unescaped pipes.
+    assert row.replace("\\|", "").count("|") == 5
+
+
+def test_format_audit_markdown_keeps_a_row_on_one_line() -> None:
+    events = [
+        {
+            "actor_type": "discord_user",
+            "actor_id": "123",
+            "event_type": "issue_created",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "context": {"github_user": "alice", "title": "first\nsecond\r\nthird"},
+        },
+    ]
+
+    md_output = format_audit_markdown(events)
+
+    assert "title=first second third" in md_output
+    rows = [line for line in md_output.splitlines() if line.startswith("| 2026")]
+    assert len(rows) == 1
+    assert rows[0].endswith("|")
+
+
 def test_format_audit_markdown_empty_events(tmp_path: Path) -> None:
     md_output = format_audit_markdown([])
     assert "No events found" in md_output
