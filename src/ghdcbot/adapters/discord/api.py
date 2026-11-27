@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
+
+_MAX_RATE_LIMIT_RETRIES = 3
+_DEFAULT_RETRY_AFTER_SECONDS = 1.0
+_MAX_RETRY_AFTER_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -418,22 +423,36 @@ class DiscordApiAdapter:
         return members, True
 
     def _request(self, method: str, path: str, params: dict | None = None) -> httpx.Response | None:
-        try:
-            response = self._client.request(method, path, params=params)
-        except httpx.HTTPError as exc:
-            self._logger.warning("Discord request failed", extra={"path": path, "error": str(exc)})
-            return None
+        retries = 0
+        while True:
+            try:
+                response = self._client.request(method, path, params=params)
+            except httpx.HTTPError as exc:
+                self._logger.warning(
+                    "Discord request failed", extra={"path": path, "error": str(exc)}
+                )
+                return None
 
-        if response.status_code == 429:
+            if response.status_code != 429:
+                break
+
             try:
                 body = response.json()
-            except Exception:
+            except ValueError:
                 body = {}
+            retry_after = _retry_after_seconds(body)
+            if retries >= _MAX_RATE_LIMIT_RETRIES:
+                self._logger.warning(
+                    "Discord rate limit reached; stopping",
+                    extra={"path": path, "retry_after": body.get("retry_after")},
+                )
+                return None
+            retries += 1
             self._logger.warning(
-                "Discord rate limit reached; stopping",
-                extra={"path": path, "retry_after": body.get("retry_after")},
+                "Discord rate limit reached; retrying",
+                extra={"path": path, "retry_after": retry_after, "attempt": retries},
             )
-            return None
+            time.sleep(retry_after)
 
         if response.status_code in {401, 403}:
             self._logger.warning(
@@ -465,6 +484,18 @@ class DiscordApiAdapter:
                 "read_members": members_ok,
             },
         )
+
+
+def _retry_after_seconds(body: object) -> float:
+    """Return how long to wait after a 429, from the response body, within a safe range."""
+    value = body.get("retry_after") if isinstance(body, dict) else None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_RETRY_AFTER_SECONDS
+    if seconds < 0:
+        return _DEFAULT_RETRY_AFTER_SECONDS
+    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
 
 def _parse_rate_limit(headers: dict) -> DiscordRateLimit:
