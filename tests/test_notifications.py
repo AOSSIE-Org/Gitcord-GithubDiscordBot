@@ -1,6 +1,6 @@
 """Tests for verified-only GitHub → Discord notifications."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Barrier, Thread
 from unittest.mock import MagicMock
 
@@ -3450,4 +3450,62 @@ def test_notification_message_title_sanitization() -> None:
     assert msg_reopened is not None
     assert "@everyone" not in msg_reopened
     assert "\\[Click Here\\]" in msg_reopened
+
+
+def test_send_notification_for_event_atomic_claim_prevents_duplicate_dm(tmp_path) -> None:
+    """Concurrent /sync + scheduler runs must not double-DM the same event.
+
+    The scheduler (``scripts/sync-loop.sh`` → ``scheduler run-once``) and a
+    mentor-triggered ``/sync`` (``bot.sync_cmd`` → ``asyncio.to_thread(orchestrator.run_once)``)
+    run in separate processes against the same SQLite state.db. The scheduler's
+    flock only covers scheduler-vs-scheduler, so the two paths can race on the same
+    dedupe key. ``send_notification_for_event`` must therefore use the atomic
+    ``claim_notification_sent`` pattern (same as ``send_pr_opened_channel_notification``):
+    exactly one caller should win the claim and send the DM, the other should see
+    the claim and return False without sending.
+    """
+    storage = SqliteStorage(str(tmp_path / "state.db"))
+    storage.init_schema()
+    storage.create_identity_claim(
+        "discord123", "alice", "tok", datetime.now(UTC) + timedelta(hours=1)
+    )
+    storage.mark_identity_verified("discord123", "alice")
+
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, issue_assignment=True)  # DM mode
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True
+    )
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_assigned",
+        repo="test-repo",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 123, "title": "Fix bug"},
+    )
+    barrier = Barrier(2)
+    results: list[bool] = []
+
+    def _run() -> None:
+        barrier.wait()
+        results.append(
+            send_notification_for_event(
+                event, storage, discord_writer, policy, config, "test-org"
+            )
+        )
+
+    threads = [Thread(target=_run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Exactly one claimant wins, exactly one DM leaves the bot.
+    assert sorted(results) == [False, True]
+    assert len(discord_writer.dms_sent) == 1
+    assert discord_writer.dms_sent[0][0] == "discord123"
+    # The dedupe row persists so a later sync on the same event is skipped.
+    assert storage.was_notification_sent(
+        "issue_assigned:test-repo:123:alice"
+    )
 

@@ -151,11 +151,30 @@ def send_notification_for_event(
         )
         return False
     
-    # Deduplication: check if we already sent this notification
+    # Deduplication: atomically claim the key so a concurrent /sync and scheduler
+    # run_once cannot both send the same DM. Mirrors the pattern already used by
+    # send_pr_opened_channel_notification / send_issue_opened_channel_notification.
     dedupe_key = _build_dedupe_key(event, target_github_user)
-    if _was_notification_sent(storage, dedupe_key):
+
+    # Build notification message
+    message = _build_notification_message(event, event_type_key, github_org, target_github_user)
+    if not message:
+        return False
+
+    try:
+        claimed = _claim_notification_sent(
+            storage, dedupe_key, event, discord_user_id, config.channel_id, target_github_user
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to claim notification dedupe key",
+            exc_info=True,
+            extra={"error": str(exc), "dedupe_key": dedupe_key},
+        )
+        return False
+    if not claimed:
         logger.info(
-            "Skipping duplicate notification",
+            "Skipping duplicate notification (already claimed)",
             extra={
                 "dedupe_key": dedupe_key,
                 "event_type": event.event_type,
@@ -166,12 +185,7 @@ def send_notification_for_event(
             },
         )
         return False
-    
-    # Build notification message
-    message = _build_notification_message(event, event_type_key, github_org, target_github_user)
-    if not message:
-        return False
-    
+
     # Send notification (DM or channel)
     sent = _send_discord_notification(
         discord_writer,
@@ -180,14 +194,15 @@ def send_notification_for_event(
         config.channel_id,
         policy,
     )
-    
+
     if sent:
-        # Mark as sent (dedupe)
-        _mark_notification_sent(storage, dedupe_key, event, discord_user_id, config.channel_id, target_github_user)
         # Audit
         _audit_notification(storage, event, discord_user_id, config.channel_id, target_github_user)
-    
-    return sent
+        return True
+
+    # Release the claim so a later sync can retry.
+    _release_notification_claim(storage, dedupe_key)
+    return False
 
 
 def send_pr_opened_channel_notification(
@@ -1977,28 +1992,38 @@ def run_coderabbit_reminders(
         if not old_bot_comments:
             continue
         dedupe_key = f"coderabbit_reminder:{repo}:{pr_number}:{discord_user_id}"
-        if _was_notification_sent(storage, dedupe_key):
+        event = ContributionEvent(
+            github_user=author,
+            event_type="coderabbit_reminder",
+            repo=repo,
+            created_at=datetime.now(timezone.utc),
+            payload={"pr_number": pr_number},
+        )
+        try:
+            claimed = _claim_notification_sent(
+                storage, dedupe_key, event, discord_user_id, config.channel_id, author
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to claim CodeRabbit reminder dedupe key",
+                exc_info=True,
+                extra={"error": str(exc), "repo": repo, "pr_number": pr_number},
+            )
+            continue
+        if not claimed:
             continue
         message = _build_coderabbit_reminder_message(github_org, repo, pr_number, after_hours)
         sent = _send_discord_notification(
             discord_writer, discord_user_id, message, config.channel_id, policy
         )
         if sent:
-            event = ContributionEvent(
-                github_user=author,
-                event_type="coderabbit_reminder",
-                repo=repo,
-                created_at=datetime.now(timezone.utc),
-                payload={"pr_number": pr_number},
-            )
-            _mark_notification_sent(
-                storage, dedupe_key, event, discord_user_id, config.channel_id, author
-            )
             sent_count += 1
             logger.info(
                 "Sent CodeRabbit reminder",
                 extra={"repo": repo, "pr_number": pr_number, "github_user": author},
             )
+        else:
+            _release_notification_claim(storage, dedupe_key)
     if sent_count > 0:
         logger.info("CodeRabbit reminders sent", extra={"count": sent_count})
 
