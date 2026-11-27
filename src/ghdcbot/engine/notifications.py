@@ -1908,11 +1908,16 @@ def _send_discord_notification(
         send_msg = getattr(discord_writer, "send_message", None)
         if callable(send_msg):
             try:
-                send_msg(channel_id, message)
-                return True
+                sent = bool(send_msg(channel_id, message))
             except Exception as exc:
                 logger.warning("Failed to send channel notification", exc_info=True, extra={"error": str(exc)})
                 return False
+            if not sent:
+                logger.warning(
+                    "Discord channel send returned False; skipping dedupe/audit so sync can retry",
+                    extra={"channel_id": channel_id},
+                )
+            return sent
     else:
         send_dm = getattr(discord_writer, "send_dm", None)
         if callable(send_dm):

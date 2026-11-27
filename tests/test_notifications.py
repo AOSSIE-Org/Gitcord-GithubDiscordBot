@@ -916,6 +916,58 @@ def test_send_notification_channel_mode() -> None:
     assert len(discord_writer.dms_sent) == 0
 
 
+def test_send_notification_channel_failure_does_not_dedupe() -> None:
+    """Regression: a False return from the channel adapter must propagate so the
+    engine does not mark a never-delivered notification as sent.
+
+    The DiscordApiAdapter returns False when create_message returns None (429,
+    404, 403, httpx transport errors). Before the fix _send_discord_notification
+    discarded that bool in the channel branch and unconditionally returned True,
+    so the dedupe row went in and the next sync's retry never happened.
+    """
+
+    class FailingChannelWriter(MockDiscordWriter):
+        def send_message(self, channel_id: str, content: str) -> bool:
+            # Record the attempt but report failure the way the real adapter would
+            # on a non-raising 429/5xx response.
+            self.messages_sent.append((channel_id, content))
+            self.message_embeds.append(None)
+            return False
+
+    storage = MockStorage()
+    storage.verified_mappings = [
+        {"discord_user_id": "discord123", "github_user": "alice"},
+    ]
+    discord_writer = FailingChannelWriter()
+    config = NotificationConfig(
+        enabled=True, issue_assignment=True, channel_id="channel123"
+    )
+    policy = MutationPolicy(
+        mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True
+    )
+
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="issue_assigned",
+        repo="test-repo",
+        created_at=datetime.now(UTC),
+        payload={"issue_number": 123, "title": "Test"},
+    )
+
+    result = send_notification_for_event(
+        event, storage, discord_writer, policy, config, "test-org"
+    )
+
+    # The send was attempted.
+    assert len(discord_writer.messages_sent) == 1
+    assert discord_writer.messages_sent[0][0] == "channel123"
+    # But the adapter said no, so the dispatcher must report failure.
+    assert result is False
+    # And must not pollute dedupe or audit — otherwise the retry never fires.
+    assert storage.notifications_sent == set()
+    assert storage.audit_events == []
+
+
 def test_send_notification_audit_logging() -> None:
     """Test that notifications are audited."""
     storage = MockStorage()
