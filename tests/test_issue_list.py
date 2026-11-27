@@ -615,7 +615,7 @@ def test_format_single_issue_entry_escapes_masked_link_in_title():
         "labels": [],
     }
     lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
-    assert r"\[Re-verify\]\(https://evil.example\)" in lines[0]
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in lines[0]
     assert "[Re-verify](" not in lines[0]
     assert "@everyone" not in lines[0]
     # The trusted issue link is untouched.
@@ -633,10 +633,10 @@ def test_format_single_issue_entry_escapes_masked_link_in_label():
         "labels": [{"name": "[x](https://evil.example)"}, {"name": "good_first_issue"}],
     }
     lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
-    assert r"\[x\]\(https://evil.example\)" in lines[1]
+    assert r"\[x\]\(https:" "\u200b" r"//evil.example\)" in lines[1]
     assert "[x](" not in lines[1]
-    # Ordinary labels read naturally.
-    assert "good_first_issue" in lines[1]
+    # Underscores are escaped so the label cannot italicise; Discord renders it as written.
+    assert "good\\_first\\_issue" in lines[1]
 
 
 def test_format_single_issue_entry_does_not_truncate_long_title_or_label():
@@ -654,10 +654,10 @@ def test_format_single_issue_entry_does_not_truncate_long_title_or_label():
     }
     lines = format_single_issue_entry(issue, org="org", repo="repo", storage=None)
     assert lines[0].endswith("END**")
-    assert r"\[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END" in lines[0]
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\) " + "word " * 40 + "END" in lines[0]
     assert "[Re-verify](" not in lines[0]
     assert lines[1].endswith("l" * 120 + "END")
-    assert r"\[x\]\(https://evil.example\) " in lines[1]
+    assert r"\[x\]\(https:" "\u200b" r"//evil.example\) " in lines[1]
 def test_normalize_issue_labels():
     assert normalize_issue_labels(None) is None
     assert normalize_issue_labels("   ") is None

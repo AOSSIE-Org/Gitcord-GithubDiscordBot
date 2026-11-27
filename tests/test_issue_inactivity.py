@@ -2738,7 +2738,7 @@ def test_checkin_message_escapes_masked_link_in_title() -> None:
         discord_user_id="987654321",
         days=7,
     )
-    assert r"\[Re-verify\]\(https://evil.example\)" in msg
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in msg
     assert "[Re-verify](" not in msg
     assert "@everyone" not in msg
 
@@ -2753,7 +2753,7 @@ def test_unassign_dm_message_escapes_masked_link_in_title() -> None:
         discord_user_id="987654321",
         total_days=14,
     )
-    assert r"\[Re-verify\]\(https://evil.example\)" in dm
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in dm
     assert "[Re-verify](" not in dm
     assert "@everyone" not in dm
 
@@ -2808,7 +2808,7 @@ def test_checkin_message_does_not_truncate_long_title() -> None:
         discord_user_id="987654321",
         days=7,
     )
-    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in msg
+    assert r"**Issue:** \[Re-verify\]\(https:" "\u200b" r"//evil.example\) " + "word " * 40 + "END\n" in msg
     assert "[Re-verify](" not in msg
 
 
@@ -2824,5 +2824,5 @@ def test_unassign_dm_message_does_not_truncate_long_title() -> None:
         discord_user_id="987654321",
         total_days=14,
     )
-    assert r"**Issue:** \[Re-verify\]\(https://evil.example\) " + "word " * 40 + "END\n" in dm
+    assert r"**Issue:** \[Re-verify\]\(https:" "\u200b" r"//evil.example\) " + "word " * 40 + "END\n" in dm
     assert "[Re-verify](" not in dm

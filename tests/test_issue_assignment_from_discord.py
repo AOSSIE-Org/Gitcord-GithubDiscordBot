@@ -277,7 +277,7 @@ def test_build_assignment_confirmation_embed_escapes_masked_link_in_title() -> N
         now=now,
     )
     fields = {f["name"]: f["value"] for f in embed["fields"]}
-    assert r"\[Re-verify\]\(https://evil.example\)" in fields["Issue"]
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in fields["Issue"]
     assert "[Re-verify](" not in fields["Issue"]
     assert "@everyone" not in fields["Issue"]
     assert fields["Issue"].startswith("#123: ")

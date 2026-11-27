@@ -209,7 +209,7 @@ def test_format_pr_list_messages_escapes_masked_link_in_title() -> None:
     text = "\n".join(
         format_pr_list_messages(contributor_mention="<@1>", github_user="alice", prs=prs, org="o")
     )
-    assert r"\[Re-verify\]\(https://evil.example\)" in text
+    assert r"\[Re-verify\]\(https:" "\u200b" r"//evil.example\)" in text
     assert "[Re-verify](" not in text
     assert "@everyone" not in text
     # The trusted link on repo#N is untouched.
