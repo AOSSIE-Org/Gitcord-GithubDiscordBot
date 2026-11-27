@@ -106,3 +106,11 @@ def test_request_backs_off_on_repeated_5xx_and_returns_the_last_response(monkeyp
 
     assert response is not None and response.status_code == 502
     assert sleeps == [1.0, 2.0, 4.0]
+
+
+def test_request_stops_cleanly_when_429_body_is_not_a_dict(monkeypatch) -> None:
+    limit = discord_api._MAX_RATE_LIMIT_RETRIES
+    adapter, sleeps = _adapter(monkeypatch, [_response(429, ["slow down"])] * (limit + 1))
+
+    assert adapter._request("GET", "/guilds/guild-1/members") is None
+    assert len(sleeps) == limit

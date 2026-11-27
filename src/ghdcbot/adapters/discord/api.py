@@ -465,7 +465,7 @@ class DiscordApiAdapter:
             if retries >= _MAX_RATE_LIMIT_RETRIES:
                 self._logger.warning(
                     "Discord rate limit reached; stopping",
-                    extra={"path": path, "retry_after": body.get("retry_after")},
+                    extra={"path": path, "retry_after": retry_after},
                 )
                 return None
             retries += 1
