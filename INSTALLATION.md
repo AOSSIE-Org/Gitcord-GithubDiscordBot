@@ -291,38 +291,31 @@ Optional blocks (`notifications`, `repos` filter, weekly `discord.digest`) are c
 
 ### 6.3 Validate setup (recommended)
 
-Before your first sync or bot start, run the read-only preflight check. It loads config, verifies tokens against GitHub and Discord, checks guild access, and (when `enable_discord_role_updates: true`) confirms configured Discord roles exist.
+Before your first sync or bot start, run two read-only checks. Neither mutates Discord roles or GitHub state.
+
+**Step 1 — Confirm the config is in a sync-safe posture.** `preflight-sync` loads the YAML and asserts `runtime.mode: "dry-run"`, `discord.permissions.write: false`, and `github.permissions.write: false`. Any violation is logged and the command exits non-zero.
 
 **Docker:**
 
 ```bash
-docker compose run --rm bot --config /app/config/config.yaml validate
+docker compose run --rm bot --config /app/config/config.yaml preflight-sync
 ```
 
 **Local:**
 
 ```bash
-ghdcbot --config config/config.yaml validate
+ghdcbot --config config/config.yaml preflight-sync
 ```
 
 Example success output:
 
 ```text
-✓ Config file loaded
-✓ YAML valid and schema OK
-✓ GITHUB_TOKEN configured
-✓ DISCORD_TOKEN configured
-✓ GitHub authentication successful
-✓ Discord authentication successful
-✓ Organization accessible
-✓ Repositories visible
-✓ Guild found
-✓ Role "Contributor" found
-
-Validation passed.
+Sync preflight OK
 ```
 
-Exit code `0` means ready to run; `1` means fix the reported issues first. No data is written and the bot does not start.
+**Step 2 — Exercise GitHub and Discord authentication.** Run a dry-run `run-once` (see [§7.1](#71-one-time-sync-dry-run)). The orchestrator resolves your tokens, reads from both APIs, writes `audit.md`, and mutates nothing. Token, guild, and repository visibility problems surface at this step.
+
+Exit code `0` on both commands means you are ready to run; non-zero means fix the reported issue first.
 
 ---
 
@@ -470,7 +463,7 @@ Run `cp config/docker-example.yaml config/config.yaml` (Docker) or `cp config/ex
 
 ### Validation command failures
 
-Run `ghdcbot --config config/config.yaml validate` (or the Docker equivalent) after editing `.env` and config.
+Run `ghdcbot --config config/config.yaml preflight-sync` (or the Docker equivalent) to confirm the sync-safe posture, then a dry-run `ghdcbot --config config/config.yaml run-once` to surface authentication and access errors. Common symptoms:
 
 | Message | Fix |
 |---------|-----|
@@ -516,7 +509,7 @@ Keep `data_dir: "/data"` in config; do not remove the `gitcord_data` volume.
 | Start bot | `docker compose up -d` | `ghdcbot --config config/config.yaml bot` |
 | Logs | `docker compose logs -f bot` | terminal output / `bot.log` |
 | Dry-run sync | `docker compose run --rm bot --config /app/config/config.yaml run-once` | `ghdcbot --config config/config.yaml run-once` |
-| Validate setup | `docker compose run --rm bot --config /app/config/config.yaml validate` | `ghdcbot --config config/config.yaml validate` |
+| Preflight (dry-run posture) | `docker compose run --rm bot --config /app/config/config.yaml preflight-sync` | `ghdcbot --config config/config.yaml preflight-sync` |
 | Identity status | `docker compose run --rm bot --config /app/config/config.yaml identity status --discord-user-id ID` | `ghdcbot --config config/config.yaml identity status --discord-user-id ID` |
 | Preview PR timeline post | `docker compose run --rm bot --config /app/config/config.yaml preview-pr-timeline --repo REPO --pr N` | `ghdcbot --config config/config.yaml preview-pr-timeline --repo REPO --pr N` |
 | Preview weekly digest | `docker compose run --rm bot --config /app/config/config.yaml digest-preview` | `ghdcbot --config config/config.yaml digest-preview` |

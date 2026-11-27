@@ -61,10 +61,11 @@ For GitHub PAT setup, Discord bot creation, and first-time configuration, start 
 **Validate setup (read-only, before first sync):**
 
 ```bash
-docker compose run --rm bot --config /app/config/config.yaml validate
+docker compose run --rm bot --config /app/config/config.yaml preflight-sync
+docker compose run --rm bot --config /app/config/config.yaml run-once
 ```
 
-Checks config, tokens, GitHub/Discord API access, guild, and role names. Exit code `0` = ready; `1` = fix reported issues.
+`preflight-sync` asserts the dry-run posture (`runtime.mode: dry-run`, both `permissions.write: false`). `run-once` then exercises GitHub and Discord authentication, writes an audit report, and mutates nothing. Exit code `0` on both = ready; non-zero = fix the reported issue.
 
 **Run a one-off sync (dry-run or active):**
 

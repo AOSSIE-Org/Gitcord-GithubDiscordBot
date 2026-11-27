@@ -36,7 +36,7 @@ Package name: `ghdcbot` (Python 3.11+).
 python -m pip install -e ".[dev]"
 pytest
 ruff check src tests
-ghdcbot --config config/config.yaml validate
+ghdcbot --config config/config.yaml preflight-sync
 ghdcbot --config config/config.yaml run-once
 docker compose up -d bot
 ```
@@ -51,7 +51,7 @@ src/ghdcbot/
   config/       # models, loader, remote gitcord.yaml
   engine/       # orchestrator, notifications, pr_list, pr_timeline, digest
   bot.py        # Discord slash commands
-  cli.py        # validate / run-once / bot entry
+  cli.py        # preflight-sync / run-once / bot entry
 brand/          # logo, favicon, Brand.md
 config/examples/# remote/bootstrap YAML examples
 docs/           # Docker, identity, testing
