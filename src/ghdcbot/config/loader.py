@@ -247,6 +247,6 @@ def _expand_env_vars(value: Any) -> Any:
 def _replace_env_var(match: re.Match[str]) -> str:
     env_key = match.group(1)
     env_value = os.getenv(env_key)
-    if env_value is None:
+    if not env_value:
         raise ConfigError(f"Missing required environment variable: {env_key}")
     return env_value
