@@ -293,3 +293,11 @@ def test_pr_list_command_defaults_to_invoking_user() -> None:
     mock_interaction.followup.send.assert_called_once()
     assert "<@77777>" in mock_interaction.followup.send.call_args.args[0]
 
+    # 3. When contributor is omitted and invoker is unverified, error mentions invoker
+    mock_interaction.followup.send.reset_mock()
+    with patch("ghdcbot.bot.resolve_discord_to_github", return_value=None):
+        asyncio.run(cmd.callback(mock_interaction, None))
+    mock_interaction.followup.send.assert_called_once()
+    assert "<@88888>" in mock_interaction.followup.send.call_args.args[0]
+    assert "has not verified their GitHub identity" in mock_interaction.followup.send.call_args.args[0]
+
