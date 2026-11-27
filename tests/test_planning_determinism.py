@@ -1,5 +1,6 @@
 from ghdcbot.config.models import IdentityMapping, RoleMappingConfig
 from ghdcbot.core.models import Score
+from ghdcbot.engine.assignment import RoleBasedAssignmentStrategy
 from ghdcbot.engine.planning import plan_discord_roles, plan_github_assignments
 
 
@@ -47,6 +48,66 @@ def test_github_assignment_plans_deterministic_ordering() -> None:
 
     assert first == second
     assert [plan.repo for plan in first[:2]] == ["a", "b"]
+
+
+def test_role_based_assignment_strategy_sorts_before_round_robin() -> None:
+    """Regression for the determinism gap in RoleBasedAssignmentStrategy.
+
+    The orchestrator uses this class directly, not the planning helper. GitHub's
+    default issue listing is newest-first, so a freshly opened issue shifts every
+    pre-existing issue by one slot in the stream. Without a stable sort inside
+    the strategy, the round-robin assignment for an unchanged issue flips on
+    every new issue in the repo. Fix: sort inputs by (repo, number) before the
+    rotation, mirroring ``engine.planning._stable_issue_key`` / ``_stable_pr_key``.
+    """
+    strategy = RoleBasedAssignmentStrategy(
+        {"Contributor": ["alice", "bob"]},
+        issue_roles=["Contributor"],
+        review_roles=["Contributor"],
+    )
+
+    initial_issues = [
+        {"repo": "a", "number": 10, "assignees": []},
+        {"repo": "a", "number": 9, "assignees": []},
+        {"repo": "a", "number": 8, "assignees": []},
+    ]
+    later_issues = [
+        {"repo": "a", "number": 11, "assignees": []},
+        *initial_issues,
+    ]
+
+    plan_a = strategy.plan_issue_assignments(initial_issues, [])
+    plan_b = strategy.plan_issue_assignments(later_issues, [])
+
+    # Baseline: both plans cover every input issue.
+    assert [p.issue_number for p in plan_a] == [8, 9, 10]
+    assert [p.issue_number for p in plan_b] == [8, 9, 10, 11]
+
+    # Core invariant: an existing issue's assignee must not drift just because
+    # a newer issue showed up in the stream.
+    plan_b_by_number = {p.issue_number: p.assignee for p in plan_b}
+    for plan in plan_a:
+        assert plan_b_by_number[plan.issue_number] == plan.assignee, (
+            f"issue #{plan.issue_number} drifted from {plan.assignee} to "
+            f"{plan_b_by_number[plan.issue_number]} after a new issue was opened"
+        )
+
+    # Same determinism must hold for review requests.
+    initial_prs = [
+        {"repo": "a", "number": 20},
+        {"repo": "a", "number": 19},
+    ]
+    later_prs = [{"repo": "a", "number": 21}, *initial_prs]
+
+    review_a = strategy.plan_review_requests(initial_prs, [])
+    review_b = strategy.plan_review_requests(later_prs, [])
+
+    review_b_by_number = {p.pr_number: p.reviewer for p in review_b}
+    for plan in review_a:
+        assert review_b_by_number[plan.pr_number] == plan.reviewer, (
+            f"PR #{plan.pr_number} reviewer drifted from {plan.reviewer} to "
+            f"{review_b_by_number[plan.pr_number]} after a new PR was opened"
+        )
 
 
 def _dt(days: int):

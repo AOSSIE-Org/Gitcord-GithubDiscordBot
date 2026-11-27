@@ -33,7 +33,9 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
             return []
         queue = deque(eligible)
         plans: list[AssignmentPlan] = []
-        for issue in issues:
+        # Sort by (repo, number) so round-robin assignments are stable across runs,
+        # independent of GitHub's default newest-first listing order.
+        for issue in sorted(issues, key=_stable_issue_key):
             # Skip issues that already have assignees (don't overwrite existing assignments)
             assignees = issue.get("assignees", [])
             if assignees:
@@ -57,7 +59,8 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
             return []
         queue = deque(eligible)
         plans: list[ReviewPlan] = []
-        for pr in pull_requests:
+        # Sort by (repo, number) for the same determinism reason as plan_issue_assignments.
+        for pr in sorted(pull_requests, key=_stable_pr_key):
             reviewer = queue[0]
             queue.rotate(-1)
             plans.append(
@@ -68,3 +71,11 @@ class RoleBasedAssignmentStrategy(AssignmentStrategy):
                 )
             )
         return plans
+
+
+def _stable_issue_key(issue: dict) -> tuple[str, int]:
+    return (issue.get("repo", ""), issue.get("number", 0))
+
+
+def _stable_pr_key(pr: dict) -> tuple[str, int]:
+    return (pr.get("repo", ""), pr.get("number", 0))
