@@ -654,7 +654,12 @@ def apply_discord_roles(
 
     from ghdcbot.engine.planning import count_merged_prs_per_user, repos_with_merged_pr_per_user
 
-    score_lookup = {score.github_user: score.points for score in scores}
+    score_lookup: dict[str, int] = {}
+    for score in scores:
+        if not score.github_user:
+            continue
+        key = score.github_user.strip().lower()
+        score_lookup[key] = max(score_lookup.get(key, 0), score.points)
     role_thresholds = sorted(role_mappings, key=lambda r: r.min_score)
     managed_roles = {mapping.discord_role for mapping in role_thresholds}
 
@@ -679,7 +684,11 @@ def apply_discord_roles(
 
     for mapping in identity_mappings:
         current_roles = set(member_roles.get(mapping.discord_user_id, []))
-        points = score_lookup.get(mapping.github_user, 0)
+        points = (
+            score_lookup.get(mapping.github_user.strip().lower(), 0)
+            if mapping.github_user
+            else 0
+        )
         
         # Score-based desired roles
         score_desired = {
