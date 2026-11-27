@@ -74,6 +74,11 @@ export GHDCBOT_STARTED_FLAG="$STARTED_FLAG"
 export GHDCBOT_RELEASE_FLAG="$RELEASE_FLAG"
 export DOCKER_STUB_LOG="$DOCKER_LOG"
 export GITCORD_SYNC_LOCK_FILE="$LOCK_FILE"
+# Pin the config path to the sandbox file both invocations expect, so a
+# developer who exports GITCORD_CONFIG (e.g. config/aussie.yaml) in their
+# shell doesn't make the production script bail on "Config not found" before
+# it ever reaches docker.
+export GITCORD_CONFIG="config/config.yaml"
 : >"$STUB_LOG"
 : >"$DOCKER_LOG"
 
