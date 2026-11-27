@@ -1235,7 +1235,6 @@ def run_bot(config_path: str) -> None:
         guild=discord.Object(id=guild_id),
     )
     @app_commands.describe(contributor="Discord member whose open PRs to list (omit for yourself)")
-    @app_commands.checks.cooldown(1, 30.0)
     async def open_prs_cmd(
         interaction: discord.Interaction,
         contributor: discord.Member | None = None,
