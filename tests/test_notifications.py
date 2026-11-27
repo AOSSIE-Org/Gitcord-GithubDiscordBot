@@ -17,6 +17,7 @@ from ghdcbot.engine.notifications import (
     _build_notification_message,
     _build_pr_opened_channel_message,
     _build_pr_opened_github_link_comment,
+    _notification_actor,
     _sanitize_discord_title,
     send_issue_opened_channel_notification,
     send_issue_opened_github_link_comment,
@@ -683,6 +684,7 @@ _OWN_ACTION_EVENTS = [
     ("pr_closed", "closed_by", {"pr_number": 8, "pr_author": "alice"}, {"pr_closed": True}),
     ("pr_reopened", "reopened_by", {"pr_number": 8, "pr_author": "alice"}, {"pr_reopened": True}),
     ("issue_reopened", "reopened_by", {"issue_number": 7, "assignee": "alice"}, {"issue_reopened": True}),
+    ("pr_merged", "merged_by", {"pr_number": 8, "pr_author": "alice"}, {"pr_merged": True}),
 ]
 
 
@@ -728,6 +730,94 @@ def test_send_notification_for_someone_elses_action(event_type, actor_key, paylo
 
     assert result is True
     assert len(discord_writer.dms_sent) == 1
+
+
+def test_send_notification_self_merge_suppression() -> None:
+    """When a PR author merges their own PR, the merge DM notification must be suppressed."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "discord123", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_merged=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "pr_author": "alice", "merged_by": "Alice"},  # casing differs
+    )
+
+    result = send_notification_for_event(event, storage, discord_writer, policy, config, "AOSSIE")
+
+    assert result is False
+    assert discord_writer.dms_sent == []
+    assert storage.audit_events == []
+
+
+def test_send_notification_maintainer_merge_delivered() -> None:
+    """When a maintainer merges an author's PR, the author must receive the merge DM notification."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "discord123", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_merged=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "pr_author": "alice", "merged_by": "mentor"},
+    )
+
+    result = send_notification_for_event(event, storage, discord_writer, policy, config, "AOSSIE")
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+    recipient, content = discord_writer.dms_sent[0]
+    assert recipient == "discord123"
+    assert "PR Merged" in content
+
+
+def test_send_notification_pr_merged_missing_merged_by_fallback() -> None:
+    """When merged_by is missing/unknown, merge DM must not be suppressed."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "discord123", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, pr_merged=True)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "pr_author": "alice"},
+    )
+
+    result = send_notification_for_event(event, storage, discord_writer, policy, config, "AOSSIE")
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+
+
+def test_notification_actor_pr_merged() -> None:
+    """_notification_actor correctly extracts merged_by for pr_merged events."""
+    event_with_merger = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42, "merged_by": "bob"},
+    )
+    assert _notification_actor(event_with_merger) == "bob"
+
+    event_without_merger = ContributionEvent(
+        github_user="alice",
+        event_type="pr_merged",
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={"pr_number": 42},
+    )
+    assert _notification_actor(event_without_merger) is None
 
 
 def test_send_notification_pr_reviewed_comment_disabled() -> None:
