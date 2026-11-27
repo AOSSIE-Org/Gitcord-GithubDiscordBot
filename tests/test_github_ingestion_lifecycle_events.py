@@ -129,6 +129,45 @@ def test_pr_closed_emitted_when_closed_without_merge(monkeypatch) -> None:
     assert closed[0].payload["repository"] == "repo"
     assert closed[0].payload["html_url"] == "https://github.com/owner/repo/pull/20"
     assert closed[0].payload["closed_at"] == "2024-01-08T00:00:00Z"
+    assert "closed_by" not in closed[0].payload  # the timeline event names no actor
+
+
+def test_pr_closed_records_who_closed_it(monkeypatch) -> None:
+    adapter = GitHubRestAdapter(token="t", org="org", api_base="https://api.github.com")
+    monkeypatch.setattr(
+        adapter,
+        "_list_repos",
+        lambda: [{"name": "repo", "owner": {"login": "owner"}, "full_name": "owner/repo"}],
+    )
+    routes = {
+        "/repos/owner/repo/issues": [],
+        "/repos/owner/repo/pulls": [
+            {
+                "number": 21,
+                "state": "closed",
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-08T00:00:00Z",
+                "closed_at": "2024-01-08T00:00:00Z",
+                "merged_at": None,
+                "title": "Improve onboarding validation",
+                "html_url": "https://github.com/owner/repo/pull/21",
+                "user": {"login": "alice"},
+            }
+        ],
+        "/repos/owner/repo/pulls/21/reviews": [],
+        "/repos/owner/repo/pulls/21/comments": [],
+        "/repos/owner/repo/issues/21/timeline": [
+            {"event": "closed", "created_at": "2024-01-08T00:00:00Z", "actor": {"login": "mentor"}}
+        ],
+        "/repos/owner/repo/issues/21/comments": [],
+    }
+    adapter._client = _MockClient(routes)
+
+    events = list(adapter.list_contributions(datetime(2024, 1, 1, tzinfo=timezone.utc)))
+    closed = [event for event in events if event.event_type == "pr_closed"]
+
+    assert len(closed) == 1
+    assert closed[0].payload["closed_by"] == "mentor"
 
 
 def test_pr_merged_emitted_not_pr_closed_when_merged(monkeypatch) -> None:
@@ -322,6 +361,7 @@ def test_issue_reopened_emitted_when_reopened(monkeypatch) -> None:
     assert reopened[0].payload["title"] == "Improve onboarding"
     assert reopened[0].payload["assignee"] == "charlie"
     assert reopened[0].payload["reopened_at"] == "2024-01-10T10:30:00Z"
+    assert reopened[0].payload["reopened_by"] == "someone"
 
 
 def test_issue_reopened_emitted_for_each_active_assignee(monkeypatch) -> None:
@@ -438,6 +478,7 @@ def test_pr_reopened_emitted_when_reopened(monkeypatch) -> None:
     assert reopened[0].payload["title"] == "Improve onboarding validation"
     assert reopened[0].payload["pr_author"] == "bob"
     assert reopened[0].payload["reopened_at"] == "2024-01-11T11:00:00Z"
+    assert reopened[0].payload["reopened_by"] == "someone"
 
 
 def test_issue_reopened_emitted_without_assignee_for_channel(monkeypatch) -> None:

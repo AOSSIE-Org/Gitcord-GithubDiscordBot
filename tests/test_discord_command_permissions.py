@@ -238,3 +238,33 @@ def test_assign_issue_configured_rule_path() -> None:
     
     # Existing manage-assignees / legacy fallback behavior still applies when omitted
     assert slash_command_allowed(_interaction(_member((1, "Mentor"))), config, "manage-assignees") is True
+
+
+def test_create_issue_configured_rule_path() -> None:
+    """Ensure 'create-issue' can be restricted via command_permissions (Issue #204)."""
+    config = BotConfig.model_validate(
+        _minimal_config_payload(
+            command_permissions={
+                "create-issue": SlashCommandPermissionRule(
+                    role_names=["IssueCreator"],
+                    role_ids=[],
+                ),
+            },
+        ),
+    )
+    assert slash_command_allowed(
+        _interaction(_member((1, "IssueCreator"))), config, "create-issue", allow_all_by_default=True
+    ) is True
+    assert slash_command_allowed(
+        _interaction(_member((1, "Contributor"))), config, "create-issue", allow_all_by_default=True
+    ) is False
+
+
+def test_create_issue_allowed_by_default_when_omitted() -> None:
+    """When omitted from command_permissions, create-issue is allowed for all guild members."""
+    config = BotConfig.model_validate(_minimal_config_payload())
+    member = _member((1, "AnyRole"))
+    assert slash_command_allowed(
+        _interaction(member), config, "create-issue", allow_all_by_default=True
+    ) is True
+

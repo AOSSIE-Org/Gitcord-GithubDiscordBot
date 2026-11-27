@@ -14,6 +14,7 @@ from typing import Any
 
 from ghdcbot.config.access import cfg_get
 from ghdcbot.engine.notifications import _sanitize_discord_title
+from ghdcbot.engine.pr_context import current_review_states
 
 logger = logging.getLogger(__name__)
 
@@ -344,12 +345,9 @@ def fetch_pr_health(
         if ((r.get("user") or {}).get("login") or "").strip().lower() in bot_logins_lower
     ]
 
-    approved_count = sum(
-        1 for r in human_reviews if (r.get("state") or "").upper() == "APPROVED"
-    )
-    changes_requested_count = sum(
-        1 for r in human_reviews if (r.get("state") or "").upper() == "CHANGES_REQUESTED"
-    )
+    states = current_review_states(human_reviews)
+    approved_count = states.count("APPROVED")
+    changes_requested_count = states.count("CHANGES_REQUESTED")
     comment_review_count = sum(
         1
         for r in human_reviews

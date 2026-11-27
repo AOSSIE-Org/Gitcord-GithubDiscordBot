@@ -12,6 +12,7 @@ from ghdcbot.core.interfaces import DiscordWriter, Storage
 from ghdcbot.core.modes import MutationPolicy
 from ghdcbot.core.models import ContributionEvent
 from ghdcbot.engine import pr_timeline as prt
+from ghdcbot.engine.metrics import same_github_user
 
 logger = logging.getLogger(__name__)
 
@@ -115,24 +116,24 @@ def send_notification_for_event(
         )
         return False
 
-    # Author replies on their own PR often appear as COMMENTED "reviews" in the
-    # GitHub API. Never DM the author that they reviewed their own PR.
-    if event.event_type == "pr_reviewed":
-        reviewer_key = (event.github_user or "").strip().lower()
-        author_key = (target_github_user or "").strip().lower()
-        if reviewer_key and author_key and reviewer_key == author_key:
-            logger.info(
-                "Skipping self-review notification",
-                extra={
-                    "github_user": event.github_user,
-                    "pr_author": target_github_user,
-                    "repo": event.repo,
-                    "pr_number": event.payload.get("pr_number"),
-                    "review_id": event.payload.get("review_id"),
-                    "review_state": event.payload.get("state"),
-                },
-            )
-            return False
+    # Never DM someone about their own action. Author replies on their own PR
+    # also appear as COMMENTED "reviews" in the GitHub API.
+    actor = _notification_actor(event)
+    if same_github_user(actor, target_github_user):
+        logger.info(
+            "Skipping notification for the recipient's own action",
+            extra={
+                "event_type": event.event_type,
+                "actor": actor,
+                "target_github_user": target_github_user,
+                "repo": event.repo,
+                "pr_number": event.payload.get("pr_number"),
+                "issue_number": event.payload.get("issue_number"),
+                "review_id": event.payload.get("review_id"),
+                "review_state": event.payload.get("state"),
+            },
+        )
+        return False
 
     # Resolve GitHub user to Discord user (verified only)
     discord_user_id = _resolve_github_to_discord(storage, target_github_user)
@@ -1634,6 +1635,19 @@ def _build_pr_opened_timeline_message(
         pr_number=int(pr_number),
         discord_ids=discord_ids,
     )
+
+
+def _notification_actor(event: ContributionEvent) -> str | None:
+    """GitHub login of whoever performed the action behind a DM notification, if known."""
+    if event.event_type == "pr_reviewed":
+        return event.github_user
+    actor_key = {
+        "issue_assigned": "assigned_by",
+        "pr_closed": "closed_by",
+        "pr_reopened": "reopened_by",
+        "issue_reopened": "reopened_by",
+    }.get(event.event_type)
+    return event.payload.get(actor_key) if actor_key else None
 
 
 def _resolve_github_to_discord(storage: Storage, github_user: str) -> str | None:

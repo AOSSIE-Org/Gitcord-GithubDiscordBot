@@ -678,6 +678,58 @@ def test_send_notification_skips_self_review_comment() -> None:
     assert discord_writer.dms_sent == []
 
 
+_OWN_ACTION_EVENTS = [
+    ("issue_assigned", "assigned_by", {"issue_number": 7, "title": "Fix login"}, {"issue_assignment": True}),
+    ("pr_closed", "closed_by", {"pr_number": 8, "pr_author": "alice"}, {"pr_closed": True}),
+    ("pr_reopened", "reopened_by", {"pr_number": 8, "pr_author": "alice"}, {"pr_reopened": True}),
+    ("issue_reopened", "reopened_by", {"issue_number": 7, "assignee": "alice"}, {"issue_reopened": True}),
+]
+
+
+@pytest.mark.parametrize(("event_type", "actor_key", "payload", "flags"), _OWN_ACTION_EVENTS)
+def test_send_notification_skips_recipients_own_action(event_type, actor_key, payload, flags) -> None:
+    """Assigning yourself or closing/reopening your own PR or issue must not DM you."""
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "discord123", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, **flags)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type=event_type,
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={**payload, actor_key: "Alice"},  # login casing differs
+    )
+
+    result = send_notification_for_event(event, storage, discord_writer, policy, config, "AOSSIE")
+
+    assert result is False
+    assert discord_writer.dms_sent == []
+    assert storage.audit_events == []
+
+
+@pytest.mark.parametrize(("event_type", "actor_key", "payload", "flags"), _OWN_ACTION_EVENTS)
+def test_send_notification_for_someone_elses_action(event_type, actor_key, payload, flags) -> None:
+    storage = MockStorage()
+    storage.verified_mappings = [{"discord_user_id": "discord123", "github_user": "alice"}]
+    discord_writer = MockDiscordWriter()
+    config = NotificationConfig(enabled=True, **flags)
+    policy = MutationPolicy(mode=RunMode.ACTIVE, github_write_allowed=True, discord_write_allowed=True)
+    event = ContributionEvent(
+        github_user="alice",
+        event_type=event_type,
+        repo="Gitcord",
+        created_at=datetime.now(UTC),
+        payload={**payload, actor_key: "mentor"},
+    )
+
+    result = send_notification_for_event(event, storage, discord_writer, policy, config, "AOSSIE")
+
+    assert result is True
+    assert len(discord_writer.dms_sent) == 1
+
+
 def test_send_notification_pr_reviewed_comment_disabled() -> None:
     """Test that COMMENT reviews are skipped when pr_review_comment is false."""
     storage = MockStorage()
