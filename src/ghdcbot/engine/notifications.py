@@ -1625,6 +1625,7 @@ def _notification_actor(event: ContributionEvent) -> str | None:
         "pr_closed": "closed_by",
         "pr_reopened": "reopened_by",
         "issue_reopened": "reopened_by",
+        "pr_merged": "merged_by",
     }.get(event.event_type)
     return event.payload.get(actor_key) if actor_key else None
 
