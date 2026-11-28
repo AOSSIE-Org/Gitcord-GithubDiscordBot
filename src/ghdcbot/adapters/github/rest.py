@@ -1439,17 +1439,21 @@ class GitHubRestAdapter:
                 if created_at and created_at >= since:
                     pr_author = pr.get("user") or {}
                     pr_author_login = pr_author.get("login") or "<deleted>"
+                    linked_issue_numbers = _extract_linked_issue_numbers(pr.get("body") or "")
+                    pr_opened_payload: dict = {
+                        "pr_number": pr["number"],
+                        "title": pr.get("title"),
+                        "created_at": pr.get("created_at"),
+                    }
+                    if linked_issue_numbers:
+                        pr_opened_payload["linked_issue_numbers"] = linked_issue_numbers
                     pr_events.append(
                         ContributionEvent(
                             github_user=pr_author_login,
                             event_type="pr_opened",
                             repo=repo,
                             created_at=created_at,
-                            payload={
-                                "pr_number": pr["number"],
-                                "title": pr.get("title"),
-                                "created_at": pr.get("created_at"),
-                            },
+                            payload=pr_opened_payload,
                         )
                     )
                     pr_opened_count += 1

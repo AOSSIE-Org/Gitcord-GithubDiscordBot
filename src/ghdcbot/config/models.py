@@ -96,6 +96,8 @@ class NotificationConfig(BaseModel):
     issue_reopened: bool = True  # Issue reopened (notifies assignee)
     pr_reopened: bool = True  # PR reopened (notifies author)
     pr_opened: bool = False  # PR opened → repo-mapped Discord channel (see discord.pr_open_channels); unverified authors still posted
+    # Include linked issue(s) and their author in PR-opened channel announcements (opt-in).
+    pr_opened_show_linked_issues: bool = False
     # Issue opened → same repo-mapped channels as PRs (discord.pr_open_channels).
     issue_opened: bool = False
     # When true, unverified PR authors get a GitcordApp comment on the PR asking them to /link.

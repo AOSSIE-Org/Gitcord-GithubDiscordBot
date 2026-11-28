@@ -220,6 +220,7 @@ class Orchestrator:
                 self.config.github.org,
                 pr_open_channels,
                 github_writer=self.github_writer,
+                github_reader=self.github_reader,
                 invite_url=invite_url,
             )
             try:
@@ -466,6 +467,7 @@ def _send_notifications_for_new_events(
     pr_open_channels: dict[str, str] | None = None,
     *,
     github_writer: Any = None,
+    github_reader: Any = None,
     invite_url: str | None = None,
 ) -> None:
     """Send Discord notifications for notification-worthy events (verified users only)."""
@@ -478,7 +480,14 @@ def _send_notifications_for_new_events(
     for event in ordered_events:
         if event.event_type == "pr_opened":
             if send_pr_opened_channel_notification(
-                event, storage, discord_writer, policy, config, channels, github_org
+                event,
+                storage,
+                discord_writer,
+                policy,
+                config,
+                channels,
+                github_org,
+                github_reader=github_reader,
             ):
                 sent_count += 1
             if github_writer is not None and send_pr_opened_github_link_comment(

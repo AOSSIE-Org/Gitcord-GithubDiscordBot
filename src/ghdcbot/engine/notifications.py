@@ -198,6 +198,8 @@ def send_pr_opened_channel_notification(
     config: NotificationConfig,
     pr_open_channels: dict[str, str],
     github_org: str,
+    *,
+    github_reader: object | None = None,
 ) -> bool:
     """Post a PR-opened announcement to a repo-mapped Discord channel/thread.
 
@@ -227,7 +229,13 @@ def send_pr_opened_channel_notification(
         )
     else:
         message_built = _build_pr_opened_channel_message(
-            event, github_org, author_github, discord_user_id
+            event,
+            github_org,
+            author_github,
+            discord_user_id,
+            storage=storage,
+            show_linked_issues=bool(getattr(config, "pr_opened_show_linked_issues", False)),
+            github_reader=github_reader,
         )
     if not message_built:
         return False
@@ -1452,11 +1460,113 @@ def _sanitize_discord_title(title: str) -> str:
     return text
 
 
+def _lookup_issue_author_fallback(
+    github_reader: object | None,
+    github_org: str,
+    repo: str,
+    issue_number: int,
+) -> str | None:
+    """Fetch issue author from GitHub API on local cache miss (best-effort)."""
+    if github_reader is None:
+        return None
+    get_issue = getattr(github_reader, "get_issue", None)
+    if not callable(get_issue):
+        return None
+    try:
+        issue_data = get_issue(github_org, repo, issue_number)
+    except Exception:
+        logger.debug(
+            "Fallback get_issue failed for linked issue",
+            exc_info=True,
+            extra={"repo": repo, "issue_number": issue_number},
+        )
+        return None
+    if not isinstance(issue_data, dict) or "pull_request" in issue_data:
+        return None
+    login = str((issue_data.get("user") or {}).get("login") or "").strip()
+    return login or None
+
+
+_SQLITE_MAX_INT64 = (1 << 63) - 1
+
+
+def _normalize_issue_author(author: str | None) -> str | None:
+    cleaned = (author or "").strip()
+    if not cleaned or cleaned.lower() == "unknown" or cleaned == "<deleted>":
+        return None
+    return cleaned
+
+
+def _build_linked_issues_line(
+    event: ContributionEvent,
+    storage: Storage | None,
+    github_org: str,
+    *,
+    max_issues: int = 2,
+    github_reader: object | None = None,
+) -> str | None:
+    """Format a compact linked-issues summary line for PR-opened announcements."""
+    raw_issues = event.payload.get("linked_issue_numbers")
+    if not isinstance(raw_issues, (list, tuple)):
+        return None
+
+    unique_issues: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_issues:
+        if isinstance(raw, bool):
+            continue
+        try:
+            num = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= num <= _SQLITE_MAX_INT64 and num not in seen:
+            seen.add(num)
+            unique_issues.append(num)
+            if len(unique_issues) >= max_issues:
+                break
+
+    if not unique_issues:
+        return None
+
+    get_issue_author = getattr(storage, "get_issue_author", None) if storage is not None else None
+    parts: list[str] = []
+    for num in unique_issues:
+        issue_url = f"https://github.com/{github_org}/{event.repo}/issues/{num}"
+        issue_link = f"[#{num}]({issue_url})"
+        issue_author = _normalize_issue_author(
+            get_issue_author(event.repo, num) if callable(get_issue_author) else None
+        )
+        if not issue_author:
+            issue_author = _normalize_issue_author(
+                _lookup_issue_author_fallback(
+                    github_reader, github_org, event.repo, num
+                )
+            )
+        if issue_author and not _is_github_bot_login(issue_author):
+            issue_discord_id = (
+                _resolve_github_to_discord(storage, issue_author)
+                if storage is not None
+                else None
+            )
+            person = _format_github_at_person(issue_author, issue_discord_id)
+            parts.append(f"{issue_link} (opened by {person})")
+        else:
+            parts.append(issue_link)
+
+    if len(parts) == 1:
+        return f"Solves Issue {parts[0]}"
+    return f"Solves Issues: {', '.join(parts)}"
+
+
 def _build_pr_opened_channel_message(
     event: ContributionEvent,
     github_org: str,
     author_github: str,
     discord_user_id: str | None,
+    *,
+    storage: Storage | None = None,
+    show_linked_issues: bool = False,
+    github_reader: object | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Build PR-opened channel announcement as a yellow Bruno-format embed."""
     pr_number = event.payload.get("pr_number")
@@ -1470,23 +1580,30 @@ def _build_pr_opened_channel_message(
     created_day = _announcement_date(
         event.payload.get("created_at") or event.created_at
     )
-    description = "\n".join(
-        [
-            _bruno_item_header(
-                kind="PR",
-                number=int(pr_number),
-                repo=repo,
-                title=pr_title,
-                repo_url=repo_url,
-                item_url=raw_url,
-            ),
-            _timeline_line(
-                "Created by",
-                _format_github_at_person(author_github, discord_user_id),
-                created_day,
-            ),
-        ]
+    lines = [
+        _bruno_item_header(
+            kind="PR",
+            number=int(pr_number),
+            repo=repo,
+            title=pr_title,
+            repo_url=repo_url,
+            item_url=raw_url,
+        ),
+    ]
+    if show_linked_issues:
+        linked_line = _build_linked_issues_line(
+            event, storage, github_org, github_reader=github_reader
+        )
+        if linked_line:
+            lines.append(linked_line)
+    lines.append(
+        _timeline_line(
+            "Created by",
+            _format_github_at_person(author_github, discord_user_id),
+            created_day,
+        )
     )
+    description = "\n".join(lines)
     # Linked Bruno header only — skip Discord embed title to avoid duplication.
     embeds = [
         {
