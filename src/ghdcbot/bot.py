@@ -86,6 +86,7 @@ from ghdcbot.engine.pr_status import (
     is_repo_allowed,
     resolve_repo_for_pr,
 )
+from ghdcbot.engine.review_queue import build_review_queue_embed
 from ghdcbot.engine.social_profiles import SocialProfileService
 from ghdcbot.help_link import (
     HELP_LINK_COMMAND_NAME,
@@ -1407,6 +1408,103 @@ def run_bot(config_path: str) -> None:
             current,
             suggestions,
         )
+        return [app_commands.Choice(name=r, value=r) for r in suggestions]
+
+    @tree.command(
+        name="reviews",
+        description="View pull requests currently awaiting review (read-only)",
+        guild=discord.Object(id=guild_id),
+    )
+    @app_commands.describe(
+        contributor="Discord member whose pending review queue to view (defaults to yourself)",
+        repo="Repository name (optional; omit for all configured repos)",
+        page="Page number to view (optional, default 1)",
+    )
+    @app_commands.checks.cooldown(1, 15.0)
+    async def reviews_cmd(
+        interaction: discord.Interaction,
+        contributor: discord.Member | None = None,
+        repo: str | None = None,
+        page: app_commands.Range[int, 1, 50] = 1,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        if (
+            contributor is not None
+            and contributor.id != interaction.user.id
+            and not slash_command_allowed(interaction, config, "reviews", allow_all_by_default=False)
+        ):
+            await interaction.followup.send(
+                format_slash_command_permission_denied(config, "reviews"),
+                ephemeral=True,
+            )
+            return
+
+        target_member = contributor if contributor is not None else interaction.user
+        github_user = resolve_discord_to_github(storage, str(target_member.id))
+        if not github_user:
+            if contributor is None:
+                msg = "❌ You have not verified your GitHub identity. Use `/link` and `/verify-link` first."
+            else:
+                msg = f"❌ {contributor.mention} has not verified their GitHub identity. Use `/link` and `/verify-link` first."
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        repo_name = (repo or "").strip() or None
+        page_num = int(page) if page is not None else 1
+        logger.info(
+            "/reviews requested",
+            extra={
+                "github_user": github_user,
+                "discord_user_id": str(target_member.id),
+                "repo": repo_name,
+                "page": page_num,
+            },
+        )
+
+        try:
+            list_reviews = getattr(github_adapter, "list_review_requests_for_user", None)
+            if callable(list_reviews):
+                try:
+                    review_prs = await asyncio.to_thread(list_reviews, github_user, repo=repo_name)
+                except TypeError:
+                    review_prs = await asyncio.to_thread(list_reviews, github_user)
+            else:
+                review_prs = []
+        except Exception:
+            logger.exception(
+                "Failed to list review requests for /reviews",
+                extra={
+                    "github_user": github_user,
+                    "discord_user_id": str(target_member.id),
+                    "repo": repo_name,
+                },
+            )
+            await interaction.followup.send(
+                "❌ Error fetching review requests. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        incomplete = getattr(review_prs, "incomplete", False)
+        embed_dict = build_review_queue_embed(
+            reviews=review_prs,
+            github_user=github_user,
+            target_mention=target_member.mention,
+            org=config.github.org,
+            page=page_num,
+            incomplete=incomplete,
+        )
+        embed = discord.Embed.from_dict(embed_dict)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @reviews_cmd.autocomplete("repo")
+    async def reviews_repo_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        configured_repos = get_configured_repo_names(config)
+        suggestions = filter_repo_suggestions(configured_repos, current)
         return [app_commands.Choice(name=r, value=r) for r in suggestions]
 
     @tree.command(
