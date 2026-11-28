@@ -7,6 +7,7 @@ from typing import Any, Iterable, Sequence
 from ghdcbot.config.models import IdentityMapping, MergeRoleRuleConfig, MergeRoleRulesConfig, RoleMappingConfig
 from ghdcbot.core.interfaces import Storage
 from ghdcbot.core.models import DiscordRolePlan, GitHubAssignmentPlan, Score
+from ghdcbot.engine.metrics import same_github_user
 
 logger = logging.getLogger("Planning")
 
@@ -409,7 +410,8 @@ def _eligible_users(
 def _select_reviewer(candidates: list[str], index: int, author: str | None) -> str | None:
     if not candidates:
         return None
-    ordered = [user for user in candidates if user != author]
+    # GitHub logins are case-insensitive, and role mappings keep the case they were typed in.
+    ordered = [user for user in candidates if not same_github_user(user, author)]
     if not ordered:
         return None
     return ordered[index % len(ordered)]
