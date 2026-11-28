@@ -356,10 +356,10 @@ def fetch_pr_context(
             
             if any(c == "failure" for c in conclusions):
                 ci_status = "failing"
-            elif any(c == "success" for c in conclusions) and not any(c == "failure" for c in conclusions):
-                ci_status = "success"
-            elif any(s == "in_progress" or s == "queued" for s in statuses):
+            elif any(s in ("in_progress", "queued") for s in statuses):
                 ci_status = "pending"
+            elif any(c == "success" for c in conclusions):
+                ci_status = "success"
             else:
                 ci_status = "unknown"
     

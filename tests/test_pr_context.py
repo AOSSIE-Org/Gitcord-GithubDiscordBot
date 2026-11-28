@@ -344,6 +344,30 @@ def test_fetch_pr_context_ci_status() -> None:
     _, _, ci_status, _ = fetch_pr_context(mock_adapter, "owner", "repo", 123)
     assert ci_status == "pending"
 
+    # Test mixed success and in_progress returns pending
+    mock_adapter.get_pull_request_check_runs.return_value = [
+        {"status": "completed", "conclusion": "success"},
+        {"status": "in_progress", "conclusion": None},
+    ]
+    _, _, ci_status, _ = fetch_pr_context(mock_adapter, "owner", "repo", 123)
+    assert ci_status == "pending"
+
+    # Test mixed success and queued returns pending
+    mock_adapter.get_pull_request_check_runs.return_value = [
+        {"status": "completed", "conclusion": "success"},
+        {"status": "queued", "conclusion": None},
+    ]
+    _, _, ci_status, _ = fetch_pr_context(mock_adapter, "owner", "repo", 123)
+    assert ci_status == "pending"
+
+    # Test mixed failure and in_progress returns failing
+    mock_adapter.get_pull_request_check_runs.return_value = [
+        {"status": "completed", "conclusion": "failure"},
+        {"status": "in_progress", "conclusion": None},
+    ]
+    _, _, ci_status, _ = fetch_pr_context(mock_adapter, "owner", "repo", 123)
+    assert ci_status == "failing"
+
 
 def test_build_pr_embed_empty_assignees() -> None:
     """Test embed handles empty assignees/reviewers."""

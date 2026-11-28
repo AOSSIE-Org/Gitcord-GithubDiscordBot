@@ -731,12 +731,10 @@ def _compute_ci_status(check_runs: list[dict]) -> str:
 
     if any(c == "failure" for c in conclusions):
         return "failing"
-    if any(c == "success" for c in conclusions) and not any(
-        c == "failure" for c in conclusions
-    ):
-        return "passing"
     if any(s in ("in_progress", "queued") for s in statuses):
         return "pending"
+    if any(c == "success" for c in conclusions):
+        return "passing"
     return "unknown"
 
 

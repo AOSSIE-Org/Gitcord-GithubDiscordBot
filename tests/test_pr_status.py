@@ -185,6 +185,27 @@ class TestComputeCIStatus:
         ]
         assert _compute_ci_status(runs) == "failing"
 
+    def test_mixed_success_and_in_progress_returns_pending(self) -> None:
+        runs = [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "in_progress", "conclusion": None},
+        ]
+        assert _compute_ci_status(runs) == "pending"
+
+    def test_mixed_success_and_queued_returns_pending(self) -> None:
+        runs = [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "queued", "conclusion": None},
+        ]
+        assert _compute_ci_status(runs) == "pending"
+
+    def test_mixed_failure_and_in_progress_returns_failing(self) -> None:
+        runs = [
+            {"status": "completed", "conclusion": "failure"},
+            {"status": "in_progress", "conclusion": None},
+        ]
+        assert _compute_ci_status(runs) == "failing"
+
 
 # ===================================================================
 # CodeRabbit detection
