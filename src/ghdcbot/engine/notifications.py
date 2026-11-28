@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
@@ -1953,6 +1954,8 @@ def run_coderabbit_reminders(
     if not callable(get_comments):
         logger.debug("CodeRabbit reminders: GitHub adapter has no get_pull_request_review_comments")
         return
+    get_reviews = getattr(github_reader, "get_pull_request_reviews", None)
+    get_threads = getattr(github_reader, "get_pull_request_review_threads", None)
     sent_count = 0
     for pr in github_reader.list_open_pull_requests():
         repo = pr.get("repo")
@@ -1960,9 +1963,106 @@ def run_coderabbit_reminders(
         author = pr.get("author")
         if not repo or pr_number is None or not author:
             continue
+        if bool(pr.get("draft")):
+            logger.debug(
+                "Skipping CodeRabbit reminder for draft PR",
+                extra={"repo": repo, "pr_number": pr_number},
+            )
+            continue
         discord_user_id = _resolve_github_to_discord(storage, author)
         if not discord_user_id:
             continue
+
+        dedupe_key = f"coderabbit_reminder:{repo}:{pr_number}:{discord_user_id}"
+        if _was_notification_sent(storage, dedupe_key):
+            continue
+
+        # Check if latest CodeRabbit review is APPROVED (ignoring non-decisive COMMENTED reviews)
+        if callable(get_reviews):
+            try:
+                reviews = get_reviews(github_org, repo, pr_number)
+                if (
+                    reviews is None
+                    or getattr(reviews, "incomplete", False)
+                    or getattr(reviews, "truncated", False)
+                ):
+                    logger.warning(
+                        "Reviews read failed or was incomplete; postponing CodeRabbit reminder",
+                        extra={"repo": repo, "pr_number": pr_number},
+                    )
+                    continue
+                qualifying_states = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+                cr_reviews = [
+                    r
+                    for r in reviews
+                    if ((r.get("user") or {}).get("login") or "").strip().lower() in bot_logins_lower
+                    and (r.get("state") or "").upper() in qualifying_states
+                ]
+                if cr_reviews:
+                    latest_cr = cr_reviews[-1]
+                    if (latest_cr.get("state") or "").upper() == "APPROVED":
+                        logger.debug(
+                            "CodeRabbit latest qualifying review is approved; skipping reminder",
+                            extra={"repo": repo, "pr_number": pr_number},
+                        )
+                        continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to fetch PR reviews for CodeRabbit check; postponing reminder",
+                    extra={"repo": repo, "pr_number": pr_number, "error": str(exc)},
+                )
+                continue
+
+        # Check GraphQL review threads if available
+        resolved_thread_comment_ids: set[int] = set()
+        if callable(get_threads):
+            try:
+                threads = get_threads(github_org, repo, pr_number)
+                if threads is None:
+                    logger.warning(
+                        "Review threads read failed for CodeRabbit check; postponing reminder",
+                        extra={"repo": repo, "pr_number": pr_number},
+                    )
+                    continue
+                cr_threads = [
+                    t
+                    for t in threads
+                    if isinstance(t, dict)
+                    and any(a in bot_logins_lower for a in (t.get("authors") or []))
+                ]
+                unresolved_cr_threads = [
+                    t
+                    for t in cr_threads
+                    if not t.get("is_resolved") and not t.get("is_outdated")
+                ]
+                is_incomplete = bool(
+                    getattr(threads, "truncated", False) or getattr(threads, "incomplete", False)
+                )
+                if is_incomplete:
+                    logger.warning(
+                        "Review threads read was incomplete; postponing reminder",
+                        extra={"repo": repo, "pr_number": pr_number},
+                    )
+                    continue
+                if cr_threads and not unresolved_cr_threads:
+                    logger.debug(
+                        "All CodeRabbit review threads resolved or outdated; skipping reminder",
+                        extra={"repo": repo, "pr_number": pr_number},
+                    )
+                    continue
+                for t in threads:
+                    if isinstance(t, dict) and (t.get("is_resolved") or t.get("is_outdated")):
+                        for cid in (t.get("comment_ids") or []):
+                            if isinstance(cid, int):
+                                resolved_thread_comment_ids.add(cid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to fetch review threads for CodeRabbit check; postponing reminder",
+                    extra={"repo": repo, "pr_number": pr_number, "error": str(exc)},
+                )
+                continue
+
+        head_sha = pr.get("head_sha") or (pr.get("head") or {}).get("sha")
         try:
             comments = get_comments(github_org, repo, pr_number)
         except Exception as exc:
@@ -1972,12 +2072,17 @@ def run_coderabbit_reminders(
             )
             continue
         old_bot_comments = [
-            c for c in comments if _is_coderabbit_comment(c, bot_logins_lower, cutoff)
+            c
+            for c in comments
+            if _is_coderabbit_comment(
+                c,
+                bot_logins_lower,
+                cutoff,
+                head_sha=head_sha,
+                resolved_comment_ids=resolved_thread_comment_ids,
+            )
         ]
         if not old_bot_comments:
-            continue
-        dedupe_key = f"coderabbit_reminder:{repo}:{pr_number}:{discord_user_id}"
-        if _was_notification_sent(storage, dedupe_key):
             continue
         message = _build_coderabbit_reminder_message(github_org, repo, pr_number, after_hours)
         sent = _send_discord_notification(
@@ -2003,12 +2108,44 @@ def run_coderabbit_reminders(
         logger.info("CodeRabbit reminders sent", extra={"count": sent_count})
 
 
-def _is_coderabbit_comment(comment: dict, bot_logins_lower: list[str], cutoff: datetime) -> bool:
-    """True if comment is from a configured bot login and was created before cutoff."""
+def _is_coderabbit_comment(
+    comment: dict,
+    bot_logins_lower: list[str],
+    cutoff: datetime,
+    head_sha: str | None = None,
+    resolved_comment_ids: set[int] | None = None,
+) -> bool:
+    """True if comment is from a configured bot login, is still active/unresolved, and was created before cutoff."""
     user = comment.get("user") or {}
     login = (user.get("login") or "").strip().lower()
     if not login or login not in bot_logins_lower:
         return False
+
+    # Check if comment is in a thread known to be resolved or outdated
+    comment_id = comment.get("id")
+    if resolved_comment_ids and isinstance(comment_id, int) and comment_id in resolved_comment_ids:
+        return False
+
+    # Outdated diff check: GitHub sets position to null when code changes supersede it
+    if comment.get("position") is None and comment.get("original_position") is not None:
+        return False
+    if comment.get("outdated") is True or comment.get("is_outdated") is True:
+        return False
+
+    # Resolved flag check
+    if comment.get("resolved") is True or comment.get("is_resolved") is True:
+        return False
+
+    # Body check: all items resolved in markdown checklist (supports both unordered and ordered markers)
+    # Strip fenced code blocks and inline code spans to avoid false suppression from code examples
+    body = (comment.get("body") or "").strip()
+    clean_body = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", "", body)
+    clean_body = re.sub(r"`[^`\n]+`", "", clean_body)
+    has_checked = bool(re.search(r"^\s*(?:[-*+]|\d+[.)])\s*\[[xX]\]", clean_body, re.MULTILINE))
+    has_unchecked = bool(re.search(r"^\s*(?:[-*+]|\d+[.)])\s*\[\s\]", clean_body, re.MULTILINE))
+    if has_checked and not has_unchecked:
+        return False
+
     created_at = comment.get("created_at")
     if not created_at:
         return False
