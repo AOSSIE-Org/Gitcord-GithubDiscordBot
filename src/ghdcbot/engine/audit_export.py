@@ -88,6 +88,12 @@ def format_audit_csv(events: list[dict]) -> str:
     return buf.getvalue()
 
 
+def _md_cell(value: object) -> str:
+    """Make a value safe inside one Markdown table cell (no extra columns or lines)."""
+    text = str(value).replace("|", "\\|")
+    return " ".join(text.splitlines())
+
+
 def format_audit_markdown(events: list[dict]) -> str:
     """Format audit events as Markdown table, grouped by event_type.
     
@@ -121,7 +127,9 @@ def format_audit_markdown(events: list[dict]) -> str:
                     details_parts.append(f"{k}={v}")
             details = ", ".join(details_parts) or "—"
             ts = e.get("timestamp", "")
-            lines.append(f"| {ts} | {actor} | {github_user} | {details} |")
+            lines.append(
+                f"| {_md_cell(ts)} | {_md_cell(actor)} | {_md_cell(github_user)} | {_md_cell(details)} |"
+            )
         lines.append("")
     return "\n".join(lines)
 
