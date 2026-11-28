@@ -1220,7 +1220,7 @@ def run_bot(config_path: str) -> None:
         discord_user_id = str(interaction.user.id)
         cooldown = 24
         if getattr(config, "identity", None) is not None:
-            cooldown = getattr(config.identity, "unlink_cooldown_hours", 24) or 24
+            cooldown = getattr(config.identity, "unlink_cooldown_hours", 24)
         try:
             service.unlink(discord_user_id, cooldown)
             await interaction.followup.send(
