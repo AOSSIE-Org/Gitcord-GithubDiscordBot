@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -256,3 +257,25 @@ def test_orchestrator_run_once_emits_sync_lifecycle_logs(tmp_path, caplog) -> No
     assert len(event_summary) == 1
     assert event_summary[0].issue_opened == 1
     assert event_summary[0].pr_merged == 1
+
+
+def test_json_formatter_uses_record_created_time() -> None:
+    """The emitted ``ts`` must reflect when the log record was created, not
+    when the formatter happened to serialize it (e.g. at flush time)."""
+    formatter = JsonFormatter()
+    record = logging.LogRecord(
+        name="audit",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="sync finished",
+        args=(),
+        exc_info=None,
+    )
+    expected_ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+
+    # Simulate a delayed/buffered sink: formatting happens well after the event.
+    time.sleep(0.01)
+    payload = json.loads(formatter.format(record))
+
+    assert payload["ts"] == expected_ts
